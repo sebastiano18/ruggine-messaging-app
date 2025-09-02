@@ -5,7 +5,7 @@ use crate::models::{RegisterReq, LoginResp};
 
 pub async fn register(base:&str, u:&str, p:&str) -> Result<()> {
     Client::new()
-        .post(format!("{base}/api/register"))
+        .post(format!("{base}/api/users/register"))
         .json(&RegisterReq{username:u, password:p})
         .send().await?
         .error_for_status()?;

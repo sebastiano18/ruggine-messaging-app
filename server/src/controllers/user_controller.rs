@@ -24,7 +24,6 @@ pub async fn register(
     State(st): State<AppState>,
     Json(req): Json<RegisterReq>,
 ) -> Result<Json<i64>> {
-    // sqlx::Pool è Send/Sync; String è Send; niente tipi non-Send qui.
     let id = UserService::register(&st.pool, &req.name, &req.password).await?;
     Ok(Json(id))
 }

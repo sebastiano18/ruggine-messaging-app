@@ -1,6 +1,7 @@
-use axum::Router;
+use axum::{Router, ServiceExt};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer; // 👈 Import TraceLayer
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod auth;
@@ -20,6 +21,7 @@ mod ws;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
+    // 📜 Setup logging
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=trace".into()),
@@ -33,8 +35,8 @@ async fn main() -> anyhow::Result<()> {
 
     let state = state::AppState::new(pool, cfg.jwt_secret.clone());
 
-    // Router principale
-    let app: Router<state::AppState> = routers::build_router(state);
+    // Router principale con TraceLayer
+    let app: Router = routers::build_router(state).layer(TraceLayer::new_for_http());
 
     let addr: SocketAddr = cfg.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
@@ -44,5 +46,4 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
 
