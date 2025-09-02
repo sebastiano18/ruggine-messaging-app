@@ -13,6 +13,7 @@ pub enum UiEvent {
     WsConnected,
     WsIncoming(String),
     RefreshedMsgs(Vec<String>), // semplificato (stringhe)
+    LoggedOut,
 }
 
 pub struct AppState {
@@ -71,6 +72,16 @@ impl AppState {
                 UiEvent::WsConnected => self.messages.push("WS connesso".into()),
                 UiEvent::WsIncoming(t) => self.messages.push(format!("WS <- {t}")),
                 UiEvent::RefreshedMsgs(list) => { self.messages = list; }
+                UiEvent::LoggedOut => {
+                    self.token = None;
+                    self.page = Page::Auth; // Torna alla schermata di login
+                    self.password.clear();  // Svuota password
+                    self.cid = None;
+                    self.conv_title.clear();
+                    self.input.clear();
+                    self.messages.clear();
+                    self.messages.push("Logout effettuato".into());
+                }
             }
         }
     }

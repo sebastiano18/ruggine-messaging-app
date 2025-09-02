@@ -149,6 +149,7 @@ pub async fn create_invite(
         .bind(uid).bind(req.group_id)
         .fetch_optional(&state.pool)
         .await?;
+    tracing::info!("rows matching: {:?}", is_admin);
     if is_admin.is_none() { return Err(AppError::Forbidden); }
 
     let token = uuid::Uuid::new_v4().to_string();
