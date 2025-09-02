@@ -3,6 +3,7 @@ mod state;
 mod models;
 mod ui;
 mod net;
+mod style;
 
 fn main() -> eframe::Result<()> {
     eframe::run_native(

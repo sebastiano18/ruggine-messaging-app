@@ -1,9 +1,11 @@
 use eframe::egui::{self, TextEdit};
 use crate::{state::{AppState, UiEvent}, net};
 
-
+use crate::style::apply_azure_theme;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
+    apply_azure_theme(ui);
+    
     ui.heading("Accesso");
     ui.separator();
 

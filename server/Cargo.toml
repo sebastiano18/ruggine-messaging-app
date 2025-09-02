@@ -6,7 +6,6 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.7", features = ["ws", "macros", "json"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "chrono", "migrate"] }
 argon2 = "0.5"
@@ -25,7 +24,12 @@ dotenvy = "0.15"
 rand_core = "0.6.4"
 futures = "0.3.31"
 uuid = { version = "1", features = ["v4"] }
-tower-http = { version = "0.6.6", features = ["trace"] }
 http = "1.3.1"
-tower = "0.5.2"
+rand = "0.8.5"
+chrono = "0.4"
 
+
+axum = { version = "0.7", features = ["ws", "macros", "json"] }
+hyper = "1.3"            # o >=1.3,<2
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }

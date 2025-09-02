@@ -1,33 +1,35 @@
-use axum::{http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+pub type Result<T> = std::result::Result<T, AppError>;
+
+#[derive(Debug, Error)]
 pub enum AppError {
-    #[error("unauthorized")] Unauthorized,
-    #[error("forbidden")]   Forbidden,
-    #[error("not found")]   NotFound,
-    #[error("bad request: {0}")] BadRequest(String),
-    #[error(transparent)] Anyhow(#[from] anyhow::Error),
+    #[error("Unauthorized")]
+    Unauthorized,
+    #[error("Forbidden")]
+    Forbidden,
+    #[error("Not Found")]
+    NotFound,
+    #[error("Bad Request: {0}")]
+    BadRequest(String),
+    #[error(transparent)]
+    Sqlx(#[from] sqlx::Error),
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
 }
-
-// ⬇️ Aggiungi questa conversione: sqlx::Error -> AppError
-impl From<sqlx::Error> for AppError {
-    fn from(e: sqlx::Error) -> Self {
-        AppError::Anyhow(e.into())
-    }
-}
-
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, msg) = match self {
-            AppError::Unauthorized   => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
-            AppError::Forbidden      => (StatusCode::FORBIDDEN,    "forbidden".to_string()),
-            AppError::NotFound       => (StatusCode::NOT_FOUND,     "not found".to_string()),
-            AppError::BadRequest(m)  => (StatusCode::BAD_REQUEST,   m),
-            AppError::Anyhow(e)      => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        let status = match self {
+            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Sqlx(_) | AppError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, axum::Json(serde_json::json!({ "error": msg }))).into_response()
+        (status, self.to_string()).into_response()
     }
 }
-
-pub type Result<T> = std::result::Result<T, AppError>;
