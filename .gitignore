@@ -1,2 +1,8 @@
-server/target/
-client/target/
+target/
+**/*.sqlite
+**/*.db
+**/*.db-shm
+**/*.db-wal
+logs/
+.env
+.DS_Store
