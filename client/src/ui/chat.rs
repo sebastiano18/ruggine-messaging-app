@@ -1,75 +1,98 @@
 use eframe::egui::{self, TextEdit};
-use futures::StreamExt;
-use crate::{state::{AppState, UiEvent}, net};
+use crate::{state::{AppState, UiEvent, WsStatus}, net};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
-    ui.heading("Chat");
+    ui.heading("💬 Chat");
     ui.separator();
 
-    if s.token.is_none() { ui.colored_label(egui::Color32::RED, "Login richiesto"); return; }
+    if s.token.is_none() {
+        ui.colored_label(egui::Color32::RED, "Login richiesto");
+        return;
+    }
     let token = s.token.clone().unwrap();
 
     // Selezione/Mostra conversazione corrente
     if let Some(cid) = s.cid {
-        if ui.button("Ricarica messaggi").clicked() {
-            let base = s.base.clone(); let token2 = token.clone();
+        // Info conversazione corrente
+        if let Some(ref conversations) = s.conversations {
+            if let Some(current_conv) = conversations.iter().find(|c| c.id == cid) {
+                let icon = match current_conv.kind.as_str() {
+                    "group" => "👥",
+                    "dm" => "💬",
+                    _ => "💭",
+                };
+                ui.label(format!("{} {}", icon, current_conv.title));
+                ui.separator();
+            }
+        }
+
+        // Solo stato WS (la connessione è gestita in app.rs)
+        match s.ws_status {
+            WsStatus::Disconnected => {
+                ui.colored_label(egui::Color32::RED, "⚫ WebSocket disconnesso");
+            }
+            WsStatus::Connecting => {
+                ui.colored_label(egui::Color32::YELLOW, "🟡 WebSocket connessione...");
+            }
+            WsStatus::Connected => {
+                ui.colored_label(egui::Color32::GREEN, "🟢 WebSocket connesso");
+            }
+        }
+
+        if ui.button("🔄 Ricarica messaggi").clicked() {
+            let base = s.base.clone();
+            let token2 = token.clone();
             let tx = s.ui_tx.clone();
+            let cid2 = cid;
             s.rt.spawn(async move {
-                match net::chat::get_messages(&base, &token2, cid).await {
+                match net::chat::get_messages(&base, &token2, cid2).await {
                     Ok(list) => {
-                        let msgs = list.into_iter().map(|m| format!("[{}] {}", m.author_id, m.body)).collect();
+                        let msgs = list.into_iter()
+                            .map(|m| format!("[{}] {}", m.author_id, m.content))
+                            .collect();
                         let _ = tx.send(UiEvent::RefreshedMsgs(msgs));
                     }
-                    Err(e) => { let _ = tx.send(UiEvent::Error(format!("get messages failed: {e}"))); }
+                    Err(e) => {
+                        let _ = tx.send(UiEvent::Error(format!("Caricamento messaggi fallito: {e}")));
+                    }
                 }
             });
         }
         ui.separator();
 
+        // Area messaggi
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-            for line in &s.messages { ui.label(line); }
+            for line in &s.messages {
+                ui.label(line);
+            }
         });
 
         ui.separator();
+
+        // Input messaggio
         ui.horizontal(|ui| {
             let resp = TextEdit::singleline(&mut s.input)
-                .hint_text("Scrivi…")
+                .hint_text("Scrivi un messaggio...")
                 .desired_width(f32::INFINITY)
                 .show(ui);
             if resp.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 send_now(s, cid, &token);
             }
-            if ui.button("Invia").clicked() {
+            if ui.button("📤 Invia").clicked() {
                 send_now(s, cid, &token);
             }
         });
 
-        // WS connect (una volta sola) — per semplicità, avvialo quando si entra in Chat e non è connesso
-        // Qui facciamo un attach best-effort quando premi "Ricarica messaggi": puoi spostarlo dove preferisci.
-        if ui.button("Connetti WS").clicked() {
-            let base = s.base.clone();
-            let token2 = token.clone();
-            let tx = s.ui_tx.clone();
-            s.rt.spawn(async move {
-                match net::ws::connect(&base, &token2).await {
-                    Ok(mut ws) => {
-                        let _ = net::ws::subscribe(&mut ws, &[cid]).await;
-                        let tx2 = tx.clone();
-                        tokio::spawn(async move {
-                            while let Some(Ok(msg)) = ws.next().await {
-                                if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
-                                    let _ = tx2.send(UiEvent::WsIncoming(t));
-                                }
-                            }
-                        });
-                        let _ = tx.send(UiEvent::WsConnected);
-                    }
-                    Err(e) => { let _ = tx.send(UiEvent::Error(format!("ws connect failed: {e}"))); }
-                }
-            });
+        // Pulsante di riconnessione manuale: qui chiediamo solo di “forzare” la riconnessione,
+        // sarà app.rs ad eseguirla nel prossimo tick
+        if s.ws_status == WsStatus::Disconnected {
+            if ui.button("🔌 Riconnetti WS").clicked() {
+                s.request_ws_reconnect = true; // <-- flag letto in app.rs
+            }
         }
     } else {
-        ui.label("Nessuna conversazione selezionata. Crea/entra in un gruppo nella scheda Gruppi.");
+        ui.label("❌ Nessuna conversazione selezionata.");
+        ui.label("Vai alla scheda 'Conversazioni' per creare o selezionare una chat.");
     }
 }
 
@@ -77,15 +100,21 @@ fn send_now(s: &mut AppState, cid: i64, token: &str) {
     let body = s.input.trim().to_string();
     if body.is_empty() { return; }
     s.input.clear();
-    s.messages.push(format!("me: {body}"));
+
+    // Feedback immediato
+    s.messages.push(format!("Tu: {body}"));
 
     let base = s.base.clone();
     let token = token.to_string();
     let tx = s.ui_tx.clone();
     s.rt.spawn(async move {
         match net::chat::send_message(&base, &token, cid, &body).await {
-            Ok(_) => { let _ = tx.send(UiEvent::Info("POST /messages -> 200".into())); }
-            Err(e) => { let _ = tx.send(UiEvent::Error(format!("send failed: {e}"))); }
+            Ok(_) => {
+                let _ = tx.send(UiEvent::Info("Messaggio inviato ✅".into()));
+            }
+            Err(e) => {
+                let _ = tx.send(UiEvent::Error(format!("Invio fallito: {e}")));
+            }
         }
     });
 }

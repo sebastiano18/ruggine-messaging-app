@@ -12,37 +12,35 @@ pub struct MessageOut {
     pub id: i64,
     pub author_id: i64,
     pub content: String,
-    pub created_at: String, // oppure DateTime<Utc> se già serializzi correttamente
+    pub created_at: i64,
 }
 
 #[derive(Serialize)]
-pub struct CreatedId { pub id: i64 }
+pub struct CreatedId {
+    pub id: i64
+}
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn list(
-    Path(cid): Path<i64>,
+    Path(conversation_id): Path<i64>,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<MessageOut>>> {
-    // supponiamo che il service ritorni: Vec<(id, author_id, content, created_at)>
-    let rows = MessageService::list(&st.pool, cid, 50).await?;
-    let out = rows.into_iter().map(|(id, author_id, content, created_at)| {
-        MessageOut {
-            id,
-            author_id,
-            content,
-            created_at: created_at.to_string(),
-        }
-    }).collect();
+    let rows = MessageService::list(&st.pool, conversation_id, 50).await?;
+    let out = rows
+        .into_iter()
+        .map(|(id, author_id, content, created_at)| MessageOut { id, author_id, content, created_at })
+        .collect();
     Ok(Json(out))
 }
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn post(
     user: AuthUser,
-    Path(cid): Path<i64>,
+    Path(conversation_id): Path<i64>,
     State(st): State<AppState>,
     Json(req): Json<PostMessageReq>,
 ) -> Result<Json<CreatedId>> {
-    let id = MessageService::post(&st.pool, cid, user.id, &req.content).await?;
-    Ok(Json(CreatedId { id }))
+    // NB: MessageService::post ora accetta anche &AppState per fare il broadcast WS
+    let message_id = MessageService::post(&st.pool, conversation_id, user.id, &req.content, &st).await?;
+    Ok(Json(CreatedId { id: message_id }))
 }

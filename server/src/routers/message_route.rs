@@ -4,5 +4,5 @@ use axum::{
     routing::{get, post},
 };
 pub fn router() -> Router<AppState> {
-    Router::new().route("/conversations/:id/messages", get(c::list).post(c::post))
+    Router::new().route("/conversations/:cid/messages", get(c::list).post(c::post))
 }

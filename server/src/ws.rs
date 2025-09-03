@@ -1,171 +1,215 @@
 use std::{collections::HashMap, sync::Arc};
 use axum::{
-    extract::{Query, State},
+    extract::State,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{error, info, warn};
 
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct WsParams {
-    pub conversation_id: i64,
-}
+// Chiave fissa per il canale globale
+const GLOBAL_CH_KEY: i64 = 0;
 
 #[axum::debug_handler]
 pub async fn ws_handler(
     State(state): State<AppState>,
-    Query(params): Query<WsParams>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_loop(socket, state, params.conversation_id))
+    ws.on_upgrade(move |socket| ws_loop(socket, state))
 }
 
-async fn ws_loop(socket: WebSocket, state: AppState, conversation_id: i64) {
-    info!("WebSocket connection established for conversation {}", conversation_id);
+async fn ws_loop(socket: WebSocket, state: AppState) {
+    info!("WebSocket connection established (global channel)");
 
-    let tx = get_or_init_channel(&state.channels, conversation_id).await;
+    let tx = get_or_init_global_channel(&state.channels).await;
     let mut rx = tx.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Task per ricevere messaggi dal broadcast channel e inviarli al WebSocket
-    let recv_task = tokio::spawn(async move {
-        while let Ok(val) = rx.recv().await {
-            match serde_json::to_string(&val) {
-                Ok(msg) => {
-                    if let Err(e) = ws_tx.send(Message::Text(msg)).await {
-                        warn!("Failed to send WebSocket message: {}", e);
-                        break;
-                    }
+    // canale di coordinamento "stop"
+    use tokio::sync::watch;
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+
+    // Task: dal broadcast -> al WebSocket (si ferma se stop=true)
+    let mut recv_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = stop_rx.changed() => {
+                    // l'altro task ha segnalato chiusura
+                    break;
                 }
-                Err(e) => {
-                    error!("Failed to serialize message: {}", e);
-                    let error_msg = r#"{"type":"error","message":"serialization_failed"}"#;
-                    if ws_tx.send(Message::Text(error_msg.into())).await.is_err() {
-                        break;
+                val = rx.recv() => {
+                    match val {
+                        Ok(val) => {
+                            match serde_json::to_string(&val) {
+                                Ok(msg) => {
+                                    if let Err(e) = ws_tx.send(Message::Text(msg)).await {
+                                        // se fallisce l'invio, chiudi
+                                        warn!("Failed to send WebSocket message: {e}");
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to serialize message: {e}");
+                                    let error_msg = r#"{"type":"error","message":"serialization_failed"}"#;
+                                    if ws_tx.send(Message::Text(error_msg.into())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // broadcast chiuso
+                            break;
+                        }
                     }
                 }
             }
         }
-        info!("Recv task ended for conversation {}", conversation_id);
+        info!("Recv task ended (global channel)");
     });
 
-    // Task per ricevere messaggi dal WebSocket e inviarli al broadcast channel
-    let send_task = {
+    // Task: dal WebSocket -> al broadcast
+    let mut send_task = {
         let tx = tx.clone();
-        let conversation_id = conversation_id;
+        let stop_tx = stop_tx.clone();
         tokio::spawn(async move {
             while let Some(msg_result) = ws_rx.next().await {
                 match msg_result {
                     Ok(Message::Text(text)) => {
-                        let value = match serde_json::from_str::<serde_json::Value>(&text) {
+                        let mut value = match serde_json::from_str::<serde_json::Value>(&text) {
                             Ok(v) => v,
                             Err(_) => {
                                 warn!("Invalid JSON received, treating as raw text");
-                                serde_json::json!({
-                                    "type": "text",
-                                    "content": text
-                                })
+                                serde_json::json!({ "type": "text", "content": text })
                             }
                         };
 
+                        // non ribroadcastare messaggi di controllo
+                        let is_control = value.get("type")
+                            .and_then(|t| t.as_str())
+                            .map(|t| matches!(t, "subscribe" | "ping" | "pong"))
+                            .unwrap_or(false);
+                        if is_control {
+                            continue;
+                        }
+
                         if let Err(e) = tx.send(value) {
-                            warn!("Failed to broadcast message: {}", e);
+                            warn!("Failed to broadcast message: {e}");
+                            // segnala stop all'altro task
+                            let _ = stop_tx.send(true);
                             break;
                         }
                     }
                     Ok(Message::Close(_)) => {
-                        info!("WebSocket connection closed gracefully");
+                        info!("WebSocket connection closed by client");
+                        // segnala stop all'altro task
+                        let _ = stop_tx.send(true);
                         break;
                     }
-                    Ok(Message::Ping(data)) => {
-                        // Echo back pong - questo dovrebbe essere gestito automaticamente da axum
-                        info!("Received ping");
+                    Ok(Message::Ping(_)) => {
+                        info!("Received ping"); // axum risponde col pong
                     }
                     Ok(Message::Pong(_)) => {
-                        // Pong ricevuto
                         info!("Received pong");
                     }
                     Ok(_) => {
-                        // Altri tipi di messaggi (Binary, etc.)
                         warn!("Received unsupported message type");
                     }
                     Err(e) => {
-                        warn!("WebSocket error: {}", e);
+                        // axum::Error: considera disconnect
+                        info!("WS read error (client disconnected): {}", e);
+                        let _ = stop_tx.send(true);
                         break;
                     }
                 }
             }
-            info!("Send task ended for conversation {}", conversation_id);
+            info!("Send task ended (global channel)");
         })
     };
 
-    // Aspetta che uno dei due task finisca
+    // Attendi il primo che termina e interrompi l'altro per evitare write post-close
     tokio::select! {
-        _ = recv_task => {
-            info!("WebSocket recv task completed for conversation {}", conversation_id);
-        },
-        _ = send_task => {
-            info!("WebSocket send task completed for conversation {}", conversation_id);
-        },
+        _ = &mut recv_task => {
+            info!("WebSocket recv task completed (global)");
+            send_task.abort();
+        }
+        _ = &mut send_task => {
+            info!("WebSocket send task completed (global)");
+            recv_task.abort();
+        }
     }
 
-    // Opzionale: cleanup della channel se non ci sono più subscriber
-    cleanup_channel_if_empty(&state.channels, conversation_id).await;
+    cleanup_global_if_empty(&state.channels).await;
 }
 
-async fn get_or_init_channel(
+
+async fn get_or_init_global_channel(
     channels: &Arc<RwLock<HashMap<i64, broadcast::Sender<serde_json::Value>>>>,
-    conversation_id: i64,
 ) -> broadcast::Sender<serde_json::Value> {
-    // Prima prova a leggere
+    // Prova read-lock
     {
         let map = channels.read().await;
-        if let Some(tx) = map.get(&conversation_id) {
+        if let Some(tx) = map.get(&GLOBAL_CH_KEY) {
             return tx.clone();
         }
     }
 
-    // Se non esiste, acquisisci il write lock
+    // Write-lock e double-check
     let mut map = channels.write().await;
-    // Double-check pattern: qualcun altro potrebbe aver creato la channel nel frattempo
-    if let Some(tx) = map.get(&conversation_id) {
+    if let Some(tx) = map.get(&GLOBAL_CH_KEY) {
         return tx.clone();
     }
 
-    // Crea una nuova channel
     let (tx, _) = broadcast::channel(256);
-    map.insert(conversation_id, tx.clone());
-    info!("Created new broadcast channel for conversation {}", conversation_id);
+    map.insert(GLOBAL_CH_KEY, tx.clone());
+    info!("Created global broadcast channel");
     tx
 }
 
-// Funzione opzionale per fare cleanup delle channel inutilizzate
-async fn cleanup_channel_if_empty(
+async fn cleanup_global_if_empty(
     channels: &Arc<RwLock<HashMap<i64, broadcast::Sender<serde_json::Value>>>>,
-    conversation_id: i64,
 ) {
     let should_remove = {
         let map = channels.read().await;
-        if let Some(tx) = map.get(&conversation_id) {
-            tx.receiver_count() == 0
-        } else {
-            false
-        }
+        map.get(&GLOBAL_CH_KEY)
+            .map(|tx| tx.receiver_count() == 0)
+            .unwrap_or(false)
     };
 
     if should_remove {
         let mut map = channels.write().await;
-        // Double-check: la situazione potrebbe essere cambiata
-        if let Some(tx) = map.get(&conversation_id) {
+        if let Some(tx) = map.get(&GLOBAL_CH_KEY) {
             if tx.receiver_count() == 0 {
-                map.remove(&conversation_id);
-                info!("Cleaned up unused broadcast channel for conversation {}", conversation_id);
+                map.remove(&GLOBAL_CH_KEY);
+                info!("Cleaned up global broadcast channel (no subscribers)");
             }
         }
     }
 }
+pub async fn ws_broadcast(state: &crate::state::AppState, value: serde_json::Value) {
+    let tx = get_or_init_global_channel(&state.channels).await;
+
+    // (facoltativo) per log leggibile
+    let payload = match serde_json::to_string(&value) {
+        Ok(s) => s,
+        Err(_) => "<non-serializzabile>".into(),
+    };
+
+    let receivers_now = tx.receiver_count();
+    tracing::info!("WS broadcast -> {} subscribers | payload={}", receivers_now, payload);
+
+    match tx.send(value) {
+        Ok(delivered) => {
+            // delivered = numero di subscriber attivi che riceveranno questo messaggio
+            tracing::info!("WS broadcast delivered to {} subscribers", delivered);
+        }
+        Err(e) => {
+            // errore tipicamente quando non ci sono subscriber
+            tracing::warn!("WS broadcast dropped (no subscribers?): {}", e);
+        }
+    }
+}
+

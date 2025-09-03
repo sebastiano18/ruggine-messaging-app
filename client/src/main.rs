@@ -7,7 +7,7 @@ mod style;
 
 fn main() -> eframe::Result<()> {
     eframe::run_native(
-        "Ruggine – Chat (egui)",
+        "Ruggine",
         eframe::NativeOptions::default(),
         Box::new(|_cc| Box::new(app::App::new())),
     )

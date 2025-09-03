@@ -11,11 +11,11 @@ pub async fn get_messages(base:&str, token:&str, cid:i64) -> Result<Vec<MessageD
         .json::<Vec<MessageDto>>().await?)
 }
 
-pub async fn send_message(base:&str, token:&str, cid:i64, body:&str) -> Result<()> {
+pub async fn send_message(base:&str, token:&str, cid:i64, content:&str) -> Result<()> {
     Client::new()
         .post(format!("{base}/api/conversations/{cid}/messages"))
         .bearer_auth(token)
-        .json(&SendMsgReq{ body })
+        .json(&SendMsgReq{ content })
         .send().await?
         .error_for_status()?;
     Ok(())

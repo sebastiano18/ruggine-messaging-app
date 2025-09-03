@@ -6,4 +6,5 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/users/register", post(c::register))
         .route("/users/login", post(c::login))
+        .route("/users/logout", post(c::logout))
 }
