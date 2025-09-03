@@ -1,4 +1,5 @@
 use eframe::egui::{self, TextEdit};
+use uuid::Uuid;
 use crate::{state::{AppState, UiEvent, WsStatus}, net};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
@@ -83,11 +84,9 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             }
         });
 
-        // Pulsante di riconnessione manuale: qui chiediamo solo di “forzare” la riconnessione,
-        // sarà app.rs ad eseguirla nel prossimo tick
         if s.ws_status == WsStatus::Disconnected {
             if ui.button("🔌 Riconnetti WS").clicked() {
-                s.request_ws_reconnect = true; // <-- flag letto in app.rs
+                s.request_ws_reconnect = true; // flag letto in app.rs
             }
         }
     } else {
@@ -96,7 +95,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     }
 }
 
-fn send_now(s: &mut AppState, cid: i64, token: &str) {
+fn send_now(s: &mut AppState, cid: Uuid, token: &str) {
     let body = s.input.trim().to_string();
     if body.is_empty() { return; }
     s.input.clear();

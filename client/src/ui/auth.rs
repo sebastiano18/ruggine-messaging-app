@@ -1,4 +1,5 @@
 use eframe::egui::{self, TextEdit};
+use uuid::Uuid;
 use crate::{state::{AppState, UiEvent, LoginState}, net};
 use crate::style::apply_azure_theme;
 
@@ -12,7 +13,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     if let Some(tok) = s.token.as_ref() {
         ui.label(format!("Loggato come: {}", s.username));
         if let Some(user_id) = s.user_id {
-            ui.label(format!("User ID: {}", user_id));
+            ui.label(format!("User ID: {}", user_id)); // Uuid implementa Display
         }
         ui.add_space(8.0);
 
@@ -54,16 +55,17 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                 let p = s.password.clone();
                 let tx = s.ui_tx.clone();
 
-                // Invia evento di inizio login
                 let _ = tx.send(UiEvent::LoginStarted);
 
                 s.rt.spawn(async move {
                     println!("DEBUG: Iniziando login per utente: {}", u);
                     match net::auth::login(&base, &u, &p).await {
                         Ok(login_resp) => {
-                            println!("DEBUG: Login risposta ricevuta - token: {}, user_id: {}, username: {}",
-                                     login_resp.token, login_resp.user_id, login_resp.username);
-                            // Invia sia token che user_id
+                            println!(
+                                "DEBUG: Login risposta - token: {}, user_id: {}, username: {}",
+                                login_resp.token, login_resp.user_id, login_resp.username
+                            );
+                            // user_id è Uuid
                             let _ = tx.send(UiEvent::Logged(login_resp.token, login_resp.user_id));
                         }
                         Err(e) => {
@@ -89,16 +91,25 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                     println!("DEBUG: Iniziando registrazione per utente: {}", u);
                     match net::auth::register(&base, &u, &p).await {
                         Ok(_) => {
-                            let _ = tx.send(UiEvent::Info("Registrazione completata, effettuando login...".into()));
+                            let _ = tx.send(UiEvent::Info(
+                                "Registrazione completata, effettuando login...".into()
+                            ));
                             match net::auth::login(&base, &u, &p).await {
                                 Ok(login_resp) => {
-                                    println!("DEBUG: Post-registrazione login - token: {}, user_id: {}",
-                                             login_resp.token, login_resp.user_id);
-                                    let _ = tx.send(UiEvent::Logged(login_resp.token, login_resp.user_id));
+                                    println!(
+                                        "DEBUG: Post-registrazione login - token: {}, user_id: {}",
+                                        login_resp.token, login_resp.user_id
+                                    );
+                                    let _ = tx.send(UiEvent::Logged(
+                                        login_resp.token,
+                                        login_resp.user_id, // Uuid
+                                    ));
                                 }
                                 Err(e) => {
                                     println!("DEBUG: Errore login post-registrazione: {}", e);
-                                    let _ = tx.send(UiEvent::Error(format!("login failed after registration: {e}")));
+                                    let _ = tx.send(UiEvent::Error(
+                                        format!("login failed after registration: {e}")
+                                    ));
                                 }
                             }
                         }

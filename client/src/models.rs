@@ -1,6 +1,7 @@
 // In models.rs (client)
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Serialize)]
 pub struct RegisterReq<'a> {
@@ -16,7 +17,7 @@ pub struct LoginResp {
 
 #[derive(Deserialize)]
 pub struct UserInfo {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
     pub created_at: i64,
 }
@@ -34,7 +35,7 @@ pub struct GroupReq<'a> {
 
 #[derive(Serialize)]
 pub struct InviteReq {
-    pub group_id: i64,
+    pub group_id: Uuid,
 }
 #[derive(Deserialize)]
 pub struct InviteResp {
@@ -48,9 +49,9 @@ pub struct JoinByTokenReq<'a> {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct MessageDto {
-    pub id: i64,
-    pub conversation_id: i64,
-    pub author_id: i64,
+    pub id: Uuid,
+    pub conversation_id: Uuid,
+    pub author_id: Uuid,
     pub content: String, // Corrected field name
     pub created_at: i64, // Corrected data type
 }
@@ -61,6 +62,6 @@ pub struct SendMsgReq<'a> {
 
 #[derive(Deserialize, Serialize)]
 pub struct User {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
 }

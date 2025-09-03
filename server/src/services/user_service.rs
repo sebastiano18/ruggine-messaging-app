@@ -1,19 +1,15 @@
-use crate::{
-    error::{AppError, Result},
-    repositories::user_repo::UserRepo,
-};
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::{PasswordHash, PasswordVerifier, SaltString},
-};
+// services/user_service.rs
+use crate::{error::{AppError, Result}, repositories::user_repo::UserRepo};
+use argon2::{Argon2, PasswordHasher, PasswordVerifier, password_hash::{PasswordHash, SaltString}};
 use chrono::Duration;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde::Serialize;
+use uuid::Uuid;
 
 #[derive(Serialize)]
 struct Claims {
     sub: String,
-    uid: i64,
+    uid: Uuid,   // <- UUID nativo
     exp: usize,
 }
 
@@ -21,7 +17,7 @@ struct Claims {
 pub struct UserService;
 
 impl UserService {
-    pub async fn register(pool: &sqlx::SqlitePool, username: &str, password: &str) -> Result<i64> {
+    pub async fn register(pool: &sqlx::SqlitePool, username: &str, password: &str) -> Result<Uuid> {
         let salt = SaltString::generate(rand::thread_rng());
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -30,13 +26,12 @@ impl UserService {
         UserRepo::create(pool, username, &hash).await
     }
 
-    // Aggiornato per restituire (token, user_id)
     pub async fn login(
         pool: &sqlx::SqlitePool,
         jwt_secret: &str,
         username: &str,
         password: &str,
-    ) -> Result<(String, i64)> {
+    ) -> Result<(String, Uuid)> {
         let Some((uid, pwd_hash)) = UserRepo::find_by_name(pool, username).await? else {
             return Err(AppError::Unauthorized);
         };
@@ -47,19 +42,14 @@ impl UserService {
             .map_err(|_| AppError::Unauthorized)?;
 
         let exp = (chrono::Utc::now() + Duration::hours(24)).timestamp() as usize;
-        let claims = Claims {
-            sub: username.into(),
-            uid,
-            exp,
-        };
+        let claims = Claims { sub: username.to_owned(), uid, exp };
 
         let token = encode(
             &Header::default(),
             &claims,
             &EncodingKey::from_secret(jwt_secret.as_bytes()),
-        )
-            .map_err(|_| AppError::Unauthorized)?;
+        ).map_err(|_| AppError::Unauthorized)?;
 
-        Ok((token, uid))  // Restituisce sia token che user_id
+        Ok((token, uid))
     }
 }

@@ -7,6 +7,7 @@ use crate::{
 use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 use axum::http::StatusCode;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct CreateGroupReq {
@@ -15,20 +16,20 @@ pub struct CreateGroupReq {
 
 #[derive(Deserialize)]
 pub struct CreateDmReq {
-    pub user_id: i64,
+    pub user_id: Uuid,
 }
 
 #[derive(Serialize)]
-pub struct CreatedId { pub id: i64 }
+pub struct CreatedId { pub id: Uuid }
 
 #[derive(Deserialize)]
 pub struct AddMemberReq {
-    pub member_id: i64,
+    pub member_id: Uuid,
 }
 
 #[derive(Serialize)]
 pub struct ConversationOut {
-    pub id: i64,
+    pub id: Uuid,
     pub kind: String,
     pub title: String,
 }
@@ -75,7 +76,7 @@ pub async fn mine(
 pub async fn add_member(
     user: AuthUser,
     State(st): State<AppState>,
-    Path(conversation_id): Path<i64>,
+    Path(conversation_id): Path<Uuid>,
     Json(req): Json<AddMemberReq>,
 ) -> Result<StatusCode> {
     ConversationService::add_member(&st.pool, conversation_id, req.member_id, user.id).await?;

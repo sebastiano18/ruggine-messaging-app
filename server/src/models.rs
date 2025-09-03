@@ -2,10 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use uuid::Uuid;
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct User {
-    pub id: i64,
+    pub id: Uuid,
     pub username: String,
     pub pass_hash: String,
     pub created_at: i64,
@@ -13,7 +14,7 @@ pub struct User {
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Conversation {
-    pub id: i64,
+    pub id: Uuid,
     pub kind: String,
     pub title: Option<String>,
     pub created_at: i64,
@@ -21,33 +22,33 @@ pub struct Conversation {
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Participant {
-    pub conversation_id: i64,
-    pub user_id: i64,
+    pub conversation_id: Uuid,
+    pub user_id: Uuid,
     pub role: String,
-    pub last_read_msg: Option<i64>,
+    pub last_read_msg: Option<Uuid>,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Message {
-    pub id: i64,
-    pub conversation_id: i64,
-    pub author_id: i64,
+    pub id: Uuid,
+    pub conversation_id: Uuid,
+    pub author_id: Uuid,
     pub content: String, // Corrected field name
     pub created_at: i64,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Group {
-    pub id: i64,
+    pub id: Uuid,
     pub name: String,
-    pub owner_id: i64,
+    pub owner_id: Uuid,
     pub created_at: i64,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Invite {
-    pub id: i64,
-    pub group_id: i64,
+    pub id: Uuid,
+    pub group_id: Uuid,
     pub token: String,
     pub expires_at: i64,
     pub used: i64,

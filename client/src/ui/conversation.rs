@@ -1,5 +1,6 @@
 use eframe::egui::{self, TextEdit, RichText};
-use crate::{state::{AppState, UiEvent, Page}, net};
+use uuid::Uuid;
+use crate::{state::{AppState, UiEvent}, net};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.heading("Conversazioni");
@@ -30,18 +31,18 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         });
     }
 
-    // Mostra lista conversazioni (assumendo che tu abbia una lista nello state)
+    // Lista conversazioni
     if let Some(ref conversations) = s.conversations {
         for conv in conversations {
             ui.horizontal(|ui| {
                 let label = match conv.kind.as_str() {
                     "group" => format!("👥 {}", conv.title),
-                    "dm" => format!("💬 {}", conv.title),
-                    _ => conv.title.clone(),
+                    "dm"    => format!("💬 {}", conv.title),
+                    _       => conv.title.clone(),
                 };
 
                 if ui.button(&label).clicked() {
-                    let _ = s.ui_tx.send(UiEvent::Opened(conv.id));
+                    let _ = s.ui_tx.send(UiEvent::Opened(conv.id)); // conv.id: Uuid
                 }
             });
         }
@@ -60,7 +61,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         s.rt.spawn(async move {
             match net::conversation::create_group(&base, &token2, &name).await {
                 Ok(cid) => {
-                    let _ = tx.send(UiEvent::Opened(cid));
+                    let _ = tx.send(UiEvent::Opened(cid)); // cid: Uuid
                 }
                 Err(e) => {
                     let _ = tx.send(UiEvent::Error(format!("Creazione gruppo fallita: {e}")));
@@ -73,19 +74,26 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
 
     // === Inizia una DM ===
     ui.heading("💬 Inizia una chat privata");
-    // Campo per inserire user_id o username (per ora user_id)
     ui.horizontal(|ui| {
-        ui.label("User ID:");
-        ui.add(egui::DragValue::new(&mut s.dm_user_id).speed(1.0));
+        ui.label("User ID (UUID):");
+        ui.add(TextEdit::singleline(&mut s.dm_user_id_input));
     });
 
     if ui.button("Inizia DM").clicked() {
+        // Valida subito l'UUID inserito
+        let target_uuid = match Uuid::parse_str(&s.dm_user_id_input.trim()) {
+            Ok(u) => u,
+            Err(_) => {
+                let _ = s.ui_tx.send(UiEvent::Error("UUID non valido".into()));
+                return;
+            }
+        };
+
         let base = s.base.clone();
-        let user_id = s.dm_user_id;
         let tx = s.ui_tx.clone();
         let token2 = token.clone();
         s.rt.spawn(async move {
-            match net::conversation::create_dm(&base, &token2, user_id).await {
+            match net::conversation::create_dm(&base, &token2, target_uuid).await {
                 Ok(cid) => {
                     let _ = tx.send(UiEvent::Opened(cid));
                 }
@@ -109,11 +117,10 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         let base = s.base.clone();
         let token2 = token.clone();
         let tx = s.ui_tx.clone();
-        let token_input_clone = token_input.clone();
         s.rt.spawn(async move {
-            match net::conversation::join_by_token(&base, &token2, &token_input_clone).await {
+            match net::conversation::join_by_token(&base, &token2, &token_input).await {
                 Ok(cid) => {
-                    let _ = tx.send(UiEvent::Opened(cid));
+                    let _ = tx.send(UiEvent::Opened(cid)); // cid: Uuid
                 }
                 Err(e) => {
                     let _ = tx.send(UiEvent::Error(format!("Join fallito: {e}")));

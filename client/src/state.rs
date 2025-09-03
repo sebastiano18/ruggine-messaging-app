@@ -1,5 +1,6 @@
 use tokio::{runtime::Runtime, sync::mpsc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use crate::net::ws::WsControl;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,7 +27,7 @@ pub enum LoginState {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConversationOut {
-    pub id: i64,
+    pub id: Uuid,      // <- UUID nativo
     pub kind: String,
     pub title: String,
 }
@@ -37,8 +38,8 @@ pub enum UiEvent {
     Error(String),
     LoginStarted,
     RegisterStarted,
-    Logged(String, i64),  // token, user_id
-    Opened(i64),          // conversation id
+    Logged(String /* token */, Uuid /* user_id */),
+    Opened(Uuid),  // <- UUID nativo per conversation id
     WsConnected,
     WsDisconnected,
     WsControlReady(WsControl),
@@ -55,17 +56,17 @@ pub struct AppState {
     pub username: String,
     pub password: String,
     pub token: Option<String>,
-    pub user_id: Option<i64>,
+    pub user_id: Option<Uuid>,
     pub page: Page,
 
-    pub cid: Option<i64>,
+    pub cid: Option<Uuid>,      // <- conversation id corrente (UUID)
     pub conv_title: String,
     pub input: String,
     pub messages: Vec<String>,
 
     pub conversations: Option<Vec<ConversationOut>>,
     pub group_name: String,
-    pub dm_user_id: i64,
+    pub dm_user_id_input: String,   // input testuale per UUID DM target
     pub last_invite_token: Option<String>,
 
     pub ws_status: WsStatus,
@@ -75,7 +76,7 @@ pub struct AppState {
 
     pub ui_tx: mpsc::UnboundedSender<UiEvent>,
     pub ui_rx: mpsc::UnboundedReceiver<UiEvent>,
-    
+
     pub ws_ctrl: Option<crate::net::ws::WsControl>,
 }
 
@@ -100,7 +101,7 @@ impl AppState {
 
             conversations: None,
             group_name: String::new(),
-            dm_user_id: 2,
+            dm_user_id_input: String::new(),
             last_invite_token: None,
 
             ws_status: WsStatus::Disconnected,
@@ -164,17 +165,20 @@ impl AppState {
                     self.messages.push(format!("❌ WebSocket errore: {}", error));
                 }
                 UiEvent::WsIncoming(msg) => {
-                    // Mostra direttamente il messaggio ricevuto
+                    // Messaggio WS in JSON: { "author_id": "<uuid>", "content": "..." , ... }
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg) {
-                        if let Some(content) = json.get("content").and_then(|c| c.as_str()) {
-                            if let Some(author) = json.get("author_id").and_then(|a| a.as_i64()) {
-                                self.messages.push(format!("[{}] {}", author, content));
-                            } else {
-                                self.messages.push(content.to_string());
-                            }
-                        } else {
-                            self.messages.push(format!("📨 {}", msg));
-                        }
+                        let content = json
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or(&msg);
+
+                        let author_short = json
+                            .get("author_id")
+                            .and_then(|a| a.as_str()) // UUID come stringa
+                            .map(|s| if s.len() >= 8 { &s[..8] } else { s })
+                            .unwrap_or("anon");
+
+                        self.messages.push(format!("[{}] {}", author_short, content));
                     } else {
                         self.messages.push(format!("WS <- {}", msg));
                     }

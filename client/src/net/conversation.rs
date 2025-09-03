@@ -1,6 +1,7 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use crate::state::ConversationOut;
 
 #[derive(Serialize)]
@@ -10,19 +11,17 @@ pub struct GroupReq<'a> {
 
 #[derive(Serialize)]
 pub struct DmReq {
-    pub user_id: i64
+    pub user_id: Uuid   // UUID dell’altro utente
 }
 
 #[derive(Deserialize)]
 pub struct CreatedId {
-    pub id: i64
+    pub id: Uuid        // UUID della conversazione o risorsa creata
 }
-
-// Rimuovi ConversationOut da qui, ora è importata da state.rs
 
 #[derive(Serialize)]
 pub struct InviteReq {
-    pub conversation_id: i64  // Cambiato da group_id
+    pub conversation_id: Uuid
 }
 
 #[derive(Deserialize)]
@@ -35,27 +34,33 @@ pub struct JoinByTokenReq<'a> {
     pub token: &'a str
 }
 
+// === API client ===
+
 // Crea un nuovo gruppo
-pub async fn create_group(base: &str, token: &str, name: &str) -> Result<i64> {
+pub async fn create_group(base: &str, token: &str, name: &str) -> Result<Uuid> {
     let r = Client::new()
         .post(format!("{base}/api/conversations/groups"))
         .bearer_auth(token)
         .json(&GroupReq { name })
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<CreatedId>().await?;
+        .json::<CreatedId>()
+        .await?;
     Ok(r.id)
 }
 
 // Crea o trova una DM
-pub async fn create_dm(base: &str, token: &str, user_id: i64) -> Result<i64> {
+pub async fn create_dm(base: &str, token: &str, user_id: Uuid) -> Result<Uuid> {
     let r = Client::new()
         .post(format!("{base}/api/conversations/dm"))
         .bearer_auth(token)
         .json(&DmReq { user_id })
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<CreatedId>().await?;
+        .json::<CreatedId>()
+        .await?;
     Ok(r.id)
 }
 
@@ -64,32 +69,38 @@ pub async fn get_conversations(base: &str, token: &str) -> Result<Vec<Conversati
     let r = Client::new()
         .get(format!("{base}/api/conversations"))
         .bearer_auth(token)
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<Vec<ConversationOut>>().await?;
+        .json::<Vec<ConversationOut>>()
+        .await?;
     Ok(r)
 }
 
 // Crea invito per una conversazione (solo gruppi)
-pub async fn create_invite(base: &str, token: &str, conversation_id: i64) -> Result<String> {
+pub async fn create_invite(base: &str, token: &str, conversation_id: Uuid) -> Result<String> {
     let r = Client::new()
-        .post(format!("{base}/api/invites"))  // Endpoint da aggiungere
+        .post(format!("{base}/api/invites"))
         .bearer_auth(token)
         .json(&InviteReq { conversation_id })
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<InviteResp>().await?;
+        .json::<InviteResp>()
+        .await?;
     Ok(r.token)
 }
 
 // Join tramite token
-pub async fn join_by_token(base: &str, token: &str, invite_token: &str) -> Result<i64> {
+pub async fn join_by_token(base: &str, token: &str, invite_token: &str) -> Result<Uuid> {
     let r = Client::new()
-        .post(format!("{base}/api/invites/join"))  // Endpoint da aggiungere
+        .post(format!("{base}/api/invites/join"))
         .bearer_auth(token)
         .json(&JoinByTokenReq { token: invite_token })
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<CreatedId>().await?;
+        .json::<CreatedId>()
+        .await?;
     Ok(r.id)
 }
