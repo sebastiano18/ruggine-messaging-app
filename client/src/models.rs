@@ -12,7 +12,8 @@ pub struct RegisterReq<'a> {
 #[derive(Deserialize)]
 pub struct LoginResp {
     pub token: String,
-    pub user: UserInfo,
+    pub user_id: Uuid,
+    pub username: String,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +54,15 @@ pub struct MessageDto {
     pub author_id: Uuid,
     pub author_username: String,
     pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ConversationDto {
+    pub id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub owner_id: Uuid,
     pub created_at: i64,
 }
 #[derive(Serialize)]

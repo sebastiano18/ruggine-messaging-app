@@ -2,19 +2,13 @@ use crate::{auth::AuthUser, error::Result, services::message_service::MessageSer
 use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::models::Message;
 
 #[derive(Deserialize)]
 pub struct PostMessageReq {
     pub content: String,
 }
 
-#[derive(Serialize)]
-pub struct MessageOut {
-    pub id: Uuid,
-    pub author_id: Uuid,
-    pub content: String,
-    pub created_at: i64,
-}
 
 #[derive(Serialize)]
 pub struct CreatedId {
@@ -25,11 +19,11 @@ pub struct CreatedId {
 pub async fn list(
     Path(conversation_id): Path<Uuid>,
     State(st): State<AppState>,
-) -> Result<Json<Vec<MessageOut>>> {
+) -> Result<Json<Vec<Message>>> {
     let rows = MessageService::list(&st.pool, conversation_id, 50).await?;
     let out = rows
         .into_iter()
-        .map(|(id, author_id, content, created_at)| MessageOut { id, author_id, content, created_at })
+        .map(|(id, author_id, author_username, content, created_at)| Message { id, author_id, author_username, content, created_at }).rev()
         .collect();
     Ok(Json(out))
 }

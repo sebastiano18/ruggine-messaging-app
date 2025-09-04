@@ -29,12 +29,12 @@ pub struct Participant {
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
-pub struct Message {
-    pub id: Uuid,
-    pub conversation_id: Uuid,
-    pub author_id: Uuid,
-    pub content: String, // Corrected field name
-    pub created_at: i64,
+pub(crate) struct Message {
+    pub(crate) id: Uuid,
+    pub(crate) author_id: Uuid,
+    pub(crate) author_username: String,
+    pub(crate) content: String,
+    pub(crate) created_at: i64
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
@@ -44,6 +44,7 @@ pub struct Group {
     pub owner_id: Uuid,
     pub created_at: i64,
 }
+
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Invite {
