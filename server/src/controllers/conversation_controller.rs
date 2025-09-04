@@ -8,6 +8,7 @@ use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 use axum::http::StatusCode;
 use uuid::Uuid;
+use crate::services::user_service::UserService;
 
 #[derive(Deserialize)]
 pub struct CreateGroupReq {
@@ -16,7 +17,7 @@ pub struct CreateGroupReq {
 
 #[derive(Deserialize)]
 pub struct CreateDmReq {
-    pub user_id: Uuid,
+    pub user_username: String,
 }
 
 #[derive(Serialize)]
@@ -52,7 +53,8 @@ pub async fn create_dm(
     State(st): State<AppState>,
     Json(req): Json<CreateDmReq>,
 ) -> Result<Json<CreatedId>> {
-    let id = ConversationService::create_dm(&st.pool, user.id, req.user_id).await?;
+    let user2_id = UserService::get_user_id_by_username(&st.pool,&req.user_username).await?;
+    let id = ConversationService::create_dm(&st.pool, user.id, user2_id).await?;
     Ok(Json(CreatedId { id }))
 }
 

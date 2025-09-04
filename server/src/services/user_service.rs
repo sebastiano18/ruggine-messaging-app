@@ -52,4 +52,11 @@ impl UserService {
 
         Ok((token, uid))
     }
+
+    pub async fn get_user_id_by_username(pool: &sqlx::SqlitePool, username: &str) -> Result<Uuid> {
+        let Some((uid, _)) = UserRepo::find_by_name(pool, username).await? else {
+            return Err(AppError::NotFound);
+        };
+        Ok(uid)
+    }
 }

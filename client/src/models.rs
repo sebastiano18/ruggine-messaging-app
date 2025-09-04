@@ -50,10 +50,10 @@ pub struct JoinByTokenReq<'a> {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct MessageDto {
     pub id: Uuid,
-    pub conversation_id: Uuid,
     pub author_id: Uuid,
-    pub content: String, // Corrected field name
-    pub created_at: i64, // Corrected data type
+    pub author_username: String,
+    pub content: String,
+    pub created_at: i64,
 }
 #[derive(Serialize)]
 pub struct SendMsgReq<'a> {

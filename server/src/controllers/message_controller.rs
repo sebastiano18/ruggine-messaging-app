@@ -41,7 +41,13 @@ pub async fn post(
     State(st): State<AppState>,
     Json(req): Json<PostMessageReq>,
 ) -> Result<Json<CreatedId>> {
-    // NB: MessageService::post ora accetta anche &AppState per fare il broadcast WS
-    let message_id = MessageService::post(&st.pool, conversation_id, user.id, &req.content, &st).await?;
+    let message_id = MessageService::post(
+        &st.pool,
+        conversation_id,
+        user.id,
+        user.username,
+        &req.content,
+        &st
+    ).await?;
     Ok(Json(CreatedId { id: message_id }))
 }

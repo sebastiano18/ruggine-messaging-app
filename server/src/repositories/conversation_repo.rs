@@ -6,6 +6,15 @@ use uuid::Uuid;
 pub struct ConversationRepo;
 
 impl ConversationRepo {
+
+    pub async fn get_conversation_kind(pool: &SqlitePool, conversation_id: Uuid) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT kind FROM conversations WHERE id = ?")
+            .bind(conversation_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(row.map(|r| r.get("kind")))
+    }
     /// Crea un nuovo gruppo e restituisce l'ID della conversazione (UUID).
     pub async fn create_group(pool: &SqlitePool, title: &str, owner_id: Uuid) -> Result<Uuid> {
         let conversation_id = Uuid::new_v4();

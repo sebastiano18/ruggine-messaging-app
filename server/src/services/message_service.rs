@@ -1,5 +1,5 @@
+use crate::{error::Result, repositories::message_repo::MessageRepo, state::AppState, ws};
 use serde_json::json;
-use crate::{error::Result, state::AppState, repositories::message_repo::MessageRepo, ws};
 use uuid::Uuid;
 
 pub struct MessageService;
@@ -17,6 +17,7 @@ impl MessageService {
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
         author_id: Uuid,
+        author_username: String,
         content: &str,
         state: &AppState, // broadcast
     ) -> Result<Uuid> {
@@ -27,6 +28,7 @@ impl MessageService {
             "conversation_id": conversation_id,
             "id": msg_id,
             "author_id": author_id,
+            "author_username":  author_username,
             "content": content,
         });
 

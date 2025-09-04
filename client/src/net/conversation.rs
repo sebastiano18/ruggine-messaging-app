@@ -2,7 +2,7 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::state::ConversationOut;
+pub(crate) use crate::state::ConversationOut;
 
 #[derive(Serialize)]
 pub struct GroupReq<'a> {
@@ -11,7 +11,7 @@ pub struct GroupReq<'a> {
 
 #[derive(Serialize)]
 pub struct DmReq {
-    pub user_id: Uuid   // UUID dell’altro utente
+    pub user_username: String   // UUID dell’altro utente
 }
 
 #[derive(Deserialize)]
@@ -51,11 +51,11 @@ pub async fn create_group(base: &str, token: &str, name: &str) -> Result<Uuid> {
 }
 
 // Crea o trova una DM
-pub async fn create_dm(base: &str, token: &str, user_id: Uuid) -> Result<Uuid> {
+pub async fn create_dm(base: &str, token: &str, user_username: String) -> Result<Uuid> {
     let r = Client::new()
         .post(format!("{base}/api/conversations/dm"))
         .bearer_auth(token)
-        .json(&DmReq { user_id })
+        .json(&DmReq { user_username })
         .send()
         .await?
         .error_for_status()?

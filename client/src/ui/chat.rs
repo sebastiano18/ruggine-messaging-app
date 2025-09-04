@@ -49,7 +49,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                 match net::chat::get_messages(&base, &token2, cid2).await {
                     Ok(list) => {
                         let msgs = list.into_iter()
-                            .map(|m| format!("[{}] {}", m.author_id, m.content))
+                            .map(|m| format!("[{}] {}", m.author_username, m.content))
                             .collect();
                         let _ = tx.send(UiEvent::RefreshedMsgs(msgs));
                     }
