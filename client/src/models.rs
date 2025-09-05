@@ -106,30 +106,13 @@ pub enum LoginState {
     LoggedIn,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,Serialize,Deserialize)]
 pub enum Outgoing {
     ChatMessage { cid: Uuid, content: String },
     InviteUser { cid: Uuid, username: String },
     Typing { cid: Uuid, is_typing: bool },
 }
 
-#[derive(Debug, Clone)]
-pub enum Incoming {
-    ChatMessage {
-        id: Uuid,
-        cid: Uuid,
-        author_id: Uuid,
-        author_username: String,
-        content: String,
-        created_at: i64,
-    },
-    System {
-        text: String,
-    },
-    Error {
-        text: String,
-    },
-}
 
 // === UI EVENTS ===
 #[derive(Debug)]
