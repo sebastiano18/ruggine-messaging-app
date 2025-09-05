@@ -2,7 +2,7 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-pub(crate) use crate::state::ConversationOut;
+use crate::models::ConversationDto;
 
 #[derive(Serialize)]
 pub struct GroupReq<'a> {
@@ -65,14 +65,14 @@ pub async fn create_dm(base: &str, token: &str, user_username: String) -> Result
 }
 
 // Ottieni le mie conversazioni
-pub async fn get_conversations(base: &str, token: &str) -> Result<Vec<ConversationOut>> {
+pub async fn get_conversations(base: &str, token: &str) -> Result<Vec<ConversationDto>> {
     let r = Client::new()
         .get(format!("{base}/api/conversations"))
         .bearer_auth(token)
         .send()
         .await?
         .error_for_status()?
-        .json::<Vec<ConversationOut>>()
+        .json::<Vec<ConversationDto>>()
         .await?;
     Ok(r)
 }

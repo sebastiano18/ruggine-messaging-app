@@ -1,0 +1,358 @@
+use crate::models::{Page, UiEvent};
+use crate::state::AppState;
+use crate::net;
+use eframe::egui;
+use egui::{Align, Layout, TextEdit, RichText, Frame, Stroke};
+
+pub struct ConversationsSidebar {
+    search_query: String,
+    dm_username: String,
+}
+
+impl ConversationsSidebar {
+    pub fn new() -> Self {
+        Self {
+            search_query: String::new(),
+            dm_username: String::new(),
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
+        if state.token.is_none() {
+            ui.colored_label(egui::Color32::RED, "Login richiesto per visualizzare le conversazioni");
+            return;
+        }
+
+        let token = state.token.clone().unwrap();
+
+        // Header principale
+        self.show_header(ui, state, &token);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // Sezione ricerca e avvio DM
+        self.show_search_section(ui, state, &token);
+        ui.add_space(8.0);
+
+        // Lista conversazioni filtrate
+        self.show_filtered_conversations(ui, state);
+    }
+
+    fn show_header(&self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("💬 Conversazioni").heading().strong());
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .small_button("🔄")
+                    .on_hover_text("Ricarica conversazioni")
+                    .clicked()
+                {
+                    self.refresh_conversations(state, token);
+                }
+
+                ui.add_space(4.0);
+
+                if ui
+                    .small_button("➕")
+                    .on_hover_text("Gestione gruppi avanzata")
+                    .clicked()
+                {
+                    state.page = Page::GroupManagement;
+                }
+            });
+        });
+    }
+
+    fn show_search_section(&mut self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
+        Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.06))
+            .stroke(Stroke::new(0.5, egui::Color32::from_rgb(240, 140, 80).linear_multiply(0.3)))
+            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .rounding(egui::Rounding::same(8.0))
+            .show(ui, |ui| {
+                // Ricerca conversazioni
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("🔍")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(200, 100, 40)),
+                    );
+                    ui.add_space(6.0);
+
+                    let search_response = TextEdit::singleline(&mut self.search_query)
+                        .hint_text("Cerca nelle conversazioni...")
+                        .desired_width(ui.available_width())
+                        .show(ui);
+
+                    if search_response.response.changed() {
+                        // Il filtro viene applicato automaticamente
+                    }
+                });
+                
+            });
+    }
+
+    fn show_filtered_conversations(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                match &state.conversations {
+                    None => {
+                        self.show_loading_state(ui);
+                    }
+                    Some(conversations) if conversations.is_empty() => {
+                        self.show_empty_state(ui, state);
+                    }
+                    Some(conversations) => {
+                        // Clona le conversazioni filtrate per evitare il conflitto di borrow
+                        let filtered: Vec<crate::models::ConversationDto> = self.filter_conversations(conversations)
+                            .into_iter()
+                            .cloned()
+                            .collect();
+
+                        if filtered.is_empty() && !self.search_query.is_empty() {
+                            self.show_no_search_results(ui);
+                        } else {
+                            // Crea i riferimenti dalle conversazioni clonate
+                            let filtered_refs: Vec<&crate::models::ConversationDto> = filtered.iter().collect();
+                            self.show_conversation_list(ui, state, &filtered_refs);
+                        }
+                    }
+                }
+            });
+    }
+
+    // ✅ Lifetime esplicita legata a `conversations`, non a `self`
+    fn filter_conversations<'a>(
+        &self,
+        conversations: &'a [crate::models::ConversationDto],
+    ) -> Vec<&'a crate::models::ConversationDto> {
+        if self.search_query.is_empty() {
+            return conversations.iter().collect();
+        }
+
+        let query = self.search_query.to_lowercase();
+        conversations
+            .iter()
+            .filter(|conv| {
+                conv.title.to_lowercase().contains(&query)
+                    || match conv.kind.as_str() {
+                    "group" => "gruppo".contains(&query),
+                    "dm" => "privata".contains(&query) || "dm".contains(&query),
+                    _ => false,
+                }
+            })
+            .collect()
+    }
+
+    // ✅ Accetta una slice di riferimenti
+    fn show_conversation_list(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        conversations: &[&crate::models::ConversationDto],
+    ) {
+        for &conv in conversations {
+            self.render_conversation_item(ui, state, conv);
+            ui.add_space(3.0);
+        }
+    }
+
+    fn render_conversation_item(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        conv: &crate::models::ConversationDto,
+    ) {
+        let is_selected = state.cid.map_or(false, |cid| cid == conv.id);
+
+        let response = ui.allocate_response(
+            egui::vec2(ui.available_width(), 56.0),
+            egui::Sense::click(),
+        );
+
+        // Colori basati su stato
+        let (bg_color, text_color, preview_color) = if is_selected {
+            (
+                egui::Color32::from_rgb(200, 100, 40),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(255, 220, 180),
+            )
+        } else if response.hovered() {
+            (
+                egui::Color32::from_rgb(240, 140, 80),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(255, 200, 150),
+            )
+        } else {
+            (
+                egui::Color32::TRANSPARENT,
+                egui::Color32::from_rgb(220, 160, 100),
+                egui::Color32::from_rgb(180, 120, 70),
+            )
+        };
+
+        // Background
+        if bg_color != egui::Color32::TRANSPARENT {
+            ui.painter()
+                .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
+        }
+
+        // Contenuto
+        ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
+            ui.horizontal(|ui| {
+                // Icona tipo conversazione
+                let (icon, icon_color) = match conv.kind.as_str() {
+                    "group" => ("👥", egui::Color32::from_rgb(255, 140, 60)),
+                    "dm" => ("💬", egui::Color32::from_rgb(255, 180, 100)),
+                    _ => ("📄", egui::Color32::from_rgb(200, 120, 80)),
+                };
+
+                ui.label(RichText::new(icon).size(18.0).color(icon_color));
+                ui.add_space(8.0);
+
+                ui.vertical(|ui| {
+                    // Titolo
+                    ui.label(
+                        RichText::new(&conv.title)
+                            .strong()
+                            .size(14.0)
+                            .color(text_color),
+                    );
+
+                    ui.add_space(2.0);
+
+                    // Preview ultimo messaggio
+                    self.show_message_preview(ui, state, conv, preview_color);
+                });
+            });
+        });
+
+        // Gestione click
+        if response.clicked() {
+            let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
+            state.page = Page::Chat;
+        }
+    }
+
+    fn show_message_preview(
+        &self,
+        ui: &mut egui::Ui,
+        state: &AppState,
+        conv: &crate::models::ConversationDto,
+        color: egui::Color32,
+    ) {
+        let preview_text = match state.conversation_messages.get(&conv.id) {
+            Some(messages) => {
+                if let Some(last_msg) = messages.last() {
+                    if last_msg.content.len() > 35 {
+                        format!("{}...", &last_msg.content[..35])
+                    } else {
+                        last_msg.content.clone()
+                    }
+                } else {
+                    "Nessun messaggio".to_string()
+                }
+            }
+            None => "Caricamento...".to_string(),
+        };
+
+        ui.label(RichText::new(preview_text).size(12.0).color(color));
+    }
+
+    fn show_loading_state(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+            ui.spinner();
+            ui.add_space(8.0);
+            ui.label(RichText::new("Caricamento conversazioni...").color(egui::Color32::GRAY));
+        });
+    }
+
+    fn show_empty_state(&self, ui: &mut egui::Ui, state: &mut AppState) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+            ui.label(RichText::new("🔭").size(32.0));
+            ui.add_space(8.0);
+            ui.label(RichText::new("Nessuna conversazione").color(egui::Color32::GRAY));
+            ui.add_space(12.0);
+
+            if ui.button("Vai alla Gestione Gruppi").clicked() {
+                state.page = Page::GroupManagement;
+            }
+        });
+    }
+
+    fn show_no_search_results(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(40.0);
+            ui.label(
+                RichText::new("🔍")
+                    .size(28.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Nessun risultato").color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "Nessuna conversazione trovata per '{}'",
+                    self.search_query
+                ))
+                    .size(12.0)
+                    .color(egui::Color32::GRAY),
+            );
+        });
+    }
+
+    fn start_dm(&mut self, state: &mut AppState, token: &str) {
+        let username = self.dm_username.trim().to_string();
+        if username.is_empty() {
+            return;
+        }
+
+        let base = state.base.clone();
+        let tx = state.ui_tx.clone();
+        let token2 = token.to_string();
+
+        // Pulisci il campo
+        self.dm_username.clear();
+
+        state.rt.spawn(async move {
+            match net::conversation::create_dm(&base, &token2, username).await {
+                Ok(cid) => {
+                    let _ = tx.send(UiEvent::Opened(cid));
+                    let _ = tx.send(UiEvent::Info("Chat privata avviata!".into()));
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::Error(format!(
+                        "Impossibile avviare la chat: {}",
+                        e
+                    )));
+                }
+            }
+        });
+    }
+
+    fn refresh_conversations(&self, state: &mut AppState, token: &str) {
+        let base = state.base.clone();
+        let token2 = token.to_string();
+        let tx = state.ui_tx.clone();
+
+        state.rt.spawn(async move {
+            match crate::net::conversation::get_conversations(&base, &token2).await {
+                Ok(conversations) => {
+                    let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                }
+                Err(e) => {
+                    let _ = tx.send(UiEvent::Error(format!(
+                        "Errore nel caricamento delle conversazioni: {e}"
+                    )));
+                }
+            }
+        });
+    }
+}

@@ -33,6 +33,8 @@ pub struct ConversationOut {
     pub id: Uuid,
     pub kind: String,
     pub title: String,
+    pub owner_id: Uuid,
+    pub created_at: i64,
 }
 
 // Crea un nuovo gruppo
@@ -65,10 +67,12 @@ pub async fn mine(
     State(st): State<AppState>,
 ) -> Result<Json<Vec<ConversationOut>>> {
     let rows = ConversationService::mine(&st.pool, user.id).await?;
-    let conversations = rows.into_iter().map(|(id, kind, title)| ConversationOut {
+    let conversations = rows.into_iter().map(|(id, kind, title, owner_id, created_at)| ConversationOut {
         id,
         kind,
-        title
+        title,
+        owner_id,
+        created_at,
     }).collect();
     Ok(Json(conversations))
 }

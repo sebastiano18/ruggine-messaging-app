@@ -1,6 +1,7 @@
 use eframe::egui::{self, TextEdit};
-use uuid::Uuid;
-use crate::{state::{AppState, UiEvent, LoginState}, net};
+use crate::models::{LoginState, UiEvent};
+use crate::net;
+use crate::state::AppState;
 use crate::style::apply_azure_theme;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {

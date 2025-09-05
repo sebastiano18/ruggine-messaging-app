@@ -1,7 +1,6 @@
 mod app;
 mod state;
 mod models;
-mod ui;
 mod net;
 mod style;
 

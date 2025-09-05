@@ -15,8 +15,8 @@ impl ConversationService {
         ConversationRepo::create_dm(pool, user1_id, user2_id).await
     }
 
-    // Ottieni le conversazioni di un utente
-    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String)>> {
+    // Ottieni le conversazioni di un utente con tutti i campi necessari
+    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
         ConversationRepo::by_user(pool, user_id).await
     }
 

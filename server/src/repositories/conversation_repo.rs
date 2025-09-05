@@ -15,6 +15,7 @@ impl ConversationRepo {
 
         Ok(row.map(|r| r.get("kind")))
     }
+
     /// Crea un nuovo gruppo e restituisce l'ID della conversazione (UUID).
     pub async fn create_group(pool: &SqlitePool, title: &str, owner_id: Uuid) -> Result<Uuid> {
         let conversation_id = Uuid::new_v4();
@@ -119,14 +120,16 @@ impl ConversationRepo {
         Ok(())
     }
 
-    /// Restituisce le conversazioni dell'utente.
-    /// Ritorna: (conversation_id, kind, display_title)
-    pub async fn by_user(pool: &SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String)>> {
+    /// Restituisce le conversazioni dell'utente con tutti i campi necessari.
+    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at)
+    pub async fn by_user(pool: &SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
         let rows = sqlx::query(
             r#"
             SELECT
                 c.id,
                 c.kind,
+                c.owner_id,
+                c.created_at,
                 CASE
                     WHEN c.kind = 'group' THEN c.title
                     WHEN c.kind = 'dm' THEN (
@@ -153,11 +156,15 @@ impl ConversationRepo {
             .map(|r| {
                 let id_str: String = r.get("id");
                 let kind: String = r.get("kind");
+                let owner_id_str: String = r.get("owner_id");
+                let created_at: i64 = r.get("created_at");
                 let title: Option<String> = r.get("display_title");
                 (
                     Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
                     kind,
                     title.unwrap_or_else(|| "Unknown".to_string()),
+                    Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
+                    created_at,
                 )
             })
             .collect())
