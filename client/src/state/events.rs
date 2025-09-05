@@ -10,17 +10,23 @@ impl EventHandler {
                 state.messages.push(MessageDto::system_message(s));
             }
             UiEvent::Error(s) => {
-                state.messages.push(MessageDto::system_message(format!("⚠ {}", s)));
+                state
+                    .messages
+                    .push(MessageDto::system_message(format!("⚠ {}", s)));
                 state.login_state = LoginState::Idle;
                 state.is_loading = false;
             }
             UiEvent::LoginStarted => {
                 state.login_state = LoginState::LoggingIn;
-                state.messages.push(MessageDto::system_message("🔄 Effettuando login...".into()));
+                state
+                    .messages
+                    .push(MessageDto::system_message("🔐 Effettuando login...".into()));
             }
             UiEvent::RegisterStarted => {
                 state.login_state = LoginState::Registering;
-                state.messages.push(MessageDto::system_message("🔄 Registrando utente...".into()));
+                state.messages.push(MessageDto::system_message(
+                    "🔐 Registrando utente...".into(),
+                ));
             }
             UiEvent::Logged(token, user_id) => {
                 Self::handle_login_success(state, token, user_id);
@@ -33,15 +39,22 @@ impl EventHandler {
             }
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
-                state.messages.push(MessageDto::system_message("🟢 WebSocket connesso".into()));
+                state
+                    .messages
+                    .push(MessageDto::system_message("🟢 WebSocket connesso".into()));
             }
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
-                state.messages.push(MessageDto::system_message("🔴 WebSocket disconnesso".into()));
+                state.messages.push(MessageDto::system_message(
+                    "🔴 WebSocket disconnesso".into(),
+                ));
             }
             UiEvent::WsError(error) => {
                 state.ws_status = WsStatus::Disconnected;
-                state.messages.push(MessageDto::system_message(format!("⚠ WebSocket errore: {}", error)));
+                state.messages.push(MessageDto::system_message(format!(
+                    "⚠ WebSocket errore: {}",
+                    error
+                )));
             }
             UiEvent::WsIncoming(msg) => {
                 Self::handle_incoming_message(state, msg);
@@ -50,8 +63,7 @@ impl EventHandler {
                 Self::handle_messages_refreshed(state, list);
             }
             UiEvent::ConversationsLoaded(conversations) => {
-                state.conversations = Some(conversations);
-                state.messages.push(MessageDto::system_message("📋 Conversazioni caricate".into()));
+                Self::handle_conversations_loaded(state, conversations);
             }
             UiEvent::AllMessagesLoaded(messages_map) => {
                 Self::handle_all_messages_loaded(state, messages_map);
@@ -59,20 +71,33 @@ impl EventHandler {
             UiEvent::InitialLoadComplete => {
                 state.is_initial_load_complete = true;
                 state.is_loading = false;
-                state.messages.push(MessageDto::system_message("✅ Tutti i dati caricati!".into()));
+                state.messages.push(MessageDto::system_message(
+                    "✅ Tutti i dati caricati!".into(),
+                ));
             }
             UiEvent::LoadingProgress(progress) => {
-                state.messages.push(MessageDto::system_message(format!("📊 {}", progress)));
+                state
+                    .messages
+                    .push(MessageDto::system_message(format!("📊 {}", progress)));
             }
             UiEvent::InviteCreated(token) => {
                 state.last_created_invite = Some(token);
-                state.messages.push(MessageDto::system_message("🎉 Invito creato con successo".into()));
+                state.messages.push(MessageDto::system_message(
+                    "🎉 Invito creato con successo".into(),
+                ));
             }
             UiEvent::MessageSendFailed(failed_message_id) => {
                 Self::handle_message_send_failed(state, failed_message_id);
             }
             UiEvent::LoggedOut => {
                 Self::handle_logout(state);
+            }
+            UiEvent::ConversationCreated(conversation_id) => {
+                // Inizializza cache vuota per la nuova conversazione
+                state.conversation_messages.insert(conversation_id, vec![]);
+                state.messages.push(MessageDto::system_message(
+                    "🎉 Conversazione creata!".into(),
+                ));
             }
         }
     }
@@ -81,7 +106,9 @@ impl EventHandler {
         state.token = Some(token.clone());
         state.user_id = Some(user_id);
         state.login_state = LoginState::LoggedIn;
-        state.messages.push(MessageDto::system_message("✅ Login effettuato con successo".into()));
+        state.messages.push(MessageDto::system_message(
+            "✅ Login effettuato con successo".into(),
+        ));
         state.page = Page::Conversations;
 
         // Avvia precaricamento completo dopo il login
@@ -97,29 +124,52 @@ impl EventHandler {
         }
         state.page = Page::Chat;
 
-        // Carica messaggi dalla cache invece che dalla rete
+        // Carica messaggi dalla cache
         if let Some(cached_messages) = state.conversation_messages.get(&cid) {
             state.messages = cached_messages.clone();
         } else if state.is_initial_load_complete {
             // Se il caricamento iniziale è completo ma non abbiamo questi messaggi,
             // probabilmente è una conversazione nuova - carica dalla rete
             state.load_single_conversation_messages(cid);
+            state.messages = vec![];
+
+            // Messaggio di benvenuto per nuove conversazioni
+            if let Some(ref conversations) = state.conversations {
+                if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
+                    let welcome_msg = MessageDto::system_message(
+                        format!("Benvenuto in {}! 🎉", conv.title)
+                    );
+                    state.messages.push(welcome_msg);
+                }
+            }
         } else {
-            // Se il caricamento iniziale non è completo, svuota i messaggi
-            state.messages.clear();
+            state.messages = vec![];
         }
     }
 
+    // CORREZIONE PRINCIPALE: Usa conversation_id del messaggio
     fn handle_incoming_message(state: &mut super::core::AppState, msg: MessageDto) {
-        // Aggiungi ai messaggi correnti se siamo nella chat
-        state.messages.push(msg.clone());
+        let message_conversation_id = msg.conversation_id;
 
-        // Aggiungi anche alla cache se abbiamo una conversazione corrente
-        if let Some(cid) = state.cid {
-            state.conversation_messages
-                .entry(cid)
-                .or_insert_with(Vec::new)
-                .push(msg);
+        // Aggiungi SEMPRE alla cache della conversazione corretta (dal conversation_id del messaggio)
+        state
+            .conversation_messages
+            .entry(message_conversation_id)
+            .or_insert_with(Vec::new)
+            .push(msg.clone());
+
+        // Aggiungi ai messaggi UI SOLO se siamo nella conversazione corretta
+        if Some(message_conversation_id) == state.cid {
+            state.messages.push(msg);
+        }
+
+        // Debug per verificare il comportamento
+        if Some(message_conversation_id) != state.cid {
+            // Messaggio per conversazione diversa da quella corrente - normale
+            if let Some(current_cid) = state.cid {
+                println!("Messaggio ricevuto per conversazione {} mentre siamo in {}",
+                         message_conversation_id, current_cid);
+            }
         }
     }
 
@@ -131,7 +181,26 @@ impl EventHandler {
         }
     }
 
-    fn handle_all_messages_loaded(state: &mut super::core::AppState, messages_map: std::collections::HashMap<Uuid, Vec<MessageDto>>) {
+    fn handle_conversations_loaded(state: &mut super::core::AppState, conversations: Vec<ConversationDto>) {
+        let old_count = state.conversations.as_ref().map(|c| c.len()).unwrap_or(0);
+        state.conversations = Some(conversations);
+        let new_count = state.conversations.as_ref().map(|c| c.len()).unwrap_or(0);
+
+        state.messages.push(MessageDto::system_message(
+            format!("📋 {} conversazioni caricate", new_count),
+        ));
+
+        if new_count > old_count {
+            state.messages.push(MessageDto::system_message(
+                "✨ Lista conversazioni aggiornata".into(),
+            ));
+        }
+    }
+
+    fn handle_all_messages_loaded(
+        state: &mut super::core::AppState,
+        messages_map: std::collections::HashMap<Uuid, Vec<MessageDto>>,
+    ) {
         state.conversation_messages = messages_map;
         // Se c'è una conversazione corrente, carica i suoi messaggi
         if let Some(cid) = state.cid {
@@ -142,7 +211,7 @@ impl EventHandler {
     }
 
     fn handle_message_send_failed(state: &mut super::core::AppState, failed_message_id: Uuid) {
-        // Remove the failed optimistic message from both current messages and cache
+        // Rimuovi il messaggio fallito sia dalla chat corrente che dalla cache
         state.messages.retain(|msg| msg.id != failed_message_id);
 
         if let Some(cid) = state.cid {
@@ -165,6 +234,7 @@ impl EventHandler {
         state.conversations = None;
         state.ws_status = WsStatus::Disconnected;
         state.request_ws_reconnect = false;
+        state.request_conversations_refresh = false;
 
         // Pulizia campi inviti
         state.invite_conversation_id.clear();
@@ -175,6 +245,8 @@ impl EventHandler {
         state.is_initial_load_complete = false;
         state.is_loading = false;
 
-        state.messages.push(MessageDto::system_message("👋 Logout effettuato".into()));
+        state
+            .messages
+            .push(MessageDto::system_message("👋 Logout effettuato".into()));
     }
 }

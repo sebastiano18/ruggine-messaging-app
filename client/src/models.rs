@@ -1,8 +1,8 @@
 // In models.rs (client)
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 // === REQUEST/RESPONSE DTOs ===
 #[derive(Serialize)]
@@ -61,6 +61,7 @@ pub struct SendMsgReq<'a> {
 pub struct MessageDto {
     pub id: Uuid,
     pub author_id: Uuid,
+    pub conversation_id: Uuid,
     pub author_username: String,
     pub content: String,
     pub created_at: i64,
@@ -107,10 +108,27 @@ pub enum LoginState {
 
 #[derive(Debug, Clone)]
 pub enum Outgoing {
-    SendMsg(MessageDto),
-    Join { cid: uuid::Uuid },
-    Leave { cid: uuid::Uuid },
-    // aggiungi altre azioni se servono (es. create_invite, typing, ecc.)
+    ChatMessage { cid: Uuid, content: String },
+    InviteUser { cid: Uuid, username: String },
+    Typing { cid: Uuid, is_typing: bool },
+}
+
+#[derive(Debug, Clone)]
+pub enum Incoming {
+    ChatMessage {
+        id: Uuid,
+        cid: Uuid,
+        author_id: Uuid,
+        author_username: String,
+        content: String,
+        created_at: i64,
+    },
+    System {
+        text: String,
+    },
+    Error {
+        text: String,
+    },
 }
 
 // === UI EVENTS ===
@@ -124,7 +142,7 @@ pub enum UiEvent {
     Opened(Uuid),
     WsConnected,
     WsDisconnected,
-    WsControlReady(crate::net::ws::WsControl),
+    WsControlReady(crate::api::ws::WsControl),
     WsError(String),
     WsIncoming(MessageDto),
     RefreshedMsgs(Vec<MessageDto>),
@@ -135,6 +153,7 @@ pub enum UiEvent {
     InitialLoadComplete,
     LoadingProgress(String),
     MessageSendFailed(Uuid),
+    ConversationCreated(Uuid),
 }
 impl MessageDto {
     /// Helper per creare messaggi di sistema
@@ -142,6 +161,7 @@ impl MessageDto {
         Self {
             id: Uuid::new_v4(),
             author_id: Uuid::nil(),
+            conversation_id: Uuid::nil(),
             author_username: "system".to_string(),
             content,
             created_at: chrono::Utc::now().timestamp(),

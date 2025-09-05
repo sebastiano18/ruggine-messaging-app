@@ -66,14 +66,23 @@ pub async fn mine(
     user: AuthUser,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<ConversationOut>>> {
+    println!("Getting conversations for user: {}", user.id);
+
     let rows = ConversationService::mine(&st.pool, user.id).await?;
-    let conversations = rows.into_iter().map(|(id, kind, title, owner_id, created_at)| ConversationOut {
-        id,
-        kind,
-        title,
-        owner_id,
-        created_at,
+
+    println!("Found {} conversations", rows.len());
+
+    let conversations = rows.into_iter().map(|(id, kind, title, owner_id, created_at)| {
+        println!("Processing conversation: id={}, kind={}, title={}", id, kind, title);
+        ConversationOut {
+            id,
+            kind,
+            title,
+            owner_id,
+            created_at,
+        }
     }).collect();
+
     Ok(Json(conversations))
 }
 

@@ -1,5 +1,5 @@
 use crate::models::UiEvent;
-use crate::net;
+use crate::api;
 use crate::state::AppState;
 use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Stroke, TextEdit};
 use tokio::runtime::Handle;
@@ -79,7 +79,7 @@ fn action_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
             egui::Color32::GRAY
         })),
     )
-    .clicked()
+        .clicked()
 }
 
 fn combo_conversations(ui: &mut egui::Ui, s: &mut AppState) {
@@ -175,7 +175,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             // Sezione sistema inviti
             invites_section(ui, s, &token, &rt_handle);
             ui.add_space(12.0);
-            
+
         });
 }
 
@@ -213,11 +213,30 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
                     s.group_name.clear();
 
                     rt.spawn(async move {
-                        match net::conversation::create_group(&base, &token2, &name).await {
+                        match api::conversation::create_group(&base, &token2, &name).await {
                             Ok(cid) => {
-                                let _ = tx.send(UiEvent::Opened(cid));
-                                let _ =
-                                    tx.send(UiEvent::Info("Gruppo creato con successo!".into()));
+                                let _ = tx.send(UiEvent::Info("Gruppo creato! Aggiornamento lista...".into()));
+
+                                // Attendi un momento per permettere al server di processare
+                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                                // Ricarica le conversazioni
+                                match crate::api::conversation::get_conversations(&base, &token2).await {
+                                    Ok(conversations) => {
+                                        // Invia la lista aggiornata
+                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+
+                                        // Prova ad aprire la conversazione
+                                        let _ = tx.send(UiEvent::Opened(cid));
+                                        let _ = tx.send(UiEvent::Info("Gruppo creato con successo!".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Gruppo creato ma errore nel refresh: {}",
+                                            e
+                                        )));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let _ = tx.send(UiEvent::Error(format!(
@@ -275,10 +294,30 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
                     s.dm_user_username_input.clear();
 
                     rt.spawn(async move {
-                        match net::conversation::create_dm(&base, &token2, target_username).await {
+                        match api::conversation::create_dm(&base, &token2, target_username).await {
                             Ok(cid) => {
-                                let _ = tx.send(UiEvent::Opened(cid));
-                                let _ = tx.send(UiEvent::Info("Chat privata avviata!".into()));
+                                let _ = tx.send(UiEvent::Info("Chat creata! Aggiornamento lista...".into()));
+
+                                // Attendi un momento per permettere al server di processare
+                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                                // Ricarica le conversazioni
+                                match crate::api::conversation::get_conversations(&base, &token2).await {
+                                    Ok(conversations) => {
+                                        // Invia la lista aggiornata
+                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+
+                                        // Prova ad aprire la conversazione
+                                        let _ = tx.send(UiEvent::Opened(cid));
+                                        let _ = tx.send(UiEvent::Info("Chat privata avviata!".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Chat creata ma errore nel refresh: {}",
+                                            e
+                                        )));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let _ =
@@ -335,12 +374,32 @@ fn invites_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle
                     let token_input_clone = invite_token.trim().to_owned();
 
                     rt.spawn(async move {
-                        match net::conversation::join_by_token(&base, &token2, &token_input_clone)
+                        match api::conversation::join_by_token(&base, &token2, &token_input_clone)
                             .await
                         {
                             Ok(cid) => {
-                                let _ = tx.send(UiEvent::Opened(cid));
-                                let _ = tx.send(UiEvent::Info("Ti sei unito al gruppo!".into()));
+                                let _ = tx.send(UiEvent::Info("Unito al gruppo! Aggiornamento lista...".into()));
+
+                                // Attendi un momento per permettere al server di processare
+                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                                // Ricarica le conversazioni
+                                match crate::api::conversation::get_conversations(&base, &token2).await {
+                                    Ok(conversations) => {
+                                        // Invia la lista aggiornata
+                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+
+                                        // Prova ad aprire la conversazione
+                                        let _ = tx.send(UiEvent::Opened(cid));
+                                        let _ = tx.send(UiEvent::Info("Ti sei unito al gruppo!".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Unito al gruppo ma errore nel refresh: {}",
+                                            e
+                                        )));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let _ = tx.send(UiEvent::Error(format!("Join fallito: {}", e)));
@@ -402,7 +461,7 @@ fn invites_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle
                     let tx = s.ui_tx.clone();
 
                     rt.spawn(async move {
-                        match net::conversation::create_invite(&base, &token2, conv_uuid).await {
+                        match api::conversation::create_invite(&base, &token2, conv_uuid).await {
                             Ok(invite_token) => {
                                 let _ = tx.send(UiEvent::InviteCreated(invite_token));
                             }
@@ -476,4 +535,3 @@ fn invites_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle
         }
     });
 }
-

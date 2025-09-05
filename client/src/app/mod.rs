@@ -1,4 +1,4 @@
-pub mod ws;
+pub mod ws_manager;
 pub mod sidebar_components;
 pub mod header;
 mod app;

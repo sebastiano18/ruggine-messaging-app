@@ -1,6 +1,6 @@
 use crate::models::{UiEvent, WsStatus};
 use crate::state::AppState;
-use crate::{models::MessageDto, net};
+use crate::{models::MessageDto, api};
 use eframe::egui::{self, Frame, RichText, Stroke, TextEdit};
 use uuid::Uuid;
 
@@ -186,7 +186,7 @@ fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
                         let tx = s.ui_tx.clone();
 
                         s.rt.spawn(async move {
-                            match net::conversation::create_invite(&base, &token2, cid).await {
+                            match api::conversation::create_invite(&base, &token2, cid).await {
                                 Ok(invite_token) => {
                                     let _ = tx.send(UiEvent::InviteCreated(invite_token));
                                 }
@@ -336,10 +336,12 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
     }
     s.input.clear();
 
+    // Messaggio ottimistico (appare subito) - FIX: includi conversation_id
     if let Some(user_id) = s.user_id {
         let optimistic_msg = MessageDto {
             id: Uuid::new_v4(),
             author_id: user_id,
+            conversation_id: cid, // FIX: aggiungi il conversation_id corretto
             author_username: s.username.clone(),
             content: content.clone(),
             created_at: chrono::Utc::now().timestamp(),
@@ -352,18 +354,8 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
         }
     }
 
-    let base = s.base.clone();
-    let token = token.to_string();
-    let tx = s.ui_tx.clone();
-
-    s.rt.spawn(async move {
-        match net::chat::send_message(&base, &token, cid, &content).await {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = tx.send(UiEvent::Error(format!("Invio fallito: {e}")));
-            }
-        }
-    });
+    // Usa WebSocket invece di REST
+    s.send_chat_message_ws(content);
 }
 
 fn format_time(timestamp: i64) -> String {

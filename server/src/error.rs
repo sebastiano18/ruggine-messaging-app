@@ -16,11 +16,14 @@ pub enum AppError {
     NotFound,
     #[error("Bad Request: {0}")]
     BadRequest(String),
+    #[error("Internal Server Error: {0}")]
+    Internal(String),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
 }
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
@@ -28,7 +31,9 @@ impl IntoResponse for AppError {
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::Sqlx(_) | AppError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
     }

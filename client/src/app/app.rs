@@ -1,9 +1,8 @@
 use eframe::egui;
 use crate::app::components;
 
-
 use crate::app::header::HeaderManager;
-use crate::app::ws::WebSocketManager;
+use crate::app::ws_manager::WebSocketManager;
 use crate::app::sidebar::SidebarManager;
 use crate::models::Page;
 use crate::state::AppState;
@@ -87,8 +86,13 @@ impl App {
                 Page::GroupManagement => {
                     components::conversation_management::panel(ui, &mut self.state);
                 },
-                _ => {
-                    // Per altre pagine o stati di fallback
+                Page::Conversations => {
+                    // Se siamo nella pagina Conversations ma non abbiamo una chat selezionata
+                    self.show_welcome_screen(ui);
+                },
+                Page::Auth => {
+                    // Questo non dovrebbe mai accadere se siamo nel main_layout
+                    // ma lo gestiamo per sicurezza
                     self.show_welcome_screen(ui);
                 }
             }
@@ -99,7 +103,7 @@ impl App {
         ui.vertical_centered(|ui| {
             ui.add_space(100.0);
 
-            ui.label(egui::RichText::new("🦀").size(64.0));
+            ui.label(egui::RichText::new("🦀").size(64.0)); // Fix: carattere Unicode corretto
             ui.add_space(16.0);
             ui.heading(egui::RichText::new("Benvenuto in Ruggine Chat").size(24.0));
             ui.add_space(8.0);
@@ -107,12 +111,34 @@ impl App {
 
             ui.add_space(20.0);
 
-            if self.state.conversations.as_ref().map_or(true, |c| c.is_empty()) {
+            // Migliora la logica di rilevamento delle conversazioni vuote
+            let has_conversations = self.state.conversations
+                .as_ref()
+                .map_or(false, |convs| !convs.is_empty());
+
+            if !has_conversations {
                 ui.label("Sembra che tu non abbia ancora conversazioni!");
                 ui.add_space(8.0);
+
                 if ui.button("Crea la tua prima conversazione").clicked() {
                     self.state.page = Page::GroupManagement;
                 }
+            } else {
+                // Se ci sono conversazioni ma nessuna è selezionata
+                if self.state.cid.is_none() {
+                    ui.label("Hai delle conversazioni disponibili!");
+                    ui.add_space(8.0);
+                    ui.label("Selezionane una dalla barra laterale per iniziare a chattare.");
+                }
+            }
+
+            // Stato di caricamento
+            if self.state.is_loading && !self.state.is_initial_load_complete {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Caricamento dati in corso...");
+                });
             }
         });
     }

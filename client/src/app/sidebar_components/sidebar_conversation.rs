@@ -1,8 +1,8 @@
+use crate::api;
 use crate::models::{Page, UiEvent};
 use crate::state::AppState;
-use crate::net;
 use eframe::egui;
-use egui::{Align, Layout, TextEdit, RichText, Frame, Stroke};
+use egui::{Align, Frame, Layout, RichText, Stroke, TextEdit};
 
 pub struct ConversationsSidebar {
     search_query: String,
@@ -19,9 +19,15 @@ impl ConversationsSidebar {
 
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
         if state.token.is_none() {
-            ui.colored_label(egui::Color32::RED, "Login richiesto per visualizzare le conversazioni");
+            ui.colored_label(
+                egui::Color32::RED,
+                "Login richiesto per visualizzare le conversazioni",
+            );
             return;
         }
+
+        // Auto-refresh se necessario
+        self.auto_refresh_if_needed(state);
 
         let token = state.token.clone().unwrap();
 
@@ -30,12 +36,25 @@ impl ConversationsSidebar {
         ui.separator();
         ui.add_space(6.0);
 
-        // Sezione ricerca e avvio DM
+        // Sezione ricerca e avvio DM veloce
         self.show_search_section(ui, state, &token);
         ui.add_space(8.0);
 
         // Lista conversazioni filtrate
         self.show_filtered_conversations(ui, state);
+    }
+
+    fn auto_refresh_if_needed(&self, state: &mut AppState) {
+        // Versione semplificata senza pending conversations
+        if state.request_conversations_refresh {
+            let token = match &state.token {
+                Some(t) => t.clone(),
+                None => return,
+            };
+
+            self.refresh_conversations(state, &token);
+            state.request_conversations_refresh = false;
+        }
     }
 
     fn show_header(&self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
@@ -67,7 +86,10 @@ impl ConversationsSidebar {
     fn show_search_section(&mut self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
         Frame::group(ui.style())
             .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.06))
-            .stroke(Stroke::new(0.5, egui::Color32::from_rgb(240, 140, 80).linear_multiply(0.3)))
+            .stroke(Stroke::new(
+                0.5,
+                egui::Color32::from_rgb(240, 140, 80).linear_multiply(0.3),
+            ))
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
             .rounding(egui::Rounding::same(8.0))
             .show(ui, |ui| {
@@ -89,7 +111,6 @@ impl ConversationsSidebar {
                         // Il filtro viene applicato automaticamente
                     }
                 });
-                
             });
     }
 
@@ -105,8 +126,8 @@ impl ConversationsSidebar {
                         self.show_empty_state(ui, state);
                     }
                     Some(conversations) => {
-                        // Clona le conversazioni filtrate per evitare il conflitto di borrow
-                        let filtered: Vec<crate::models::ConversationDto> = self.filter_conversations(conversations)
+                        let filtered: Vec<crate::models::ConversationDto> = self
+                            .filter_conversations(conversations)
                             .into_iter()
                             .cloned()
                             .collect();
@@ -114,8 +135,8 @@ impl ConversationsSidebar {
                         if filtered.is_empty() && !self.search_query.is_empty() {
                             self.show_no_search_results(ui);
                         } else {
-                            // Crea i riferimenti dalle conversazioni clonate
-                            let filtered_refs: Vec<&crate::models::ConversationDto> = filtered.iter().collect();
+                            let filtered_refs: Vec<&crate::models::ConversationDto> =
+                                filtered.iter().collect();
                             self.show_conversation_list(ui, state, &filtered_refs);
                         }
                     }
@@ -123,7 +144,6 @@ impl ConversationsSidebar {
             });
     }
 
-    // ✅ Lifetime esplicita legata a `conversations`, non a `self`
     fn filter_conversations<'a>(
         &self,
         conversations: &'a [crate::models::ConversationDto],
@@ -146,7 +166,6 @@ impl ConversationsSidebar {
             .collect()
     }
 
-    // ✅ Accetta una slice di riferimenti
     fn show_conversation_list(
         &self,
         ui: &mut egui::Ui,
@@ -167,12 +186,9 @@ impl ConversationsSidebar {
     ) {
         let is_selected = state.cid.map_or(false, |cid| cid == conv.id);
 
-        let response = ui.allocate_response(
-            egui::vec2(ui.available_width(), 56.0),
-            egui::Sense::click(),
-        );
+        let response =
+            ui.allocate_response(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
 
-        // Colori basati su stato
         let (bg_color, text_color, preview_color) = if is_selected {
             (
                 egui::Color32::from_rgb(200, 100, 40),
@@ -193,16 +209,13 @@ impl ConversationsSidebar {
             )
         };
 
-        // Background
         if bg_color != egui::Color32::TRANSPARENT {
             ui.painter()
                 .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
         }
 
-        // Contenuto
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
-                // Icona tipo conversazione
                 let (icon, icon_color) = match conv.kind.as_str() {
                     "group" => ("👥", egui::Color32::from_rgb(255, 140, 60)),
                     "dm" => ("💬", egui::Color32::from_rgb(255, 180, 100)),
@@ -213,7 +226,6 @@ impl ConversationsSidebar {
                 ui.add_space(8.0);
 
                 ui.vertical(|ui| {
-                    // Titolo
                     ui.label(
                         RichText::new(&conv.title)
                             .strong()
@@ -222,14 +234,11 @@ impl ConversationsSidebar {
                     );
 
                     ui.add_space(2.0);
-
-                    // Preview ultimo messaggio
                     self.show_message_preview(ui, state, conv, preview_color);
                 });
             });
         });
 
-        // Gestione click
         if response.clicked() {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;
@@ -308,44 +317,16 @@ impl ConversationsSidebar {
         });
     }
 
-    fn start_dm(&mut self, state: &mut AppState, token: &str) {
-        let username = self.dm_username.trim().to_string();
-        if username.is_empty() {
-            return;
-        }
-
-        let base = state.base.clone();
-        let tx = state.ui_tx.clone();
-        let token2 = token.to_string();
-
-        // Pulisci il campo
-        self.dm_username.clear();
-
-        state.rt.spawn(async move {
-            match net::conversation::create_dm(&base, &token2, username).await {
-                Ok(cid) => {
-                    let _ = tx.send(UiEvent::Opened(cid));
-                    let _ = tx.send(UiEvent::Info("Chat privata avviata!".into()));
-                }
-                Err(e) => {
-                    let _ = tx.send(UiEvent::Error(format!(
-                        "Impossibile avviare la chat: {}",
-                        e
-                    )));
-                }
-            }
-        });
-    }
-
-    fn refresh_conversations(&self, state: &mut AppState, token: &str) {
+    fn refresh_conversations(&self, state: &AppState, token: &str) {
         let base = state.base.clone();
         let token2 = token.to_string();
         let tx = state.ui_tx.clone();
 
         state.rt.spawn(async move {
-            match crate::net::conversation::get_conversations(&base, &token2).await {
+            match crate::api::conversation::get_conversations(&base, &token2).await {
                 Ok(conversations) => {
                     let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                    let _ = tx.send(UiEvent::Info("Conversazioni aggiornate".into()));
                 }
                 Err(e) => {
                     let _ = tx.send(UiEvent::Error(format!(

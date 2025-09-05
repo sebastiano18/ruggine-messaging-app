@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::routing::get;
 use crate::state::AppState;
-use crate::ws::ws_handler;
+use crate::web_socket::ws_handler;
 
 mod user_route;
 mod conversation_route;

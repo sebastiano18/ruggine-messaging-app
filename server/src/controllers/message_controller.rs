@@ -1,18 +1,22 @@
-use crate::{auth::AuthUser, error::Result, services::message_service::MessageService, state::AppState};
-use axum::{extract::{Path, State}, Json};
+use crate::models::Message;
+use crate::{
+    auth::AuthUser, error::Result, services::message_service::MessageService, state::AppState,
+};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::models::Message;
 
 #[derive(Deserialize)]
 pub struct PostMessageReq {
     pub content: String,
 }
 
-
 #[derive(Serialize)]
 pub struct CreatedId {
-    pub id: Uuid
+    pub id: Uuid,
 }
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
@@ -23,7 +27,17 @@ pub async fn list(
     let rows = MessageService::list(&st.pool, conversation_id, 50).await?;
     let out = rows
         .into_iter()
-        .map(|(id, author_id, author_username, content, created_at)| Message { id, author_id, author_username, content, created_at }).rev()
+        .map(
+            |(id, author_id, author_username, content, created_at)| Message {
+                id,
+                author_id,
+                conversation_id,
+                author_username,
+                content,
+                created_at,
+            },
+        )
+        .rev()
         .collect();
     Ok(Json(out))
 }
@@ -41,7 +55,8 @@ pub async fn post(
         user.id,
         user.username,
         &req.content,
-        &st
-    ).await?;
+        &st,
+    )
+    .await?;
     Ok(Json(CreatedId { id: message_id }))
 }

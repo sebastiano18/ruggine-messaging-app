@@ -32,6 +32,7 @@ pub struct Participant {
 pub(crate) struct Message {
     pub(crate) id: Uuid,
     pub(crate) author_id: Uuid,
+    pub(crate) conversation_id: Uuid,
     pub(crate) author_username: String,
     pub(crate) content: String,
     pub(crate) created_at: i64

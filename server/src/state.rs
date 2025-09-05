@@ -1,11 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{RwLock, broadcast};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub jwt_secret: String,
-    pub channels: Arc<RwLock<HashMap<i64, broadcast::Sender<serde_json::Value>>>>,
+    pub channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
 }
 
 impl AppState {

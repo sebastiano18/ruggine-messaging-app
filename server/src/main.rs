@@ -15,7 +15,7 @@ mod repositories;
 mod routers; // contiene build_router
 mod services;
 mod state;
-mod ws;
+mod web_socket;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

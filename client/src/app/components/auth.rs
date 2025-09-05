@@ -1,6 +1,6 @@
 use eframe::egui::{self, TextEdit};
 use crate::models::{LoginState, UiEvent};
-use crate::net;
+use crate::api;
 use crate::state::AppState;
 use crate::style::apply_azure_theme;
 
@@ -23,7 +23,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             let token = tok.clone();
             let tx = s.ui_tx.clone();
             s.rt.spawn(async move {
-                if let Err(e) = net::auth::logout(&base, &token).await {
+                if let Err(e) = api::auth::logout(&base, &token).await {
                     let _ = tx.send(UiEvent::Info(format!("logout note: {e}")));
                 }
                 let _ = tx.send(UiEvent::LoggedOut);
@@ -60,7 +60,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
 
                 s.rt.spawn(async move {
                     println!("DEBUG: Iniziando login per utente: {}", u);
-                    match net::auth::login(&base, &u, &p).await {
+                    match api::auth::login(&base, &u, &p).await {
                         Ok(login_resp) => {
                             println!(
                                 "DEBUG: Login risposta - token: {}, user_id: {}, username: {}",
@@ -90,12 +90,12 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
 
                 s.rt.spawn(async move {
                     println!("DEBUG: Iniziando registrazione per utente: {}", u);
-                    match net::auth::register(&base, &u, &p).await {
+                    match api::auth::register(&base, &u, &p).await {
                         Ok(_) => {
                             let _ = tx.send(UiEvent::Info(
                                 "Registrazione completata, effettuando login...".into()
                             ));
-                            match net::auth::login(&base, &u, &p).await {
+                            match api::auth::login(&base, &u, &p).await {
                                 Ok(login_resp) => {
                                     println!(
                                         "DEBUG: Post-registrazione login - token: {}, user_id: {}",

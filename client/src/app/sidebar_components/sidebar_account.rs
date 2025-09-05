@@ -115,7 +115,7 @@ impl AccountSidebar {
                 let token = token.clone();
                 let tx = state.ui_tx.clone();
                 state.rt.spawn(async move {
-                    if let Err(e) = crate::net::auth::logout(&base, &token).await {
+                    if let Err(e) = crate::api::auth::logout(&base, &token).await {
                         let _ = tx.send(UiEvent::Info(format!("logout note: {e}")));
                     }
                     let _ = tx.send(UiEvent::LoggedOut);

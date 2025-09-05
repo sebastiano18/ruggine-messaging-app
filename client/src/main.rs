@@ -1,7 +1,7 @@
 mod app;
 mod state;
 mod models;
-mod net;
+mod api;
 mod style;
 
 fn main() -> eframe::Result<()> {

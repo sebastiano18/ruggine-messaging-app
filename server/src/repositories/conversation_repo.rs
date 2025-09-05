@@ -125,26 +125,27 @@ impl ConversationRepo {
     pub async fn by_user(pool: &SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
         let rows = sqlx::query(
             r#"
-            SELECT
-                c.id,
-                c.kind,
-                c.owner_id,
-                c.created_at,
-                CASE
-                    WHEN c.kind = 'group' THEN c.title
-                    WHEN c.kind = 'dm' THEN (
-                        SELECT u.username
-                        FROM participants p2
-                        JOIN users u ON p2.user_id = u.id
-                        WHERE p2.conversation_id = c.id AND p2.user_id != ?
-                        LIMIT 1
-                    )
-                END AS display_title
-            FROM conversations c
-            JOIN participants p ON c.id = p.conversation_id
-            WHERE p.user_id = ?
-            ORDER BY c.created_at DESC
-            "#,
+        SELECT
+            c.id,
+            c.kind,
+            CASE
+                WHEN c.kind = 'group' THEN c.title
+                WHEN c.kind = 'dm' THEN (
+                    SELECT u.username
+                    FROM participants p2
+                    JOIN users u ON p2.user_id = u.id
+                    WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                    LIMIT 1
+                )
+                ELSE 'Unknown'
+            END AS display_title,
+            c.owner_id,
+            c.created_at
+        FROM conversations c
+        JOIN participants p ON c.id = p.conversation_id
+        WHERE p.user_id = ?
+        ORDER BY c.created_at DESC
+        "#,
         )
             .bind(user_id.to_string())
             .bind(user_id.to_string())
@@ -156,13 +157,13 @@ impl ConversationRepo {
             .map(|r| {
                 let id_str: String = r.get("id");
                 let kind: String = r.get("kind");
+                let display_title: String = r.get("display_title");
                 let owner_id_str: String = r.get("owner_id");
                 let created_at: i64 = r.get("created_at");
-                let title: Option<String> = r.get("display_title");
                 (
                     Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
                     kind,
-                    title.unwrap_or_else(|| "Unknown".to_string()),
+                    display_title,
                     Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
                     created_at,
                 )
