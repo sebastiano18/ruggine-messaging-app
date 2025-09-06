@@ -14,12 +14,13 @@ pub async fn broadcast_to_conversation(
 ) -> Result<usize> {
     let tx = {
         let mut map = state.channels.write().await;
-        if let Some(tx) = map.get(&conversation_id) { tx.clone() }
-        else {
-            let (tx, _rx) = broadcast::channel::<Value>(1024);
-            map.insert(conversation_id, tx.clone());
-            tx
-        }
+        // Miglioramento: usa entry() per evitare race conditions
+        map.entry(conversation_id)
+            .or_insert_with(|| {
+                let (tx, _rx) = broadcast::channel::<Value>(1024);
+                tx
+            })
+            .clone()
     };
     match tx.send(payload) {
         Ok(n) => { info!("broadcast {} subs for {}", n, conversation_id); Ok(n) }
@@ -43,12 +44,13 @@ pub async fn get_user_conversation_receivers(
     let mut guard = state.channels.write().await;
     for s in conv_ids {
         if let Ok(cid) = Uuid::parse_str(&s) {
-            let tx = if let Some(tx) = guard.get(&cid) { tx.clone() }
-            else {
-                let (tx, _rx) = broadcast::channel::<Value>(1024);
-                guard.insert(cid, tx.clone());
-                tx
-            };
+            // Miglioramento: usa entry() anche qui
+            let tx = guard.entry(cid)
+                .or_insert_with(|| {
+                    let (tx, _rx) = broadcast::channel::<Value>(1024);
+                    tx
+                })
+                .clone();
             res.push(tx.subscribe());
         }
     }
@@ -118,10 +120,22 @@ pub async fn handle_chat_message(
     Ok(())
 }
 
+// Miglioramento: cleanup più completo con logging
 pub async fn cleanup_empty_channels(
     channels: &Arc<RwLock<HashMap<Uuid, broadcast::Sender<Value>>>>,
-    _user_id: Uuid,
+    user_id: Uuid,
 ) {
     let mut map = channels.write().await;
-    map.retain(|_, tx| tx.receiver_count() > 0);
+    let initial_count = map.len();
+    map.retain(|conv_id, tx| {
+        let keep = tx.receiver_count() > 0;
+        if !keep {
+            info!("Removing empty channel for conversation {} (user {} disconnected)", conv_id, user_id);
+        }
+        keep
+    });
+    let removed_count = initial_count - map.len();
+    if removed_count > 0 {
+        info!("Cleaned up {} empty channels for user {}", removed_count, user_id);
+    }
 }

@@ -1,7 +1,8 @@
-use crate::models::{MessageDto, UiEvent, WsStatus, Outgoing};
 use crate::state::AppState;
 use serde_json::Value;
 use uuid::Uuid;
+use tracing::{warn, error, debug};
+use crate::models::{MessageDto, Outgoing, UiEvent, WsStatus};
 
 pub struct WebSocketManager;
 
@@ -16,7 +17,13 @@ impl WebSocketManager {
 
         // 2) se non autenticato, niente WS
         if state.token.is_none() {
-            state.ws_status = WsStatus::Disconnected;
+            if state.ws_status != WsStatus::Disconnected {
+                state.ws_status = WsStatus::Disconnected;
+                // Chiudi connessione esistente se presente
+                if let Some(ctrl) = state.ws_ctrl.take() {
+                    let _ = ctrl.shutdown.send(());
+                }
+            }
             return;
         }
 
@@ -24,6 +31,10 @@ impl WebSocketManager {
         if state.request_ws_reconnect && state.ws_status != WsStatus::Connecting {
             state.request_ws_reconnect = false;
             state.ws_status = WsStatus::Disconnected;
+            // Chiudi connessione esistente
+            if let Some(ctrl) = state.ws_ctrl.take() {
+                let _ = ctrl.shutdown.send(());
+            }
         }
 
         // 4) avvio/tenuta connessione
@@ -37,36 +48,39 @@ impl WebSocketManager {
         // Drena la coda UI -> rete
         while let Ok(outgoing) = state.ui_to_net_rx.try_recv() {
             if let Some(ref ws_ctrl) = state.ws_ctrl {
-                // ❗ Mantengo l'encoding MANUALE come avevi (conversation_id, ecc.)
-                // così siamo compatibili con il server anche se Outgoing ha campi diversi lato client.
+                // Serializza con conversione field names compatibili con server
                 let json_msg = match outgoing {
                     Outgoing::ChatMessage { cid, content } => {
                         serde_json::json!({
                             "type": "chat_message",
-                            "conversation_id": cid,
+                            "cid": cid,  // Usa "cid" per compatibilità server
                             "content": content
                         }).to_string()
                     }
                     Outgoing::InviteUser { cid, username } => {
                         serde_json::json!({
                             "type": "invite_user",
-                            "conversation_id": cid,
+                            "cid": cid,
                             "username": username
                         }).to_string()
                     }
                     Outgoing::Typing { cid, is_typing } => {
                         serde_json::json!({
                             "type": "typing",
-                            "conversation_id": cid,
+                            "cid": cid,
                             "is_typing": is_typing
                         }).to_string()
                     }
                 };
 
+                debug!("Sending WebSocket message: {}", json_msg);
+
                 if let Err(_) = ws_ctrl.outgoing_tx.send(json_msg) {
-                    // canale WS chiuso
+                    warn!("WebSocket channel closed, marking as disconnected");
                     let _ = state.ui_tx.send(UiEvent::WsDisconnected);
                 }
+            } else {
+                warn!("Attempted to send message but WebSocket not connected");
             }
         }
     }
@@ -88,7 +102,7 @@ impl WebSocketManager {
                     let _ = tx.send(UiEvent::WsConnected);
                     let tx_reader = tx.clone();
 
-                    // handler bidirezionale: per ogni messaggio testo in ingresso chiama il parser tipizzato
+                    // Handler bidirezionale con gestione errori migliorata
                     let ctrl = crate::api::ws::spawn_bidirectional_handler(ws, move |msg| {
                         Self::handle_websocket_message(&tx_reader, msg);
                     });
@@ -102,33 +116,105 @@ impl WebSocketManager {
         });
     }
 
+    // CORREZIONE PRINCIPALE: parsing robusto e gestione di tutti i tipi di messaggio
     fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, msg: String) {
-        // 1) prova parse diretto nel DTO che manda il server
-        if let Ok(dto) = serde_json::from_str::<MessageDto>(&msg) {
-            let _ = tx.send(UiEvent::WsIncoming(dto));
-            return;
-        }
+        debug!("Received WebSocket message: {}", msg);
 
-        // 2) fallback: accetta sia "cid" sia "conversation_id"
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg) {
-            if let (Some(content), Some(conv)) =
-                (v.get("content").and_then(|s| s.as_str()),
-                 v.get("conversation_id").or_else(|| v.get("cid")).and_then(|s| s.as_str()))
-            {
-                let dto = MessageDto {
-                    id: v.get("id").and_then(|s| s.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()).unwrap_or_else(uuid::Uuid::new_v4),
-                    author_id: v.get("author_id").and_then(|s| s.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()).unwrap_or(uuid::Uuid::nil()),
-                    author_username: v.get("author_username").and_then(|s| s.as_str()).unwrap_or("unknown").to_string(),
-                    conversation_id: uuid::Uuid::parse_str(conv).unwrap_or(uuid::Uuid::nil()),
-                    content: content.to_string(),
-                    created_at: v.get("created_at").and_then(|n| n.as_i64()).unwrap_or(chrono::Utc::now().timestamp()),
-                };
-                let _ = tx.send(UiEvent::WsIncoming(dto));
+        // Prima prova a parsare come JSON generale
+        let parsed_value: Value = match serde_json::from_str(&msg) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to parse WebSocket message as JSON: {} - Message: {}", e, msg);
+                let _ = tx.send(UiEvent::Error("Messaggio WebSocket malformato".into()));
                 return;
             }
-        }
+        };
 
-        let _ = tx.send(UiEvent::Error("WS: payload non riconosciuto".into()));
+        let msg_type = parsed_value.get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown");
+
+        match msg_type {
+            "chat_message" => {
+                Self::handle_chat_message(tx, &parsed_value);
+            }
+            "typing" => {
+                // Gestisci indicatori di scrittura se necessario
+                debug!("Received typing indicator: {:?}", parsed_value);
+            }
+            "error" => {
+                let error_msg = parsed_value.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Errore WebSocket sconosciuto");
+                let _ = tx.send(UiEvent::Error(format!("Server: {}", error_msg)));
+            }
+            "heartbeat_ack" | "server_heartbeat" => {
+                // Heartbeat dal server, nessuna azione necessaria
+                debug!("Received heartbeat from server");
+            }
+            "system" => {
+                let system_msg = parsed_value.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Messaggio di sistema");
+                let _ = tx.send(UiEvent::Info(format!("Sistema: {}", system_msg)));
+            }
+            _ => {
+                // Fallback: prova a interpretare come messaggio di chat
+                Self::handle_chat_message(tx, &parsed_value);
+            }
+        }
     }
 
+    fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        // Estrai campi del messaggio con fallback robusti
+        let id = value.get("id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or_else(Uuid::new_v4);
+
+        let author_id = value.get("author_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .unwrap_or(Uuid::nil());
+
+        let author_username = value.get("author_username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Supporta sia "cid" che "conversation_id"
+        let conversation_id = value.get("cid")
+            .or_else(|| value.get("conversation_id"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
+        let content = value.get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let created_at = value.get("created_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        // Valida che abbiamo i campi essenziali
+        match (conversation_id, content) {
+            (Some(conv_id), Some(content)) => {
+                let dto = MessageDto {
+                    id,
+                    author_id,
+                    author_username,
+                    conversation_id: conv_id,
+                    content,
+                    created_at,
+                };
+
+                debug!("Parsed message DTO: {:?}", dto);
+                let _ = tx.send(UiEvent::WsIncoming(dto));
+            }
+            _ => {
+                warn!("Incomplete message data in WebSocket payload: {:?}", value);
+                let _ = tx.send(UiEvent::Error("Messaggio WebSocket incompleto".into()));
+            }
+        }
+    }
 }

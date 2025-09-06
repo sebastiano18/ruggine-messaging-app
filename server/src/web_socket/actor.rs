@@ -1,12 +1,14 @@
 use axum::extract::ws::{Message, WebSocket};
-use futures::{SinkExt, StreamExt}; // StreamExt non serve in questo file
+use futures::{SinkExt, StreamExt};
 use tokio::{
     select,
     sync::{mpsc, watch},
     task::JoinHandle,
+    time::{interval, Duration},
 };
 use tracing::info;
 use uuid::Uuid;
+use serde_json::json;
 
 use crate::{state::AppState, error::Result};
 use super::{reader::spawn_reader, recv_merge::spawn_receiver, helpers::cleanup_empty_channels};
@@ -25,7 +27,7 @@ impl ConnectionActor {
     pub async fn start(socket: WebSocket, state: AppState, user_id: Uuid, username: String) -> Result<()> {
         let (mut ws_tx, ws_rx) = socket.split();
 
-        // Coordinamento shutdown + coda bounded verso l’unico writer
+        // Coordinamento shutdown + coda bounded verso l'unico writer
         let (stop_tx, stop_rx) = watch::channel(false);
         let (out_tx, mut out_rx) = mpsc::channel::<OutboundMsg>(1024);
 
@@ -34,6 +36,9 @@ impl ConnectionActor {
 
         // Writer: unico proprietario di ws_tx
         let mut writer: JoinHandle<()> = tokio::spawn(async move {
+            // Miglioramento: heartbeat timer
+            let mut heartbeat_interval = interval(Duration::from_secs(30));
+
             loop {
                 select! {
                     _ = stop_rx_writer.changed() => {
@@ -50,6 +55,18 @@ impl ConnectionActor {
                         };
                         if ws_tx.send(to_send).await.is_err() {
                             break;
+                        }
+                    }
+                    // Miglioramento: heartbeat automatico dal server
+                    _ = heartbeat_interval.tick() => {
+                        let heartbeat = json!({
+                            "type": "server_heartbeat",
+                            "timestamp": chrono::Utc::now().timestamp()
+                        });
+                        if let Ok(txt) = serde_json::to_string(&heartbeat) {
+                            if ws_tx.send(Message::Text(txt)).await.is_err() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -95,7 +112,9 @@ impl ConnectionActor {
             }
         }
 
+        // Miglioramento: cleanup più completo
         cleanup_empty_channels(&state.channels, user_id).await;
+        info!("Connection fully closed for user {}", user_id);
         Ok(())
     }
 }

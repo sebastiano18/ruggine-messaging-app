@@ -34,3 +34,4 @@ time = { version = "0.3", features = ["formatting"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 chrono = "0.4.41"
 tracing = "0.1.41"
+rand = "0.8.5"
