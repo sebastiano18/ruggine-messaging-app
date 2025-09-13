@@ -1,17 +1,17 @@
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::{
     select,
     sync::{mpsc, watch},
     task::JoinHandle,
-    time::{interval, Duration},
+    time::{Duration, interval, timeout},
 };
-use tracing::info;
+use tracing::{error, info, warn};
 use uuid::Uuid;
-use serde_json::json;
 
-use crate::{state::AppState, error::Result};
-use super::{reader::spawn_reader, recv_merge::spawn_receiver, helpers::cleanup_empty_channels};
+use super::{helpers::cleanup_empty_channels, reader::spawn_reader, recv_merge::spawn_receiver};
+use crate::{error::Result, state::AppState};
 
 #[derive(Debug)]
 pub enum OutboundMsg {
@@ -24,7 +24,12 @@ pub enum OutboundMsg {
 pub struct ConnectionActor;
 
 impl ConnectionActor {
-    pub async fn start(socket: WebSocket, state: AppState, user_id: Uuid, username: String) -> Result<()> {
+    pub async fn start(
+        socket: WebSocket,
+        state: AppState,
+        user_id: Uuid,
+        username: String,
+    ) -> Result<()> {
         let (mut ws_tx, ws_rx) = socket.split();
 
         // Coordinamento shutdown + coda bounded verso l'unico writer
@@ -34,54 +39,128 @@ impl ConnectionActor {
         // Clone dedicato del receiver per il writer
         let mut stop_rx_writer = stop_rx.clone();
 
-        // Writer: unico proprietario di ws_tx
+        // Writer: unico proprietario di ws_tx con gestione degli errori migliorata
         let mut writer: JoinHandle<()> = tokio::spawn(async move {
-            // Miglioramento: heartbeat timer
-            let mut heartbeat_interval = interval(Duration::from_secs(30));
+            // Heartbeat timer con jitter per evitare thundering herd
+            let heartbeat_base_interval = Duration::from_secs(30);
+            let jitter = Duration::from_millis(fastrand::u64(0..5000)); // 0-5s di jitter
+            let mut heartbeat_interval = interval(heartbeat_base_interval + jitter);
+
+            let mut consecutive_failures = 0u32;
+            const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+            info!("Writer task started for user {}", user_id);
 
             loop {
                 select! {
                     _ = stop_rx_writer.changed() => {
-                        let _ = ws_tx.send(Message::Close(None)).await;
+                        info!("Writer received stop signal for user {}", user_id);
+                        // Graceful close con timeout
+                        let close_result = timeout(
+                            Duration::from_secs(5),
+                            ws_tx.send(Message::Close(None))
+                        ).await;
+
+                        if close_result.is_err() {
+                            warn!("Close message timeout for user {}", user_id);
+                        }
                         break;
                     }
                     maybe_msg = out_rx.recv() => {
-                        let Some(msg) = maybe_msg else { break; };
+                        let Some(msg) = maybe_msg else {
+                            info!("Output channel closed for user {}", user_id);
+                            break;
+                        };
+
                         let to_send = match msg {
                             OutboundMsg::Text(s)   => Message::Text(s),
                             OutboundMsg::Binary(b) => Message::Binary(b),
                             OutboundMsg::Pong(b)   => Message::Pong(b),
                             OutboundMsg::Close(f)  => Message::Close(f),
                         };
-                        if ws_tx.send(to_send).await.is_err() {
-                            break;
+
+                        // Send con timeout per evitare blocchi
+                        let send_result = timeout(
+                            Duration::from_secs(10),
+                            ws_tx.send(to_send)
+                        ).await;
+
+                        match send_result {
+                            Ok(Ok(_)) => {
+                                consecutive_failures = 0; // Reset counter su successo
+                            }
+                            Ok(Err(e)) => {
+                                consecutive_failures += 1;
+                                warn!("WebSocket send error for user {} (failure #{}: {})",
+                                     user_id, consecutive_failures, e);
+
+                                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                    error!("Too many consecutive failures for user {}, closing connection", user_id);
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                consecutive_failures += 1;
+                                warn!("WebSocket send timeout for user {} (failure #{})",
+                                     user_id, consecutive_failures);
+
+                                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                    error!("Too many consecutive timeouts for user {}, closing connection", user_id);
+                                    break;
+                                }
+                            }
                         }
                     }
-                    // Miglioramento: heartbeat automatico dal server
                     _ = heartbeat_interval.tick() => {
                         let heartbeat = json!({
                             "type": "server_heartbeat",
-                            "timestamp": chrono::Utc::now().timestamp()
+                            "timestamp": chrono::Utc::now().timestamp(),
+                            "user_id": user_id
                         });
+
                         if let Ok(txt) = serde_json::to_string(&heartbeat) {
-                            if ws_tx.send(Message::Text(txt)).await.is_err() {
-                                break;
+                            let send_result = timeout(
+                                Duration::from_secs(5),
+                                ws_tx.send(Message::Text(txt))
+                            ).await;
+
+                            if send_result.is_err() {
+                                warn!("Heartbeat send failed/timeout for user {}", user_id);
+                                consecutive_failures += 1;
+
+                                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                    error!("Heartbeat failures exceeded limit for user {}", user_id);
+                                    break;
+                                }
+                            } else {
+                                consecutive_failures = 0;
                             }
                         }
                     }
                 }
             }
-            info!("writer end for {}", user_id);
+            info!("Writer task ended for user {}", user_id);
         });
 
         // Receiver: merge dei broadcast delle conversazioni (server -> client)
-        let mut recv_task = spawn_receiver(
+        let recv_task_result = spawn_receiver(
             state.clone(),
             user_id,
             out_tx.clone(),
             stop_tx.clone(),
             stop_rx.clone(),
-        ).await?;
+        )
+        .await;
+
+        let mut recv_task = match recv_task_result {
+            Ok(task) => task,
+            Err(e) => {
+                error!("Failed to spawn receiver for user {}: {}", user_id, e);
+                let _ = stop_tx.send(true);
+                writer.abort();
+                return Err(e);
+            }
+        };
 
         // Reader: input client -> valida/salva/broadcast -> risposte via out_tx
         let mut reader_task = spawn_reader(
@@ -94,27 +173,51 @@ impl ConnectionActor {
             stop_rx.clone(),
         );
 
-        // Orchestrazione (nota: &mut su JoinHandle)
-        select! {
-            _ = &mut reader_task => {
+        // Orchestrazione con gestione migliorata degli errori
+        let connection_result = select! {
+            reader_result = &mut reader_task => {
+                info!("Reader task completed for user {}", user_id);
                 let _ = stop_tx.send(true);
                 recv_task.abort();
                 writer.abort();
+                reader_result
             }
-            _ = &mut recv_task => {
+            recv_result = &mut recv_task => {
+                info!("Receiver task completed for user {}", user_id);
                 let _ = stop_tx.send(true);
                 reader_task.abort();
                 writer.abort();
+                recv_result
             }
-            _ = &mut writer => {
+            writer_result = &mut writer => {
+                info!("Writer task completed for user {}", user_id);
                 reader_task.abort();
                 recv_task.abort();
+                writer_result
             }
+        };
+
+        // Cleanup finale con timeout
+        let cleanup_future = cleanup_empty_channels(&state, user_id);
+        if timeout(Duration::from_secs(5), cleanup_future)
+            .await
+            .is_err()
+        {
+            warn!("Cleanup timeout for user {}", user_id);
         }
 
-        // Miglioramento: cleanup più completo
-        cleanup_empty_channels(&state.channels, user_id).await;
-        info!("Connection fully closed for user {}", user_id);
+        // Log delle statistiche finali
+        let (total_channels, total_receivers) = state.get_channel_stats().await;
+        info!(
+            "Connection fully closed for user {} (system: {} channels, {} receivers)",
+            user_id, total_channels, total_receivers
+        );
+
+        // Propaga eventuali errori dai task
+        if let Err(e) = connection_result {
+            warn!("Connection ended with error for user {}: {:?}", user_id, e);
+        }
+
         Ok(())
     }
 }

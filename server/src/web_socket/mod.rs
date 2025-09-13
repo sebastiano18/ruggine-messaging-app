@@ -5,20 +5,20 @@ use axum::{
 };
 use uuid::Uuid;
 
-use crate::{auth::AuthUser, state::AppState, error::Result};
 use self::actor::ConnectionActor;
+use crate::{auth::AuthUser, error::Result, state::AppState};
 
 pub mod actor;
+pub mod helpers;
 pub mod reader;
 pub mod recv_merge;
-pub mod helpers;
 
 pub async fn ws_handler(
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
     user: AuthUser,
 ) -> impl IntoResponse {
-    let uid = user.id;           // se la tua struct si chiama user_id, cambia qui
+    let uid = user.id;
     let uname = user.username;
     ws.on_upgrade(move |socket| async move {
         let _ = ws_entrypoint(socket, state, uid, uname).await;

@@ -139,18 +139,23 @@ impl EventHandler {
         }
     }
 
+    // CORREZIONE PRINCIPALE: gestione atomica e robusta dei messaggi in arrivo
     fn handle_incoming_message(state: &mut super::core::AppState, msg: MessageDto) {
         let message_conversation_id = msg.conversation_id;
 
-        // Validazione: ignora messaggi senza conversation_id valido
+        // Validazione rigorosa del messaggio
         if message_conversation_id == Uuid::nil() {
             warn!("Received message with nil conversation_id, ignoring: {:?}", msg);
             return;
         }
 
-        // Validazione: ignora messaggi vuoti
         if msg.content.trim().is_empty() {
             warn!("Received message with empty content, ignoring: {:?}", msg);
+            return;
+        }
+
+        if msg.author_id == Uuid::nil() {
+            warn!("Received message with nil author_id, ignoring: {:?}", msg);
             return;
         }
 
@@ -159,34 +164,15 @@ impl EventHandler {
                msg.author_username, 
                message_conversation_id);
 
-        // Aggiungi SEMPRE alla cache della conversazione corretta
-        let conversation_cache = state
-            .conversation_messages
-            .entry(message_conversation_id)
-            .or_insert_with(Vec::new);
-
-        // Evita duplicati basati su ID messaggio
-        if conversation_cache.iter().any(|existing| existing.id == msg.id) {
-            debug!("Duplicate message ignored: {}", msg.id);
+        // Aggiornamento atomico della cache
+        if !Self::update_message_cache(state, &msg) {
+            debug!("Message already exists in cache, skipping: {}", msg.id);
             return;
         }
 
-        // Inserisci in ordine cronologico nella cache
-        let insert_pos = conversation_cache
-            .binary_search_by_key(&msg.created_at, |m| m.created_at)
-            .unwrap_or_else(|pos| pos);
-        conversation_cache.insert(insert_pos, msg.clone());
-
-        // Aggiungi ai messaggi UI SOLO se siamo nella conversazione corretta
+        // Aggiornamento UI solo se siamo nella conversazione corretta
         if Some(message_conversation_id) == state.cid {
-            // Inserisci in ordine cronologico anche nell'UI
-            let ui_insert_pos = state.messages
-                .binary_search_by_key(&msg.created_at, |m| m.created_at)
-                .unwrap_or_else(|pos| pos);
-            state.messages.insert(ui_insert_pos, msg.clone());
-
-            debug!("Message added to current conversation UI: {} characters from {}", 
-                   msg.content.len(), msg.author_username);
+            Self::update_ui_messages(state, msg);
         } else {
             debug!("Message cached for different conversation: {} -> {} (current: {:?})",
                    msg.author_username, message_conversation_id, state.cid);
@@ -194,16 +180,25 @@ impl EventHandler {
     }
 
     fn handle_messages_refreshed(state: &mut super::core::AppState, mut list: Vec<MessageDto>) {
+        // Validazione e pulizia della lista
+        list.retain(|msg| {
+            msg.conversation_id != Uuid::nil() &&
+                !msg.content.trim().is_empty() &&
+                msg.author_id != Uuid::nil()
+        });
+
         // Ordina per timestamp
         list.sort_by_key(|m| m.created_at);
+
+        debug!("Refreshing messages: {} valid messages", list.len());
 
         // Aggiorna UI
         state.messages = list.clone();
 
         // Aggiorna cache se abbiamo una conversazione corrente
         if let Some(cid) = state.cid {
-            state.conversation_messages.insert(cid, list.clone());
-            debug!("Refreshed {} messages for conversation {}", list.len(), cid);
+            state.conversation_messages.insert(cid, list);
+            debug!("Refreshed {} messages for conversation {}", state.messages.len(), cid);
         }
     }
 
@@ -228,6 +223,7 @@ impl EventHandler {
                 state.conv_title.clear();
                 state.messages.clear();
                 state.page = Page::Conversations;
+                Self::add_system_message(state, "⚠ La conversazione corrente non esiste più".into());
             }
         }
 
@@ -243,7 +239,23 @@ impl EventHandler {
         info!("Loaded {} total messages across {} conversations", 
               total_messages, messages_map.len());
 
-        state.conversation_messages = messages_map;
+        // Validazione e pulizia dei messaggi
+        let mut cleaned_map = HashMap::new();
+        for (conv_id, messages) in messages_map {
+            let valid_messages: Vec<_> = messages.into_iter()
+                .filter(|msg| {
+                    msg.conversation_id != Uuid::nil() &&
+                        !msg.content.trim().is_empty() &&
+                        msg.author_id != Uuid::nil()
+                })
+                .collect();
+
+            if !valid_messages.is_empty() {
+                cleaned_map.insert(conv_id, valid_messages);
+            }
+        }
+
+        state.conversation_messages = cleaned_map;
 
         // Se c'è una conversazione corrente, carica i suoi messaggi nell'UI
         if let Some(cid) = state.cid {
@@ -258,22 +270,24 @@ impl EventHandler {
     fn handle_message_send_failed(state: &mut super::core::AppState, failed_message_id: Uuid) {
         warn!("Message send failed: {}", failed_message_id);
 
+        let mut ui_removed = 0;
+        let mut cache_removed = 0;
+
         // Rimuovi il messaggio fallito dalla UI
-        let ui_removed = state.messages.len();
+        let old_ui_len = state.messages.len();
         state.messages.retain(|msg| msg.id != failed_message_id);
-        let ui_removed = ui_removed - state.messages.len();
+        ui_removed = old_ui_len - state.messages.len();
 
         // Rimuovi dalla cache
         if let Some(cid) = state.cid {
             if let Some(messages) = state.conversation_messages.get_mut(&cid) {
-                let cache_removed = messages.len();
+                let old_cache_len = messages.len();
                 messages.retain(|msg| msg.id != failed_message_id);
-                let cache_removed = cache_removed - messages.len();
-
-                debug!("Removed failed message - UI: {}, Cache: {}", ui_removed, cache_removed);
+                cache_removed = old_cache_len - messages.len();
             }
         }
 
+        debug!("Removed failed message - UI: {}, Cache: {}", ui_removed, cache_removed);
         Self::add_system_message(state, "❌ Invio messaggio fallito".into());
     }
 
@@ -327,11 +341,79 @@ impl EventHandler {
         state.messages.push(MessageDto::system_message("👋 Logout effettuato".into()));
     }
 
-    // === HELPER METHODS ===
+    // === HELPER METHODS MIGLIORATI ===
 
     fn add_system_message(state: &mut super::core::AppState, content: String) {
         let msg = MessageDto::system_message(content);
         state.messages.push(msg);
+
+        // Limita il numero di messaggi di sistema per evitare overflow
+        let system_message_count = state.messages
+            .iter()
+            .filter(|m| m.author_id == Uuid::nil())
+            .count();
+
+        if system_message_count > 50 {
+            // Rimuovi i messaggi di sistema più vecchi
+            state.messages.retain(|m| m.author_id != Uuid::nil());
+            // Mantieni solo gli ultimi 20 messaggi di sistema
+            let recent_system: Vec<_> = state.messages
+                .iter()
+                .rev()
+                .filter(|m| m.author_id == Uuid::nil())
+                .take(20)
+                .cloned()
+                .collect();
+
+            state.messages.retain(|m| m.author_id != Uuid::nil());
+            state.messages.extend(recent_system);
+            state.messages.sort_by_key(|m| m.created_at);
+        }
+    }
+
+    /// Aggiorna la cache dei messaggi in modo atomico
+    /// Ritorna true se il messaggio è stato aggiunto, false se già esisteva
+    fn update_message_cache(state: &mut super::core::AppState, msg: &MessageDto) -> bool {
+        let conversation_cache = state
+            .conversation_messages
+            .entry(msg.conversation_id)
+            .or_insert_with(Vec::new);
+
+        // Evita duplicati basati su ID messaggio
+        if conversation_cache.iter().any(|existing| existing.id == msg.id) {
+            return false;
+        }
+
+        // Inserisci in ordine cronologico nella cache
+        let insert_pos = conversation_cache
+            .binary_search_by_key(&msg.created_at, |m| m.created_at)
+            .unwrap_or_else(|pos| pos);
+
+        conversation_cache.insert(insert_pos, msg.clone());
+
+        debug!("Message added to cache for conversation {}: {} chars from {}", 
+               msg.conversation_id, msg.content.len(), msg.author_username);
+
+        true
+    }
+
+    /// Aggiorna i messaggi dell'UI in modo sicuro
+    fn update_ui_messages(state: &mut super::core::AppState, msg: MessageDto) {
+        // Evita duplicati nell'UI
+        if state.messages.iter().any(|existing| existing.id == msg.id) {
+            debug!("Message already exists in UI, skipping: {}", msg.id);
+            return;
+        }
+
+        // Inserisci in ordine cronologico nell'UI
+        let ui_insert_pos = state.messages
+            .binary_search_by_key(&msg.created_at, |m| m.created_at)
+            .unwrap_or_else(|pos| pos);
+
+        state.messages.insert(ui_insert_pos, msg.clone());
+
+        debug!("Message added to current conversation UI: {} characters from {}", 
+               msg.content.len(), msg.author_username);
     }
 
     pub fn sync_ui_with_cache(state: &mut super::core::AppState) {
@@ -394,26 +476,19 @@ impl EventHandler {
         conversation_id: Uuid,
         message: MessageDto
     ) {
-        // Aggiungi alla cache
-        let conversation_cache = state
-            .conversation_messages
-            .entry(conversation_id)
-            .or_insert_with(Vec::new);
-
-        if !conversation_cache.iter().any(|existing| existing.id == message.id) {
-            let insert_pos = conversation_cache
-                .binary_search_by_key(&message.created_at, |m| m.created_at)
-                .unwrap_or_else(|pos| pos);
-            conversation_cache.insert(insert_pos, message.clone());
+        // Validazione del messaggio
+        if conversation_id == Uuid::nil() ||
+            message.content.trim().is_empty() ||
+            message.author_id == Uuid::nil() {
+            warn!("Invalid message data provided to add_message_to_conversation");
+            return;
         }
 
-        // Aggiungi all'UI se è la conversazione corrente
-        if Some(conversation_id) == state.cid {
-            if !state.messages.iter().any(|existing| existing.id == message.id) {
-                let ui_insert_pos = state.messages
-                    .binary_search_by_key(&message.created_at, |m| m.created_at)
-                    .unwrap_or_else(|pos| pos);
-                state.messages.insert(ui_insert_pos, message);
+        // Aggiorna cache
+        if Self::update_message_cache(state, &message) {
+            // Aggiorna UI se è la conversazione corrente
+            if Some(conversation_id) == state.cid {
+                Self::update_ui_messages(state, message);
             }
         }
     }
@@ -429,6 +504,45 @@ impl EventHandler {
         state.conversation_messages.remove(&conversation_id);
         if Some(conversation_id) == state.cid {
             state.messages.clear();
+            Self::add_system_message(state, "Cache conversazione pulita".into());
         }
+        info!("Cleared cache for conversation {}", conversation_id);
+    }
+
+    /// Verifica l'integrità della cache e dell'UI
+    pub fn verify_data_integrity(state: &super::core::AppState) -> Vec<String> {
+        let mut issues = Vec::new();
+
+        // Verifica messaggi UI
+        for msg in &state.messages {
+            if msg.conversation_id == Uuid::nil() && msg.author_id != Uuid::nil() {
+                issues.push(format!("UI message {} has nil conversation_id", msg.id));
+            }
+            if msg.content.trim().is_empty() {
+                issues.push(format!("UI message {} has empty content", msg.id));
+            }
+        }
+
+        // Verifica cache conversazioni
+        for (conv_id, messages) in &state.conversation_messages {
+            if *conv_id == Uuid::nil() {
+                issues.push("Cache contains conversation with nil ID".into());
+            }
+
+            for msg in messages {
+                if msg.conversation_id != *conv_id && msg.author_id != Uuid::nil() {
+                    issues.push(format!(
+                        "Cache message {} belongs to {} but stored in {}",
+                        msg.id, msg.conversation_id, conv_id
+                    ));
+                }
+            }
+        }
+
+        if !issues.is_empty() {
+            warn!("Data integrity issues found: {:?}", issues);
+        }
+
+        issues
     }
 }

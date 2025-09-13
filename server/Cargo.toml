@@ -35,3 +35,4 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 tokio-tungstenite = "0.24.0"
 tokio-stream = { version = "0.1", features = ["sync"] }
+fastrand = "2.3.0"

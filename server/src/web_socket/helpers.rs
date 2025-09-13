@@ -1,30 +1,30 @@
-use serde_json::{json, Value};
-use tokio::sync::{broadcast, RwLock};
-use uuid::Uuid;
-use std::{collections::HashMap, sync::Arc};
-use tracing::{info, warn};
 use chrono::Utc;
+use serde_json::{Value, json};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{RwLock, broadcast};
+use tracing::{info, warn};
+use uuid::Uuid;
 
-use crate::{state::AppState, error::{AppError, Result}};
+use crate::{
+    error::{AppError, Result},
+    state::AppState,
+};
 
 pub async fn broadcast_to_conversation(
     state: &AppState,
     conversation_id: Uuid,
     payload: Value,
 ) -> Result<usize> {
-    let tx = {
-        let mut map = state.channels.write().await;
-        // Miglioramento: usa entry() per evitare race conditions
-        map.entry(conversation_id)
-            .or_insert_with(|| {
-                let (tx, _rx) = broadcast::channel::<Value>(1024);
-                tx
-            })
-            .clone()
-    };
+    let tx = state.get_or_create_broadcast_tx(conversation_id).await;
     match tx.send(payload) {
-        Ok(n) => { info!("broadcast {} subs for {}", n, conversation_id); Ok(n) }
-        Err(e) => { warn!("broadcast fail {}: {}", conversation_id, e); Err(AppError::Internal(format!("broadcast error: {e}"))) }
+        Ok(n) => {
+            info!("broadcast {} subs for {}", n, conversation_id);
+            Ok(n)
+        }
+        Err(e) => {
+            warn!("broadcast fail {}: {}", conversation_id, e);
+            Err(AppError::Internal(format!("broadcast error: {e}")))
+        }
     }
 }
 
@@ -32,29 +32,28 @@ pub async fn get_user_conversation_receivers(
     state: &AppState,
     user_id: Uuid,
 ) -> Result<Vec<broadcast::Receiver<Value>>> {
-    let conv_ids: Vec<String> = sqlx::query_scalar(
-        r#"SELECT conversation_id FROM participants WHERE user_id = ?"#,
-    )
-        .bind(user_id.to_string())
-        .fetch_all(&state.pool)
-        .await
-        .map_err(AppError::from)?;
+    let conv_ids: Vec<String> =
+        sqlx::query_scalar(r#"SELECT conversation_id FROM participants WHERE user_id = ?"#)
+            .bind(user_id.to_string())
+            .fetch_all(&state.pool)
+            .await
+            .map_err(AppError::from)?;
 
-    let mut res = Vec::new();
-    let mut guard = state.channels.write().await;
-    for s in conv_ids {
-        if let Ok(cid) = Uuid::parse_str(&s) {
-            // Miglioramento: usa entry() anche qui
-            let tx = guard.entry(cid)
-                .or_insert_with(|| {
-                    let (tx, _rx) = broadcast::channel::<Value>(1024);
-                    tx
-                })
-                .clone();
-            res.push(tx.subscribe());
-        }
+    let mut receivers = Vec::new();
+
+    // Converti gli ID e filtra quelli validi
+    let valid_conv_ids: Vec<Uuid> = conv_ids
+        .into_iter()
+        .filter_map(|s| Uuid::parse_str(&s).ok())
+        .collect();
+
+    // Crea i receiver senza tenere il lock troppo a lungo
+    for conv_id in valid_conv_ids {
+        let tx = state.get_or_create_broadcast_tx(conv_id).await;
+        receivers.push(tx.subscribe());
     }
-    Ok(res)
+
+    Ok(receivers)
 }
 
 pub async fn handle_chat_message(
@@ -69,43 +68,51 @@ pub async fn handle_chat_message(
         .and_then(|v| v.as_str())
         .ok_or_else(|| AppError::BadRequest("missing conversation id (cid)".into()))?;
 
-    let conversation_id = Uuid::parse_str(cid)
-        .map_err(|_| AppError::BadRequest("invalid conversation id".into()))?;
+    let conversation_id =
+        Uuid::parse_str(cid).map_err(|_| AppError::BadRequest("invalid conversation id".into()))?;
 
     let content = value
         .get("content")
         .and_then(|v| v.as_str())
         .ok_or_else(|| AppError::BadRequest("missing content".into()))?;
 
-    // autorizzazione
+    // Autorizzazione
     let count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"#,
     )
-        .bind(conversation_id.to_string())
-        .bind(user_id.to_string())
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::from)?;
-    if count == 0 { return Err(AppError::Forbidden); }
+    .bind(conversation_id.to_string())
+    .bind(user_id.to_string())
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::from)?;
 
-    // salvataggio
+    if count == 0 {
+        return Err(AppError::Forbidden);
+    }
+
+    // Salvataggio nel database
     let id = Uuid::new_v4();
     let ts = Utc::now().timestamp();
 
-    sqlx::query(
+    let save_result = sqlx::query(
         r#"INSERT INTO messages (id, conversation_id, author_id, content, created_at)
            VALUES (?, ?, ?, ?, ?)"#,
     )
-        .bind(id.to_string())
-        .bind(conversation_id.to_string())
-        .bind(user_id.to_string())
-        .bind(content)
-        .bind(ts)
-        .execute(&state.pool)
-        .await
-        .map_err(AppError::from)?;
+    .bind(id.to_string())
+    .bind(conversation_id.to_string())
+    .bind(user_id.to_string())
+    .bind(content)
+    .bind(ts)
+    .execute(&state.pool)
+    .await;
 
-    // evento
+    // Se il salvataggio fallisce, non fare il broadcast
+    if let Err(e) = save_result {
+        warn!("Failed to save message {}: {}", id, e);
+        return Err(AppError::from(e));
+    }
+
+    // Evento per il broadcast
     let event = json!({
         "type": "chat_message",
         "id": id,
@@ -116,26 +123,105 @@ pub async fn handle_chat_message(
         "created_at": ts
     });
 
-    broadcast_to_conversation(state, conversation_id, event).await?;
+    // Broadcast - se fallisce, logga ma non fallire la richiesta
+    // visto che il messaggio è già salvato nel DB
+    if let Err(e) = broadcast_to_conversation(state, conversation_id, event).await {
+        warn!(
+            "Broadcast failed for message {} but message was saved: {}",
+            id, e
+        );
+        // Considera l'implementazione di un retry mechanism o queue per i broadcast falliti
+    }
+
     Ok(())
 }
 
-// Miglioramento: cleanup più completo con logging
-pub async fn cleanup_empty_channels(
+// Cleanup intelligente e mirato che usa i metodi thread-safe di AppState
+pub async fn cleanup_empty_channels(state: &AppState, user_id: Uuid) {
+    // Ottieni le conversazioni dell'utente che potrebbero essere diventate vuote
+    // quando si disconnette
+    let user_conversations_result = state.get_user_channels(user_id).await;
+
+    match user_conversations_result {
+        Ok(user_conversations) => {
+            let mut removed_count = 0;
+
+            // Controlla solo i canali delle conversazioni dell'utente
+            for (conv_id, _) in user_conversations {
+                if state.try_remove_empty_channel(conv_id).await {
+                    removed_count += 1;
+                }
+            }
+
+            if removed_count > 0 {
+                info!(
+                    "Cleaned up {} empty channels for user {}",
+                    removed_count, user_id
+                );
+            }
+
+            // Log delle statistiche finali
+            let (total_channels, total_receivers) = state.get_channel_stats().await;
+            info!(
+                "Cleanup complete for user {} - System: {} channels, {} receivers",
+                user_id, total_channels, total_receivers
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Failed to get user conversations for cleanup of user {}: {}",
+                user_id, e
+            );
+
+            // Fallback: cleanup generale (meno efficiente ma funziona)
+            cleanup_empty_channels_fallback(&state.channels, user_id).await;
+        }
+    }
+}
+
+// Fallback cleanup per quando non riusciamo a ottenere le conversazioni dell'utente
+async fn cleanup_empty_channels_fallback(
     channels: &Arc<RwLock<HashMap<Uuid, broadcast::Sender<Value>>>>,
     user_id: Uuid,
 ) {
-    let mut map = channels.write().await;
-    let initial_count = map.len();
-    map.retain(|conv_id, tx| {
-        let keep = tx.receiver_count() > 0;
-        if !keep {
-            info!("Removing empty channel for conversation {} (user {} disconnected)", conv_id, user_id);
+    let candidates_for_removal: Vec<Uuid> = {
+        let map = channels.read().await;
+        map.iter()
+            .filter_map(|(&conv_id, tx)| {
+                if tx.receiver_count() == 0 {
+                    Some(conv_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    if candidates_for_removal.is_empty() {
+        return;
+    }
+
+    let mut removed_count = 0;
+    {
+        let mut map = channels.write().await;
+        for conv_id in candidates_for_removal {
+            if let Some(tx) = map.get(&conv_id) {
+                if tx.receiver_count() == 0 {
+                    map.remove(&conv_id);
+                    removed_count += 1;
+                    info!(
+                        "Removed empty channel for conversation {} (fallback cleanup)",
+                        conv_id
+                    );
+                }
+            }
         }
-        keep
-    });
-    let removed_count = initial_count - map.len();
+    }
+
     if removed_count > 0 {
-        info!("Cleaned up {} empty channels for user {}", removed_count, user_id);
+        info!(
+            "Fallback cleanup: {} empty channels removed for user {}",
+            removed_count, user_id
+        );
     }
 }

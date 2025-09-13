@@ -1,13 +1,18 @@
-use tokio::{select, task::JoinHandle, sync::{mpsc, watch}, time::{interval, Duration}};
-use tokio_stream::wrappers::BroadcastStream;
 use futures::{StreamExt, stream::select_all};
 use serde_json::Value;
+use std::collections::HashSet;
+use tokio::{
+    select,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+    time::{Duration, interval},
+};
+use tokio_stream::wrappers::BroadcastStream;
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use std::collections::HashSet;
 
-use crate::{state::AppState, error::Result};
-use super::{actor::OutboundMsg, helpers::get_user_conversation_receivers};
+use super::actor::OutboundMsg;
+use crate::{error::Result, state::AppState};
 
 pub async fn spawn_receiver(
     state: AppState,
@@ -16,9 +21,17 @@ pub async fn spawn_receiver(
     stop_tx: watch::Sender<bool>,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<JoinHandle<()>> {
-    // Setup iniziale
-    let receivers = get_user_conversation_receivers(&state, user_id).await?;
-    let mut combined = select_all(receivers.into_iter().map(BroadcastStream::new));
+    // Setup iniziale con il nuovo metodo thread-safe
+    let initial_channels = state
+        .get_user_channels(user_id)
+        .await
+        .map_err(|e| crate::error::AppError::from(e))?;
+
+    let mut combined = select_all(
+        initial_channels
+            .into_iter()
+            .map(|(_, tx)| BroadcastStream::new(tx.subscribe())),
+    );
 
     // Track delle conversazioni correnti per rilevare cambiamenti
     let mut current_conversations = HashSet::new();
@@ -33,13 +46,14 @@ pub async fn spawn_receiver(
                     info!("Stop signal received for recv-merge user {}", user_id);
                     break;
                 }
-                
+
                 // Refresh periodico delle conversazioni dell'utente
                 _ = refresh_interval.tick() => {
-                    match refresh_user_conversations(&state, user_id, &mut combined, &mut current_conversations).await {
+                    match refresh_user_conversations_safe(&state, user_id, &mut combined, &mut current_conversations).await {
                         Ok(changed) => {
                             if changed {
-                                info!("Updated conversation list for user {}", user_id);
+                                info!("Updated conversation list for user {} ({} conversations)",
+                                     user_id, current_conversations.len());
                             }
                         }
                         Err(e) => {
@@ -47,7 +61,7 @@ pub async fn spawn_receiver(
                         }
                     }
                 }
-                
+
                 item = combined.next() => {
                     match item {
                         Some(Ok(val)) => {
@@ -63,7 +77,7 @@ pub async fn spawn_receiver(
                                 Ok(txt) => {
                                     if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
                                         warn!("Failed to send message to user {}, stopping receiver", user_id);
-                                        let _ = stop_tx.send(true); 
+                                        let _ = stop_tx.send(true);
                                         break;
                                     }
                                 }
@@ -79,18 +93,31 @@ pub async fn spawn_receiver(
                             warn!("User {} lagged behind, skipped {} messages", user_id, skipped);
                             // Invia notifica al client che ha perso messaggi
                             let lag_notice = format!(
-                                r#"{{"type":"system","message":"Missed {} messages due to slow connection"}}"#, 
-                                skipped
+                                r#"{{"type":"system","message":"Missed {} messages due to slow connection","skipped":{}}}"#,
+                                skipped, skipped
                             );
-                            let _ = out_tx.send(OutboundMsg::Text(lag_notice)).await;
+                            if out_tx.send(OutboundMsg::Text(lag_notice)).await.is_err() {
+                                warn!("Failed to send lag notice to user {}", user_id);
+                                let _ = stop_tx.send(true);
+                                break;
+                            }
                             continue;
                         }
                         None => {
-                            // Uno stream è terminato, ma potremmo averne altri
-                            // Invece di terminare, facciamo un refresh
-                            warn!("Stream ended for user {}, attempting refresh", user_id);
-                            match refresh_user_conversations(&state, user_id, &mut combined, &mut current_conversations).await {
-                                Ok(_) => continue,
+                            // Tutti gli stream sono terminati
+                            warn!("All streams ended for user {}, attempting refresh", user_id);
+                            match refresh_user_conversations_safe(&state, user_id, &mut combined, &mut current_conversations).await {
+                                Ok(true) => {
+                                    info!("Successfully refreshed streams for user {}", user_id);
+                                    continue;
+                                }
+                                Ok(false) => {
+                                    // Nessuna conversazione disponibile
+                                    info!("No conversations available for user {}", user_id);
+                                    // Continua ad ascoltare per nuove conversazioni
+                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                    continue;
+                                }
                                 Err(e) => {
                                     error!("Failed to recover streams for user {}: {}", user_id, e);
                                     break;
@@ -105,52 +132,60 @@ pub async fn spawn_receiver(
     }))
 }
 
-async fn refresh_user_conversations(
+/// Versione migliorata che evita race conditions nel refresh delle conversazioni
+async fn refresh_user_conversations_safe(
     state: &AppState,
     user_id: Uuid,
     combined: &mut futures::stream::SelectAll<BroadcastStream<Value>>,
     current_conversations: &mut HashSet<Uuid>,
 ) -> Result<bool> {
-    // Ottieni le conversazioni correnti dell'utente
-    let conv_ids: Vec<String> = sqlx::query_scalar(
-        r#"SELECT conversation_id FROM participants WHERE user_id = ?"#,
-    )
-        .bind(user_id.to_string())
-        .fetch_all(&state.pool)
+    // Usa il nuovo metodo thread-safe per ottenere i canali
+    let user_channels = state
+        .get_user_channels(user_id)
         .await
         .map_err(crate::error::AppError::from)?;
 
-    let new_conversations: HashSet<Uuid> = conv_ids
-        .into_iter()
-        .filter_map(|s| Uuid::parse_str(&s).ok())
-        .collect();
+    let new_conversations: HashSet<Uuid> =
+        user_channels.iter().map(|(conv_id, _)| *conv_id).collect();
 
     // Controlla se ci sono cambiamenti
     if new_conversations == *current_conversations {
         return Ok(false); // Nessun cambiamento
     }
 
-    info!("Conversation list changed for user {}: {:?} -> {:?}", 
-          user_id, current_conversations, new_conversations);
+    info!(
+        "Conversation list changed for user {}: {} -> {} conversations",
+        user_id,
+        current_conversations.len(),
+        new_conversations.len()
+    );
 
-    // Ricostruisci completamente il select_all con le nuove conversazioni
-    let mut new_receivers = Vec::new();
-    {
-        let mut channels = state.channels.write().await;
-        for conv_id in &new_conversations {
-            let tx = channels.entry(*conv_id)
-                .or_insert_with(|| {
-                    let (tx, _rx) = tokio::sync::broadcast::channel::<Value>(1024);
-                    tx
-                })
-                .clone();
-            new_receivers.push(BroadcastStream::new(tx.subscribe()));
-        }
-    }
+    // Crea i nuovi receiver - i canali sono già stati creati/ottenuti in modo thread-safe
+    let new_receivers: Vec<BroadcastStream<Value>> = user_channels
+        .into_iter()
+        .map(|(_, tx)| BroadcastStream::new(tx.subscribe()))
+        .collect();
 
-    // Sostituisci il select_all esistente
+    // Sostituisci atomicamente il select_all con i nuovi stream
     *combined = select_all(new_receivers);
     *current_conversations = new_conversations;
 
     Ok(true) // Cambiamento avvenuto
+}
+
+/// Funzione helper per il monitoring dello stato dei receiver
+#[allow(dead_code)]
+async fn log_receiver_stats(
+    state: &AppState,
+    user_id: Uuid,
+    current_conversations: &HashSet<Uuid>,
+) {
+    let (total_channels, total_receivers) = state.get_channel_stats().await;
+    info!(
+        "User {} stats: tracking {} conversations, system has {} channels with {} total receivers",
+        user_id,
+        current_conversations.len(),
+        total_channels,
+        total_receivers
+    );
 }

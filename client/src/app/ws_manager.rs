@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use serde_json::Value;
 use uuid::Uuid;
-use tracing::{warn, error, debug};
+use tracing::{warn, error, debug, info};
 use crate::models::{MessageDto, Outgoing, UiEvent, WsStatus};
 
 pub struct WebSocketManager;
@@ -45,23 +45,50 @@ impl WebSocketManager {
     }
 
     fn process_outgoing_messages(&self, state: &mut AppState) {
-        // Drena la coda UI -> rete
+        let mut processed_count = 0;
+
+        // Drena la coda UI -> rete con limite per evitare loop infiniti
         while let Ok(outgoing) = state.ui_to_net_rx.try_recv() {
+            processed_count += 1;
+            if processed_count > 100 { // Limite di sicurezza
+                warn!("Too many outgoing messages in queue, stopping processing");
+                break;
+            }
+
             if let Some(ref ws_ctrl) = state.ws_ctrl {
                 // Serializza con conversione field names compatibili con server
-                let json_msg = match outgoing {
+                let json_msg = match &outgoing {
                     Outgoing::ChatMessage { cid, content } => {
-                        serde_json::json!({
-                            "type": "chat_message",
-                            "cid": cid,  // Usa "cid" per compatibilità server
-                            "content": content
-                        }).to_string()
+                        // Validazione contenuto messaggio
+                        if content.trim().is_empty() {
+                            warn!("Attempted to send empty message, skipping");
+                            continue;
+                        }
+                        if content.len() > 10000 { // Limite ragionevole
+                            warn!("Message too long ({} chars), truncating", content.len());
+                            let truncated = content.chars().take(10000).collect::<String>();
+                            serde_json::json!({
+                                "type": "chat_message",
+                                "cid": cid,
+                                "content": truncated
+                            }).to_string()
+                        } else {
+                            serde_json::json!({
+                                "type": "chat_message",
+                                "cid": cid,
+                                "content": content
+                            }).to_string()
+                        }
                     }
                     Outgoing::InviteUser { cid, username } => {
+                        if username.trim().is_empty() {
+                            warn!("Attempted to invite user with empty username, skipping");
+                            continue;
+                        }
                         serde_json::json!({
                             "type": "invite_user",
                             "cid": cid,
-                            "username": username
+                            "username": username.trim()
                         }).to_string()
                     }
                     Outgoing::Typing { cid, is_typing } => {
@@ -73,148 +100,262 @@ impl WebSocketManager {
                     }
                 };
 
-                debug!("Sending WebSocket message: {}", json_msg);
+                debug!("Sending WebSocket message: {}", 
+                       json_msg.chars().take(200).collect::<String>());
 
                 if let Err(_) = ws_ctrl.outgoing_tx.send(json_msg) {
                     warn!("WebSocket channel closed, marking as disconnected");
                     let _ = state.ui_tx.send(UiEvent::WsDisconnected);
+                    break; // Esci dal loop se la connessione è morta
                 }
             } else {
-                warn!("Attempted to send message but WebSocket not connected");
+                warn!("Attempted to send message but WebSocket not connected: {:?}", outgoing);
             }
+        }
+
+        if processed_count > 0 {
+            debug!("Processed {} outgoing WebSocket messages", processed_count);
         }
     }
 
     fn start_websocket_connection(&mut self, state: &mut AppState) {
         let base = state.base.clone();
-        let token = state.token.clone().unwrap();
+        let token = match state.token.clone() {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => {
+                error!("Cannot start WebSocket: invalid token");
+                let _ = state.ui_tx.send(UiEvent::WsError("Token non valido".into()));
+                return;
+            }
+        };
         let tx = state.ui_tx.clone();
 
         state.ws_status = WsStatus::Connecting;
+        info!("Starting WebSocket connection to {}", base);
 
         state.rt.spawn(async move {
             match crate::api::ws::connect(&base, &token).await {
                 Ok(mut ws) => {
-                    if let Err(e) = crate::api::ws::subscribe(&mut ws).await {
-                        let _ = tx.send(UiEvent::WsError(format!("WS subscribe fallito: {e}")));
-                        return;
+                    debug!("WebSocket connected, sending subscribe message");
+
+                    match crate::api::ws::subscribe(&mut ws).await {
+                        Ok(_) => {
+                            info!("WebSocket subscribed successfully");
+                            let _ = tx.send(UiEvent::WsConnected);
+                            let tx_reader = tx.clone();
+
+                            // Handler bidirezionale con gestione errori migliorata
+                            let ctrl = crate::api::ws::spawn_bidirectional_handler(ws, move |msg| {
+                                Self::handle_websocket_message(&tx_reader, msg);
+                            });
+
+                            let _ = tx.send(UiEvent::WsControlReady(ctrl));
+                        }
+                        Err(e) => {
+                            error!("WebSocket subscribe failed: {}", e);
+                            let _ = tx.send(UiEvent::WsError(format!("Sottoscrizione WebSocket fallita: {}", e)));
+                        }
                     }
-                    let _ = tx.send(UiEvent::WsConnected);
-                    let tx_reader = tx.clone();
-
-                    // Handler bidirezionale con gestione errori migliorata
-                    let ctrl = crate::api::ws::spawn_bidirectional_handler(ws, move |msg| {
-                        Self::handle_websocket_message(&tx_reader, msg);
-                    });
-
-                    let _ = tx.send(UiEvent::WsControlReady(ctrl));
                 }
                 Err(e) => {
-                    let _ = tx.send(UiEvent::WsError(format!("WS connect fallito: {e}")));
+                    error!("WebSocket connection failed: {}", e);
+                    let _ = tx.send(UiEvent::WsError(format!("Connessione WebSocket fallita: {}", e)));
                 }
             }
         });
     }
 
-    // CORREZIONE PRINCIPALE: parsing robusto e gestione di tutti i tipi di messaggio
+    // CORREZIONE PRINCIPALE: parsing robusto e gestione rigorosa di tutti i tipi di messaggio
     fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, msg: String) {
-        debug!("Received WebSocket message: {}", msg);
+        debug!("Received WebSocket message: {}", 
+               msg.chars().take(200).collect::<String>());
 
-        // Prima prova a parsare come JSON generale
+        // Validazione lunghezza messaggio
+        if msg.len() > 100_000 { // 100KB limit
+            error!("WebSocket message too large ({} bytes), ignoring", msg.len());
+            let _ = tx.send(UiEvent::Error("Messaggio WebSocket troppo grande".into()));
+            return;
+        }
+
+        // Prima prova a parsare come JSON generale con gestione errori rigorosa
         let parsed_value: Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
             Err(e) => {
-                error!("Failed to parse WebSocket message as JSON: {} - Message: {}", e, msg);
-                let _ = tx.send(UiEvent::Error("Messaggio WebSocket malformato".into()));
+                error!("Failed to parse WebSocket message as JSON: {} - Message: {}", e, 
+                       msg.chars().take(100).collect::<String>());
+                // Non inviare eventi di errore per ogni messaggio malformato per evitare spam
                 return;
             }
         };
 
-        let msg_type = parsed_value.get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("unknown");
+        // Estrazione rigorosa del tipo di messaggio
+        let msg_type = match parsed_value.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => {
+                warn!("WebSocket message missing 'type' field: {}", 
+                      parsed_value.to_string().chars().take(200).collect::<String>());
+                return;
+            }
+        };
 
+        // Gestione esplicita per ogni tipo di messaggio
         match msg_type {
             "chat_message" => {
                 Self::handle_chat_message(tx, &parsed_value);
             }
             "typing" => {
-                // Gestisci indicatori di scrittura se necessario
-                debug!("Received typing indicator: {:?}", parsed_value);
+                Self::handle_typing_indicator(tx, &parsed_value);
             }
             "error" => {
-                let error_msg = parsed_value.get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("Errore WebSocket sconosciuto");
-                let _ = tx.send(UiEvent::Error(format!("Server: {}", error_msg)));
+                Self::handle_server_error(tx, &parsed_value);
             }
-            "heartbeat_ack" | "server_heartbeat" => {
-                // Heartbeat dal server, nessuna azione necessaria
+            "heartbeat_ack" | "server_heartbeat" | "pong" => {
                 debug!("Received heartbeat from server");
+                // Heartbeat dal server, nessuna azione necessaria
             }
             "system" => {
-                let system_msg = parsed_value.get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("Messaggio di sistema");
-                let _ = tx.send(UiEvent::Info(format!("Sistema: {}", system_msg)));
+                Self::handle_system_message(tx, &parsed_value);
             }
-            _ => {
-                // Fallback: prova a interpretare come messaggio di chat
-                Self::handle_chat_message(tx, &parsed_value);
+            "user_joined" | "user_left" => {
+                Self::handle_user_status(tx, &parsed_value, msg_type);
+            }
+            "conversation_updated" => {
+                Self::handle_conversation_update(tx, &parsed_value);
+            }
+            unknown => {
+                warn!("Unknown WebSocket message type '{}', ignoring", unknown);
+                debug!("Unknown message content: {}", 
+                       parsed_value.to_string().chars().take(500).collect::<String>());
             }
         }
     }
 
     fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        // Estrai campi del messaggio con fallback robusti
-        let id = value.get("id")
+        // Validazione rigorosa dei campi obbligatori
+        let id = match value.get("id")
             .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .unwrap_or_else(Uuid::new_v4);
+            .and_then(|s| Uuid::parse_str(s).ok()) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid or missing message ID in WebSocket payload: {}", 
+                      value.to_string().chars().take(200).collect::<String>());
+                return;
+            }
+        };
 
-        let author_id = value.get("author_id")
+        let author_id = match value.get("author_id")
             .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .unwrap_or(Uuid::nil());
+            .and_then(|s| Uuid::parse_str(s).ok()) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid or missing author_id in WebSocket payload");
+                return;
+            }
+        };
+
+        // Supporta sia "cid" che "conversation_id"
+        let conversation_id = match value.get("cid")
+            .or_else(|| value.get("conversation_id"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok()) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid or missing conversation_id in WebSocket payload");
+                return;
+            }
+        };
+
+        let content = match value.get("content").and_then(|v| v.as_str()) {
+            Some(c) if !c.trim().is_empty() => c.to_string(),
+            _ => {
+                warn!("Empty or missing content in WebSocket message");
+                return;
+            }
+        };
 
         let author_username = value.get("author_username")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .unwrap_or("unknown")
             .to_string();
-
-        // Supporta sia "cid" che "conversation_id"
-        let conversation_id = value.get("cid")
-            .or_else(|| value.get("conversation_id"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        let content = value.get("content")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
         let created_at = value.get("created_at")
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-        // Valida che abbiamo i campi essenziali
-        match (conversation_id, content) {
-            (Some(conv_id), Some(content)) => {
-                let dto = MessageDto {
-                    id,
-                    author_id,
-                    author_username,
-                    conversation_id: conv_id,
-                    content,
-                    created_at,
-                };
-
-                debug!("Parsed message DTO: {:?}", dto);
-                let _ = tx.send(UiEvent::WsIncoming(dto));
-            }
-            _ => {
-                warn!("Incomplete message data in WebSocket payload: {:?}", value);
-                let _ = tx.send(UiEvent::Error("Messaggio WebSocket incompleto".into()));
-            }
+        // Validazione aggiuntiva del contenuto
+        if content.len() > 10000 {
+            warn!("Message content too long ({} chars), truncating", content.len());
         }
+
+        let dto = MessageDto {
+            id,
+            author_id,
+            author_username,
+            conversation_id,
+            content: content.chars().take(10000).collect(), // Truncate se necessario
+            created_at,
+        };
+
+        debug!("Parsed message DTO: {} chars from {} in {}", 
+               dto.content.len(), dto.author_username, dto.conversation_id);
+        let _ = tx.send(UiEvent::WsIncoming(dto));
+    }
+
+    fn handle_typing_indicator(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        debug!("Received typing indicator: {}", 
+               value.to_string().chars().take(100).collect::<String>());
+
+        // Qui potresti implementare la gestione degli indicatori di scrittura
+        // Per ora li ignoriamo semplicemente
+    }
+
+    fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        let error_msg = value.get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Errore WebSocket sconosciuto");
+
+        let error_code = value.get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or("unknown");
+
+        error!("Server error received: {} (code: {})", error_msg, error_code);
+        let _ = tx.send(UiEvent::Error(format!("Server ({}): {}", error_code, error_msg)));
+    }
+
+    fn handle_system_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        let system_msg = value.get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Messaggio di sistema");
+
+        info!("System message: {}", system_msg);
+        let _ = tx.send(UiEvent::Info(format!("Sistema: {}", system_msg)));
+    }
+
+    fn handle_user_status(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value, status_type: &str) {
+        let username = value.get("username")
+            .and_then(|u| u.as_str())
+            .unwrap_or("unknown");
+
+        let conversation_id = value.get("conversation_id")
+            .and_then(|c| c.as_str())
+            .unwrap_or("unknown");
+
+        let status_msg = match status_type {
+            "user_joined" => format!("{} si è unito alla conversazione", username),
+            "user_left" => format!("{} ha lasciato la conversazione", username),
+            _ => format!("Stato utente cambiato: {}", username)
+        };
+
+        debug!("User status change in {}: {}", conversation_id, status_msg);
+        let _ = tx.send(UiEvent::Info(status_msg));
+    }
+
+    fn handle_conversation_update(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        debug!("Conversation update received: {}", 
+               value.to_string().chars().take(200).collect::<String>());
+
+        // Qui potresti implementare l'aggiornamento delle conversazioni
+        let _ = tx.send(UiEvent::Info("Conversazione aggiornata".into()));
     }
 }
