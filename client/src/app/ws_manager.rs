@@ -165,9 +165,8 @@ impl WebSocketManager {
         });
     }
 
-    // CORREZIONE PRINCIPALE: parsing robusto e gestione rigorosa di tutti i tipi di messaggio
     fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, msg: String) {
-        debug!("Received WebSocket message: {}", 
+        debug!("Received WebSocket message: {}",
                msg.chars().take(200).collect::<String>());
 
         // Validazione lunghezza messaggio
@@ -181,9 +180,8 @@ impl WebSocketManager {
         let parsed_value: Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
             Err(e) => {
-                error!("Failed to parse WebSocket message as JSON: {} - Message: {}", e, 
+                error!("Failed to parse WebSocket message as JSON: {} - Message: {}", e,
                        msg.chars().take(100).collect::<String>());
-                // Non inviare eventi di errore per ogni messaggio malformato per evitare spam
                 return;
             }
         };
@@ -192,7 +190,7 @@ impl WebSocketManager {
         let msg_type = match parsed_value.get("type").and_then(|t| t.as_str()) {
             Some(t) => t,
             None => {
-                warn!("WebSocket message missing 'type' field: {}", 
+                warn!("WebSocket message missing 'type' field: {}",
                       parsed_value.to_string().chars().take(200).collect::<String>());
                 return;
             }
@@ -224,7 +222,7 @@ impl WebSocketManager {
             }
             unknown => {
                 warn!("Unknown WebSocket message type '{}', ignoring", unknown);
-                debug!("Unknown message content: {}", 
+                debug!("Unknown message content: {}",
                        parsed_value.to_string().chars().take(500).collect::<String>());
             }
         }
@@ -232,20 +230,15 @@ impl WebSocketManager {
 
     fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
         // Validazione rigorosa dei campi obbligatori
-        let id = match value.get("id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok()) {
+        let id = match Self::parse_uuid_field(value, "id") {
             Some(id) => id,
             None => {
-                warn!("Invalid or missing message ID in WebSocket payload: {}", 
-                      value.to_string().chars().take(200).collect::<String>());
+                warn!("Invalid or missing message ID in WebSocket payload");
                 return;
             }
         };
 
-        let author_id = match value.get("author_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok()) {
+        let author_id = match Self::parse_uuid_field(value, "author_id") {
             Some(id) => id,
             None => {
                 warn!("Invalid or missing author_id in WebSocket payload");
@@ -253,11 +246,7 @@ impl WebSocketManager {
             }
         };
 
-        // Supporta sia "cid" che "conversation_id"
-        let conversation_id = match value.get("cid")
-            .or_else(|| value.get("conversation_id"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok()) {
+        let conversation_id = match Self::parse_conversation_id(value) {
             Some(id) => id,
             None => {
                 warn!("Invalid or missing conversation_id in WebSocket payload");
@@ -284,22 +273,39 @@ impl WebSocketManager {
             .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
         // Validazione aggiuntiva del contenuto
-        if content.len() > 10000 {
+        let content = if content.len() > 10000 {
             warn!("Message content too long ({} chars), truncating", content.len());
-        }
+            content.chars().take(10000).collect()
+        } else {
+            content
+        };
 
         let dto = MessageDto {
             id,
             author_id,
             author_username,
             conversation_id,
-            content: content.chars().take(10000).collect(), // Truncate se necessario
+            content,
             created_at,
         };
 
-        debug!("Parsed message DTO: {} chars from {} in {}", 
+        debug!("Parsed message DTO: {} chars from {} in {}",
                dto.content.len(), dto.author_username, dto.conversation_id);
         let _ = tx.send(UiEvent::WsIncoming(dto));
+    }
+
+    // Helper functions for UUID parsing
+    fn parse_uuid_field(value: &Value, field_name: &str) -> Option<Uuid> {
+        value.get(field_name)
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+    }
+
+    fn parse_conversation_id(value: &Value) -> Option<Uuid> {
+        value.get("cid")
+            .or_else(|| value.get("conversation_id"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
     }
 
     fn handle_typing_indicator(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

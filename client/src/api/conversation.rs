@@ -11,7 +11,7 @@ pub struct GroupReq<'a> {
 
 #[derive(Serialize)]
 pub struct DmReq {
-    pub user_username: String   // UUID dell’altro utente
+    pub user_username: String   // UUID dell'altro utente
 }
 
 #[derive(Deserialize)]
@@ -48,6 +48,22 @@ pub async fn create_group(base: &str, token: &str, name: &str) -> Result<Uuid> {
         .json::<CreatedId>()
         .await?;
     Ok(r.id)
+}
+
+pub async fn get_conversation(
+    base: &str,
+    token: &str,
+    conversation_id: Uuid
+) -> Result<ConversationDto, Box<dyn std::error::Error + Send + Sync>> {
+    let r = Client::new()
+        .get(format!("{}/api/conversations/{}", base, conversation_id))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ConversationDto>()
+        .await?;
+    Ok(r)
 }
 
 // Crea o trova una DM

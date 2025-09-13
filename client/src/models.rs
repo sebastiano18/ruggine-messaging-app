@@ -113,7 +113,6 @@ pub enum Outgoing {
     Typing { cid: Uuid, is_typing: bool },
 }
 
-
 // === UI EVENTS ===
 #[derive(Debug)]
 pub enum UiEvent {
@@ -137,7 +136,10 @@ pub enum UiEvent {
     LoadingProgress(String),
     MessageSendFailed(Uuid),
     ConversationCreated(Uuid),
+    // NUOVO evento per conversazione singola
+    SingleConversationLoaded(ConversationDto),
 }
+
 impl MessageDto {
     /// Helper per creare messaggi di sistema
     pub fn system_message(content: String) -> Self {

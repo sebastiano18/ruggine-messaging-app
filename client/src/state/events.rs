@@ -8,28 +8,67 @@ pub struct EventHandler;
 impl EventHandler {
     pub fn handle_event(state: &mut super::core::AppState, event: UiEvent) {
         match event {
-            UiEvent::Info(s) => {
-                Self::add_system_message(state, s);
+            // Authentication events
+            UiEvent::LoginStarted | UiEvent::RegisterStarted | UiEvent::Logged(..) | UiEvent::LoggedOut => {
+                Self::handle_auth_events(state, event);
             }
-            UiEvent::Error(s) => {
-                Self::add_system_message(state, format!("⚠ {}", s));
-                state.login_state = LoginState::Idle;
-                state.is_loading = false;
+
+            // WebSocket events
+            UiEvent::WsConnected | UiEvent::WsDisconnected | UiEvent::WsError(..) |
+            UiEvent::WsControlReady(..) | UiEvent::WsIncoming(..) => {
+                Self::handle_websocket_events(state, event);
             }
+
+            // Data loading events
+            UiEvent::ConversationsLoaded(..) | UiEvent::AllMessagesLoaded(..) |
+            UiEvent::RefreshedMsgs(..) | UiEvent::InitialLoadComplete | UiEvent::LoadingProgress(..) |
+            UiEvent::SingleConversationLoaded(..) => {
+                Self::handle_data_events(state, event);
+            }
+
+            // Conversation events
+            UiEvent::Opened(..) | UiEvent::ConversationCreated(..) => {
+                Self::handle_conversation_events(state, event);
+            }
+
+            // Message events
+            UiEvent::MessageSendFailed(..) => {
+                Self::handle_message_events(state, event);
+            }
+
+            // General events
+            UiEvent::Info(..) | UiEvent::Error(..) | UiEvent::InviteCreated(..) => {
+                Self::handle_general_events(state, event);
+            }
+        }
+    }
+
+    // === AUTH EVENT HANDLERS ===
+
+    fn handle_auth_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
             UiEvent::LoginStarted => {
                 state.login_state = LoginState::LoggingIn;
-                Self::add_system_message(state, "🔐 Effettuando login...".into());
+                Self::add_system_message(state, "🔄 Effettuando login...".into());
             }
             UiEvent::RegisterStarted => {
                 state.login_state = LoginState::Registering;
-                Self::add_system_message(state, "📝 Registrando utente...".into());
+                Self::add_system_message(state, "🔄 Registrando utente...".into());
             }
             UiEvent::Logged(token, user_id) => {
                 Self::handle_login_success(state, token, user_id);
             }
-            UiEvent::Opened(cid) => {
-                Self::handle_conversation_opened(state, cid);
+            UiEvent::LoggedOut => {
+                Self::handle_logout(state);
             }
+            _ => {}
+        }
+    }
+
+    // === WEBSOCKET EVENT HANDLERS ===
+
+    fn handle_websocket_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
             UiEvent::WsControlReady(ctrl) => {
                 state.ws_ctrl = Some(ctrl);
                 debug!("WebSocket control ready");
@@ -46,19 +85,27 @@ impl EventHandler {
             UiEvent::WsError(error) => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
-                Self::add_system_message(state, format!("⚠ WebSocket errore: {}", error));
+                Self::add_system_message(state, format!("⚠️ WebSocket errore: {}", error));
             }
             UiEvent::WsIncoming(msg) => {
                 Self::handle_incoming_message(state, msg);
             }
-            UiEvent::RefreshedMsgs(list) => {
-                Self::handle_messages_refreshed(state, list);
-            }
+            _ => {}
+        }
+    }
+
+    // === DATA EVENT HANDLERS ===
+
+    fn handle_data_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
             UiEvent::ConversationsLoaded(conversations) => {
                 Self::handle_conversations_loaded(state, conversations);
             }
             UiEvent::AllMessagesLoaded(messages_map) => {
                 Self::handle_all_messages_loaded(state, messages_map);
+            }
+            UiEvent::RefreshedMsgs(list) => {
+                Self::handle_messages_refreshed(state, list);
             }
             UiEvent::InitialLoadComplete => {
                 state.is_initial_load_complete = true;
@@ -69,21 +116,60 @@ impl EventHandler {
             UiEvent::LoadingProgress(progress) => {
                 Self::add_system_message(state, format!("📊 {}", progress));
             }
-            UiEvent::InviteCreated(token) => {
-                state.last_created_invite = Some(token);
-                Self::add_system_message(state, "🎉 Invito creato con successo".into());
+            // NUOVO handler per conversazione singola
+            UiEvent::SingleConversationLoaded(conversation) => {
+                Self::handle_single_conversation_loaded(state, conversation);
             }
-            UiEvent::MessageSendFailed(failed_message_id) => {
-                Self::handle_message_send_failed(state, failed_message_id);
-            }
-            UiEvent::LoggedOut => {
-                Self::handle_logout(state);
+            _ => {}
+        }
+    }
+
+    // === CONVERSATION EVENT HANDLERS ===
+
+    fn handle_conversation_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
+            UiEvent::Opened(cid) => {
+                Self::handle_conversation_opened(state, cid);
             }
             UiEvent::ConversationCreated(conversation_id) => {
                 Self::handle_conversation_created(state, conversation_id);
             }
+            _ => {}
         }
     }
+
+    // === MESSAGE EVENT HANDLERS ===
+
+    fn handle_message_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
+            UiEvent::MessageSendFailed(failed_message_id) => {
+                Self::handle_message_send_failed(state, failed_message_id);
+            }
+            _ => {}
+        }
+    }
+
+    // === GENERAL EVENT HANDLERS ===
+
+    fn handle_general_events(state: &mut super::core::AppState, event: UiEvent) {
+        match event {
+            UiEvent::Info(s) => {
+                Self::add_system_message(state, s);
+            }
+            UiEvent::Error(s) => {
+                Self::add_system_message(state, format!("⚠️ {}", s));
+                state.login_state = LoginState::Idle;
+                state.is_loading = false;
+            }
+            UiEvent::InviteCreated(token) => {
+                state.last_created_invite = Some(token);
+                Self::add_system_message(state, "🎉 Invito creato con successo".into());
+            }
+            _ => {}
+        }
+    }
+
+    // === SPECIFIC EVENT IMPLEMENTATION ===
 
     fn handle_login_success(state: &mut super::core::AppState, token: String, user_id: Uuid) {
         state.token = Some(token.clone());
@@ -93,8 +179,6 @@ impl EventHandler {
         state.page = Page::Conversations;
 
         info!("User {} logged in successfully", user_id);
-
-        // Avvia precaricamento completo dopo il login
         state.preload_all_data(token);
     }
 
@@ -104,7 +188,6 @@ impl EventHandler {
         state.cid = Some(cid);
         state.page = Page::Chat;
 
-        // Aggiorna titolo conversazione
         if let Some(ref conversations) = state.conversations {
             if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
                 state.conv_title = conv.title.clone();
@@ -112,18 +195,15 @@ impl EventHandler {
             }
         }
 
-        // Carica messaggi dalla cache locale
         if let Some(cached_messages) = state.conversation_messages.get(&cid) {
             state.messages = cached_messages.clone();
             debug!("Loaded {} messages from cache for conversation {}", 
                    cached_messages.len(), cid);
         } else if state.is_initial_load_complete {
-            // Caricamento iniziale completato ma non abbiamo questi messaggi - carica dalla rete
             debug!("Loading messages from network for conversation {}", cid);
             state.load_single_conversation_messages(cid);
             state.messages = vec![];
 
-            // Messaggio di benvenuto per nuove conversazioni
             if let Some(ref conversations) = state.conversations {
                 if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
                     let welcome_msg = MessageDto::system_message(
@@ -133,29 +213,16 @@ impl EventHandler {
                 }
             }
         } else {
-            // Caricamento iniziale ancora in corso
             state.messages = vec![];
             Self::add_system_message(state, "Caricamento messaggi...".into());
         }
     }
 
-    // CORREZIONE PRINCIPALE: gestione atomica e robusta dei messaggi in arrivo
+    // Gestione messaggi da conversazioni sconosciute con caricamento mirato
     fn handle_incoming_message(state: &mut super::core::AppState, msg: MessageDto) {
         let message_conversation_id = msg.conversation_id;
 
-        // Validazione rigorosa del messaggio
-        if message_conversation_id == Uuid::nil() {
-            warn!("Received message with nil conversation_id, ignoring: {:?}", msg);
-            return;
-        }
-
-        if msg.content.trim().is_empty() {
-            warn!("Received message with empty content, ignoring: {:?}", msg);
-            return;
-        }
-
-        if msg.author_id == Uuid::nil() {
-            warn!("Received message with nil author_id, ignoring: {:?}", msg);
+        if !Self::validate_incoming_message(&msg) {
             return;
         }
 
@@ -164,15 +231,32 @@ impl EventHandler {
                msg.author_username, 
                message_conversation_id);
 
-        // Aggiornamento atomico della cache
-        if !Self::update_message_cache(state, &msg) {
+        // Controlla se la conversazione è conosciuta
+        let conversation_exists = state.conversations
+            .as_ref()
+            .map(|convs| convs.iter().any(|c| c.id == message_conversation_id))
+            .unwrap_or(false);
+
+        if !conversation_exists {
+            info!("Received message for unknown conversation {}", message_conversation_id);
+
+            // OTTIMIZZAZIONE: Carica solo la conversazione specifica invece di tutte
+            state.load_specific_conversation(message_conversation_id);
+
+            // Notifica discreta
+            Self::add_system_message(state,
+                                     format!("Nuovo messaggio da {}", msg.author_username));
+        }
+
+        // Aggiornamento cache
+        if !Self::update_message_cache_improved(state, &msg) {
             debug!("Message already exists in cache, skipping: {}", msg.id);
             return;
         }
 
-        // Aggiornamento UI solo se siamo nella conversazione corretta
+        // Aggiornamento UI se siamo nella conversazione corretta
         if Some(message_conversation_id) == state.cid {
-            Self::update_ui_messages(state, msg);
+            Self::update_ui_messages_improved(state, msg);
         } else {
             debug!("Message cached for different conversation: {} -> {} (current: {:?})",
                    msg.author_username, message_conversation_id, state.cid);
@@ -180,22 +264,14 @@ impl EventHandler {
     }
 
     fn handle_messages_refreshed(state: &mut super::core::AppState, mut list: Vec<MessageDto>) {
-        // Validazione e pulizia della lista
-        list.retain(|msg| {
-            msg.conversation_id != Uuid::nil() &&
-                !msg.content.trim().is_empty() &&
-                msg.author_id != Uuid::nil()
-        });
-
-        // Ordina per timestamp
+        list.retain(|msg| Self::validate_incoming_message(msg));
+        Self::deduplicate_messages(&mut list);
         list.sort_by_key(|m| m.created_at);
 
         debug!("Refreshing messages: {} valid messages", list.len());
 
-        // Aggiorna UI
         state.messages = list.clone();
 
-        // Aggiorna cache se abbiamo una conversazione corrente
         if let Some(cid) = state.cid {
             state.conversation_messages.insert(cid, list);
             debug!("Refreshed {} messages for conversation {}", state.messages.len(), cid);
@@ -215,7 +291,6 @@ impl EventHandler {
             Self::add_system_message(state, "✨ Lista conversazioni aggiornata".into());
         }
 
-        // Verifica se la conversazione corrente esiste ancora
         if let Some(current_cid) = state.cid {
             if !conversations.iter().any(|c| c.id == current_cid) {
                 warn!("Current conversation {} no longer exists, clearing selection", current_cid);
@@ -223,12 +298,30 @@ impl EventHandler {
                 state.conv_title.clear();
                 state.messages.clear();
                 state.page = Page::Conversations;
-                Self::add_system_message(state, "⚠ La conversazione corrente non esiste più".into());
+                Self::add_system_message(state, "⚠️ La conversazione corrente non esiste più".into());
             }
         }
 
-        // Cleanup delle cache per conversazioni che non esistono più
         Self::cleanup_old_conversations(state);
+    }
+
+    // NUOVO: Handler per conversazione singola caricata
+    fn handle_single_conversation_loaded(state: &mut super::core::AppState, conversation: ConversationDto) {
+        if let Some(ref mut conversations) = state.conversations {
+            // Controlla se la conversazione esiste già
+            if !conversations.iter().any(|c| c.id == conversation.id) {
+                conversations.push(conversation.clone());
+                info!("Added new conversation '{}' to existing list", conversation.title);
+
+                // Notifica discreta all'utente
+                Self::add_system_message(state,
+                                         format!("Nuova conversazione: {}", conversation.title));
+            }
+        } else {
+            // Se non ci sono conversazioni caricate, inizializza con questa
+            state.conversations = Some(vec![conversation.clone()]);
+            info!("Initialized conversations list with new conversation");
+        }
     }
 
     fn handle_all_messages_loaded(
@@ -239,25 +332,19 @@ impl EventHandler {
         info!("Loaded {} total messages across {} conversations", 
               total_messages, messages_map.len());
 
-        // Validazione e pulizia dei messaggi
         let mut cleaned_map = HashMap::new();
-        for (conv_id, messages) in messages_map {
-            let valid_messages: Vec<_> = messages.into_iter()
-                .filter(|msg| {
-                    msg.conversation_id != Uuid::nil() &&
-                        !msg.content.trim().is_empty() &&
-                        msg.author_id != Uuid::nil()
-                })
-                .collect();
+        for (conv_id, mut messages) in messages_map {
+            messages.retain(|msg| Self::validate_incoming_message(msg));
+            Self::deduplicate_messages(&mut messages);
+            messages.sort_by_key(|m| m.created_at);
 
-            if !valid_messages.is_empty() {
-                cleaned_map.insert(conv_id, valid_messages);
+            if !messages.is_empty() {
+                cleaned_map.insert(conv_id, messages);
             }
         }
 
         state.conversation_messages = cleaned_map;
 
-        // Se c'è una conversazione corrente, carica i suoi messaggi nell'UI
         if let Some(cid) = state.cid {
             if let Some(msgs) = state.conversation_messages.get(&cid).cloned() {
                 state.messages = msgs;
@@ -270,42 +357,32 @@ impl EventHandler {
     fn handle_message_send_failed(state: &mut super::core::AppState, failed_message_id: Uuid) {
         warn!("Message send failed: {}", failed_message_id);
 
-        let mut ui_removed = 0;
-        let mut cache_removed = 0;
-
-        // Rimuovi il messaggio fallito dalla UI
         let old_ui_len = state.messages.len();
         state.messages.retain(|msg| msg.id != failed_message_id);
-        ui_removed = old_ui_len - state.messages.len();
+        let ui_removed = old_ui_len - state.messages.len();
 
-        // Rimuovi dalla cache
         if let Some(cid) = state.cid {
             if let Some(messages) = state.conversation_messages.get_mut(&cid) {
                 let old_cache_len = messages.len();
                 messages.retain(|msg| msg.id != failed_message_id);
-                cache_removed = old_cache_len - messages.len();
+                let cache_removed = old_cache_len - messages.len();
+                debug!("Removed failed message - UI: {}, Cache: {}", ui_removed, cache_removed);
             }
         }
 
-        debug!("Removed failed message - UI: {}, Cache: {}", ui_removed, cache_removed);
-        Self::add_system_message(state, "❌ Invio messaggio fallito".into());
+        Self::add_system_message(state, "⌫ Invio messaggio fallito".into());
     }
 
     fn handle_conversation_created(state: &mut super::core::AppState, conversation_id: Uuid) {
         info!("New conversation created: {}", conversation_id);
-
-        // Inizializza cache vuota per la nuova conversazione
         state.conversation_messages.insert(conversation_id, vec![]);
         Self::add_system_message(state, "🎉 Conversazione creata!".into());
-
-        // Ricarica la lista conversazioni per includere la nuova
         state.request_conversations_refresh = true;
     }
 
     fn handle_logout(state: &mut super::core::AppState) {
         info!("User logout");
 
-        // Chiudi WebSocket se attivo
         if let Some(ctrl) = state.ws_ctrl.take() {
             let _ = ctrl.shutdown.send(());
         }
@@ -325,68 +402,85 @@ impl EventHandler {
         state.request_ws_reconnect = false;
         state.request_conversations_refresh = false;
 
-        // Pulizia campi specifici
         state.group_name.clear();
         state.dm_user_username_input.clear();
         state.invite_conversation_id.clear();
         state.last_created_invite = None;
         state.last_invite_token = None;
 
-        // Pulizia cache e stato di caricamento
         state.conversation_messages.clear();
         state.is_initial_load_complete = false;
         state.is_loading = false;
 
-        // Messaggio finale
         state.messages.push(MessageDto::system_message("👋 Logout effettuato".into()));
     }
 
-    // === HELPER METHODS MIGLIORATI ===
+    // === HELPER METHODS ===
 
     fn add_system_message(state: &mut super::core::AppState, content: String) {
         let msg = MessageDto::system_message(content);
         state.messages.push(msg);
 
-        // Limita il numero di messaggi di sistema per evitare overflow
         let system_message_count = state.messages
             .iter()
             .filter(|m| m.author_id == Uuid::nil())
             .count();
 
         if system_message_count > 50 {
-            // Rimuovi i messaggi di sistema più vecchi
-            state.messages.retain(|m| m.author_id != Uuid::nil());
-            // Mantieni solo gli ultimi 20 messaggi di sistema
+            let mut non_system: Vec<_> = state.messages
+                .iter()
+                .filter(|m| m.author_id != Uuid::nil())
+                .cloned()
+                .collect();
+
             let recent_system: Vec<_> = state.messages
                 .iter()
-                .rev()
                 .filter(|m| m.author_id == Uuid::nil())
+                .rev()
                 .take(20)
                 .cloned()
                 .collect();
 
-            state.messages.retain(|m| m.author_id != Uuid::nil());
-            state.messages.extend(recent_system);
-            state.messages.sort_by_key(|m| m.created_at);
+            non_system.extend(recent_system);
+            non_system.sort_by_key(|m| m.created_at);
+            state.messages = non_system;
         }
     }
 
-    /// Aggiorna la cache dei messaggi in modo atomico
-    /// Ritorna true se il messaggio è stato aggiunto, false se già esisteva
-    fn update_message_cache(state: &mut super::core::AppState, msg: &MessageDto) -> bool {
+    fn validate_incoming_message(msg: &MessageDto) -> bool {
+        if msg.conversation_id == Uuid::nil() {
+            warn!("Received message with nil conversation_id, ignoring: {:?}", msg.id);
+            return false;
+        }
+
+        if msg.content.trim().is_empty() {
+            warn!("Received message with empty content, ignoring: {:?}", msg.id);
+            return false;
+        }
+
+        if msg.author_id == Uuid::nil() && msg.author_username != "system" {
+            warn!("Received message with nil author_id (non-system), ignoring: {:?}", msg.id);
+            return false;
+        }
+
+        true
+    }
+
+    fn update_message_cache_improved(state: &mut super::core::AppState, msg: &MessageDto) -> bool {
         let conversation_cache = state
             .conversation_messages
             .entry(msg.conversation_id)
             .or_insert_with(Vec::new);
 
-        // Evita duplicati basati su ID messaggio
         if conversation_cache.iter().any(|existing| existing.id == msg.id) {
             return false;
         }
 
-        // Inserisci in ordine cronologico nella cache
         let insert_pos = conversation_cache
-            .binary_search_by_key(&msg.created_at, |m| m.created_at)
+            .binary_search_by(|existing| {
+                existing.created_at.cmp(&msg.created_at)
+                    .then_with(|| existing.id.cmp(&msg.id))
+            })
             .unwrap_or_else(|pos| pos);
 
         conversation_cache.insert(insert_pos, msg.clone());
@@ -397,17 +491,17 @@ impl EventHandler {
         true
     }
 
-    /// Aggiorna i messaggi dell'UI in modo sicuro
-    fn update_ui_messages(state: &mut super::core::AppState, msg: MessageDto) {
-        // Evita duplicati nell'UI
+    fn update_ui_messages_improved(state: &mut super::core::AppState, msg: MessageDto) {
         if state.messages.iter().any(|existing| existing.id == msg.id) {
             debug!("Message already exists in UI, skipping: {}", msg.id);
             return;
         }
 
-        // Inserisci in ordine cronologico nell'UI
         let ui_insert_pos = state.messages
-            .binary_search_by_key(&msg.created_at, |m| m.created_at)
+            .binary_search_by(|existing| {
+                existing.created_at.cmp(&msg.created_at)
+                    .then_with(|| existing.id.cmp(&msg.id))
+            })
             .unwrap_or_else(|pos| pos);
 
         state.messages.insert(ui_insert_pos, msg.clone());
@@ -416,42 +510,10 @@ impl EventHandler {
                msg.content.len(), msg.author_username);
     }
 
-    pub fn sync_ui_with_cache(state: &mut super::core::AppState) {
-        if let Some(current_cid) = state.cid {
-            if let Some(cached_messages) = state.conversation_messages.get(&current_cid).cloned() {
-                // Mantieni solo i messaggi di sistema più recenti dall'UI
-                let recent_system_messages: Vec<_> = state.messages
-                    .iter()
-                    .rev()
-                    .take(20)
-                    .filter(|m| m.author_id == Uuid::nil())
-                    .cloned()
-                    .collect();
-
-                // Ricostruisci UI con cache + messaggi di sistema
-                let mut new_messages = cached_messages;
-                new_messages.extend(recent_system_messages);
-                new_messages.sort_by_key(|m| m.created_at);
-
-                state.messages = new_messages;
-
-                info!("UI synchronized with message cache for conversation {}", current_cid);
-            }
-        }
-    }
-
-    pub fn force_refresh_current_conversation(state: &mut super::core::AppState) {
-        if let Some(cid) = state.cid {
-            info!("Force refreshing conversation {}", cid);
-            state.load_single_conversation_messages(cid);
-        }
-    }
-
-    pub fn get_conversation_message_count(state: &super::core::AppState, cid: Uuid) -> usize {
-        state.conversation_messages
-            .get(&cid)
-            .map(|msgs| msgs.len())
-            .unwrap_or(0)
+    fn deduplicate_messages(messages: &mut Vec<MessageDto>) {
+        messages.sort_by_key(|m| m.id);
+        messages.dedup_by_key(|m| m.id);
+        messages.sort_by_key(|m| m.created_at);
     }
 
     pub fn cleanup_old_conversations(state: &mut super::core::AppState) {
@@ -469,80 +531,5 @@ impl EventHandler {
                 info!("Cleaned up {} old conversation caches", removed);
             }
         }
-    }
-
-    pub fn add_message_to_conversation(
-        state: &mut super::core::AppState,
-        conversation_id: Uuid,
-        message: MessageDto
-    ) {
-        // Validazione del messaggio
-        if conversation_id == Uuid::nil() ||
-            message.content.trim().is_empty() ||
-            message.author_id == Uuid::nil() {
-            warn!("Invalid message data provided to add_message_to_conversation");
-            return;
-        }
-
-        // Aggiorna cache
-        if Self::update_message_cache(state, &message) {
-            // Aggiorna UI se è la conversazione corrente
-            if Some(conversation_id) == state.cid {
-                Self::update_ui_messages(state, message);
-            }
-        }
-    }
-
-    pub fn get_messages_for_conversation(
-        state: &super::core::AppState,
-        conversation_id: Uuid
-    ) -> Option<&Vec<MessageDto>> {
-        state.conversation_messages.get(&conversation_id)
-    }
-
-    pub fn clear_conversation_cache(state: &mut super::core::AppState, conversation_id: Uuid) {
-        state.conversation_messages.remove(&conversation_id);
-        if Some(conversation_id) == state.cid {
-            state.messages.clear();
-            Self::add_system_message(state, "Cache conversazione pulita".into());
-        }
-        info!("Cleared cache for conversation {}", conversation_id);
-    }
-
-    /// Verifica l'integrità della cache e dell'UI
-    pub fn verify_data_integrity(state: &super::core::AppState) -> Vec<String> {
-        let mut issues = Vec::new();
-
-        // Verifica messaggi UI
-        for msg in &state.messages {
-            if msg.conversation_id == Uuid::nil() && msg.author_id != Uuid::nil() {
-                issues.push(format!("UI message {} has nil conversation_id", msg.id));
-            }
-            if msg.content.trim().is_empty() {
-                issues.push(format!("UI message {} has empty content", msg.id));
-            }
-        }
-
-        // Verifica cache conversazioni
-        for (conv_id, messages) in &state.conversation_messages {
-            if *conv_id == Uuid::nil() {
-                issues.push("Cache contains conversation with nil ID".into());
-            }
-
-            for msg in messages {
-                if msg.conversation_id != *conv_id && msg.author_id != Uuid::nil() {
-                    issues.push(format!(
-                        "Cache message {} belongs to {} but stored in {}",
-                        msg.id, msg.conversation_id, conv_id
-                    ));
-                }
-            }
-        }
-
-        if !issues.is_empty() {
-            warn!("Data integrity issues found: {:?}", issues);
-        }
-
-        issues
     }
 }

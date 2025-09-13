@@ -37,7 +37,7 @@ pub async fn connect(base: &str, token: &str) -> Result<WsStream> {
     let mut req: Request<()> = ws_url.as_str().into_client_request()?;
     req.headers_mut().insert(
         header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", token))?,
+        HeaderValue::from_str(&format!("Bearer {}", token.trim()))?, // CORREZIONE: trim del token
     );
 
     let (ws, resp) = connect_async(req).await?;
@@ -60,7 +60,7 @@ pub async fn subscribe(ws: &mut WsStream) -> Result<()> {
     Ok(())
 }
 
-/// Versione bidirezionale migliorata con gestione errori e heartbeat robusti
+/// Versione bidirezionale con correzioni essenziali
 pub fn spawn_bidirectional_handler(
     mut ws: WsStream,
     mut on_text: impl FnMut(String) + Send + 'static,
@@ -72,8 +72,8 @@ pub fn spawn_bidirectional_handler(
         let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         let mut last_pong = std::time::Instant::now();
         let mut consecutive_failures = 0u32;
-        const MAX_FAILURES: u32 = 5; // Più tollerante per reti instabili
-        const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120); // Timeout più lungo
+        const MAX_FAILURES: u32 = 5;
+        const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
         loop {
             tokio::select! {
@@ -105,9 +105,15 @@ pub fn spawn_bidirectional_handler(
                     debug!("Sending message to server: {}",
                            msg.chars().take(100).collect::<String>());
 
+                    // CORREZIONE: Validazione dimensione messaggio
+                    if msg.len() > 100_000 {
+                        error!("Message too large ({} bytes), dropping", msg.len());
+                        continue;
+                    }
+
                     match ws.send(Message::Text(msg)).await {
                         Ok(_) => {
-                            consecutive_failures = 0; // Reset su successo
+                            consecutive_failures = 0;
                         }
                         Err(e) => {
                             error!("Failed to send message to server: {}", e);
@@ -127,7 +133,14 @@ pub fn spawn_bidirectional_handler(
                         Ok(Message::Text(text)) => {
                             debug!("Received text message: {}",
                                    text.chars().take(100).collect::<String>());
-                            consecutive_failures = 0; // Reset su ricezione riuscita
+                            
+                            // CORREZIONE: Validazione dimensione messaggio ricevuto
+                            if text.len() > 1_000_000 {
+                                error!("Received message too large ({} bytes), ignoring", text.len());
+                                continue;
+                            }
+
+                            consecutive_failures = 0;
                             on_text(text);
                         }
                         Ok(Message::Pong(payload)) => {
@@ -146,7 +159,6 @@ pub fn spawn_bidirectional_handler(
                         }
                         Ok(Message::Close(frame)) => {
                             debug!("Received close frame: {:?}", frame);
-                            // Rispondi al close frame se non l'abbiamo inviato noi
                             let _ = ws.send(Message::Close(None)).await;
                             break;
                         }
@@ -159,6 +171,15 @@ pub fn spawn_bidirectional_handler(
                         Err(e) => {
                             error!("WebSocket receive error: {}", e);
                             consecutive_failures += 1;
+                            
+                            // CORREZIONE: Distingui errori fatali
+                            let error_str = e.to_string().to_lowercase();
+                            if error_str.contains("connection closed") || 
+                               error_str.contains("broken pipe") {
+                                error!("Connection terminated by peer");
+                                break;
+                            }
+
                             if consecutive_failures >= MAX_FAILURES {
                                 error!("Too many consecutive receive failures ({}), closing connection",
                                        consecutive_failures);
@@ -175,7 +196,6 @@ pub fn spawn_bidirectional_handler(
                 _ = ping_interval.tick() => {
                     let elapsed_since_pong = last_pong.elapsed();
 
-                    // Controlla se è passato troppo tempo dall'ultimo pong
                     if elapsed_since_pong > PING_TIMEOUT {
                         error!("No pong received for {:?}, connection appears dead", elapsed_since_pong);
                         break;
@@ -218,7 +238,7 @@ pub fn spawn_bidirectional_handler(
     }
 }
 
-/// Versione semplificata per test/debugging con migliore gestione errori
+/// Versione semplificata con correzioni basilari
 pub fn spawn_simple_handler(
     mut ws: WsStream,
     mut on_text: impl FnMut(String) + Send + 'static,
@@ -231,6 +251,7 @@ pub fn spawn_simple_handler(
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     debug!("Simple WebSocket handler shutdown");
+                    let _ = ws.send(Message::Close(None)).await; // CORREZIONE: Graceful close
                     break;
                 }
 

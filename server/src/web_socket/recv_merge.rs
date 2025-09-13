@@ -37,8 +37,8 @@ pub async fn spawn_receiver(
     let mut current_conversations = HashSet::new();
 
     Ok(tokio::spawn(async move {
-        // Timer per refresh periodico delle conversazioni
-        let mut refresh_interval = interval(Duration::from_secs(60));
+        // Timer più frequente per rilevare velocemente nuove conversazioni
+        let mut refresh_interval = interval(Duration::from_secs(10));
 
         loop {
             select! {
@@ -47,9 +47,9 @@ pub async fn spawn_receiver(
                     break;
                 }
 
-                // Refresh periodico delle conversazioni dell'utente
+                // Refresh più frequente per rilevare cambiamenti nelle conversazioni
                 _ = refresh_interval.tick() => {
-                    match refresh_user_conversations_safe(&state, user_id, &mut combined, &mut current_conversations).await {
+                    match refresh_user_conversations_improved(&state, user_id, &mut combined, &mut current_conversations).await {
                         Ok(changed) => {
                             if changed {
                                 info!("Updated conversation list for user {} ({} conversations)",
@@ -91,7 +91,6 @@ pub async fn spawn_receiver(
                         }
                         Some(Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped))) => {
                             warn!("User {} lagged behind, skipped {} messages", user_id, skipped);
-                            // Invia notifica al client che ha perso messaggi
                             let lag_notice = format!(
                                 r#"{{"type":"system","message":"Missed {} messages due to slow connection","skipped":{}}}"#,
                                 skipped, skipped
@@ -106,16 +105,14 @@ pub async fn spawn_receiver(
                         None => {
                             // Tutti gli stream sono terminati
                             warn!("All streams ended for user {}, attempting refresh", user_id);
-                            match refresh_user_conversations_safe(&state, user_id, &mut combined, &mut current_conversations).await {
+                            match refresh_user_conversations_improved(&state, user_id, &mut combined, &mut current_conversations).await {
                                 Ok(true) => {
                                     info!("Successfully refreshed streams for user {}", user_id);
                                     continue;
                                 }
                                 Ok(false) => {
-                                    // Nessuna conversazione disponibile
                                     info!("No conversations available for user {}", user_id);
-                                    // Continua ad ascoltare per nuove conversazioni
-                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
                                     continue;
                                 }
                                 Err(e) => {
@@ -132,14 +129,14 @@ pub async fn spawn_receiver(
     }))
 }
 
-/// Versione migliorata che evita race conditions nel refresh delle conversazioni
-async fn refresh_user_conversations_safe(
+/// Versione migliorata che rileva automaticamente nuove conversazioni
+async fn refresh_user_conversations_improved(
     state: &AppState,
     user_id: Uuid,
     combined: &mut futures::stream::SelectAll<BroadcastStream<Value>>,
     current_conversations: &mut HashSet<Uuid>,
 ) -> Result<bool> {
-    // Usa il nuovo metodo thread-safe per ottenere i canali
+    // Usa il metodo thread-safe per ottenere i canali
     let user_channels = state
         .get_user_channels(user_id)
         .await
@@ -151,6 +148,33 @@ async fn refresh_user_conversations_safe(
     // Controlla se ci sono cambiamenti
     if new_conversations == *current_conversations {
         return Ok(false); // Nessun cambiamento
+    }
+
+    // Log dettagliato delle conversazioni aggiunte/rimosse
+    let added: Vec<_> = new_conversations.difference(current_conversations).collect();
+    let removed: Vec<_> = current_conversations.difference(&new_conversations).collect();
+
+    if !added.is_empty() {
+        info!("User {} automatically joined new conversations: {:?}", user_id, added);
+
+        // Invia notifica per ogni nuova conversazione
+        for &conv_id in &added {
+            let notification = serde_json::json!({
+                "type": "new_conversation_available",
+                "conversation_id": conv_id,
+                "message": "Nuova conversazione disponibile",
+                "timestamp": chrono::Utc::now().timestamp(),
+            });
+
+            // Trova il canale per questa conversazione e invia la notifica
+            if let Some((_, tx)) = user_channels.iter().find(|(id, _)| *id == *conv_id) {
+                let _ = tx.send(notification); // Best effort, non bloccare se fallisce
+            }
+        }
+    }
+
+    if !removed.is_empty() {
+        info!("User {} left conversations: {:?}", user_id, removed);
     }
 
     info!(

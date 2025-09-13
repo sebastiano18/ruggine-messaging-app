@@ -115,6 +115,35 @@ impl AppState {
         DataLoader::load_single_conversation_messages(self, cid);
     }
 
+    // NUOVO: Carica una conversazione specifica invece di tutte
+    pub fn load_specific_conversation(&self, conversation_id: Uuid) {
+        if let Some(ref token) = self.token {
+            let base = self.base.clone();
+            let token = token.clone();
+            let tx = self.ui_tx.clone();
+
+            self.rt.spawn(async move {
+                // Prima prova a caricare solo la conversazione specifica
+                match crate::api::conversation::get_conversation(&base, &token, conversation_id).await {
+                    Ok(conversation) => {
+                        let _ = tx.send(UiEvent::SingleConversationLoaded(conversation));
+                    }
+                    Err(_) => {
+                        // Fallback: refresh completo se la richiesta specifica fallisce
+                        match crate::api::conversation::get_conversations(&base, &token).await {
+                            Ok(conversations) => {
+                                let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UiEvent::Error(format!("Caricamento conversazione fallito: {}", e)));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     // === WebSocket helpers ===
 
     pub fn send_via_websocket(&self, outgoing: Outgoing) {
