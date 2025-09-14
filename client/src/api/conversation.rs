@@ -1,37 +1,37 @@
+use crate::models::ConversationDto;
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::models::ConversationDto;
 
 #[derive(Serialize)]
 pub struct GroupReq<'a> {
-    pub name: &'a str
+    pub name: &'a str,
 }
 
 #[derive(Serialize)]
 pub struct DmReq {
-    pub user_username: String   // UUID dell'altro utente
+    pub user_username: String, // UUID dell'altro utente
 }
 
 #[derive(Deserialize)]
 pub struct CreatedId {
-    pub id: Uuid        // UUID della conversazione o risorsa creata
+    pub id: Uuid, // UUID della conversazione o risorsa creata
 }
 
 #[derive(Serialize)]
 pub struct InviteReq {
-    pub conversation_id: Uuid
+    pub conversation_id: Uuid,
 }
 
 #[derive(Deserialize)]
 pub struct InviteResp {
-    pub token: String
+    pub token: String,
 }
 
 #[derive(Serialize)]
 pub struct JoinByTokenReq<'a> {
-    pub token: &'a str
+    pub token: &'a str,
 }
 
 // === API client ===
@@ -48,22 +48,6 @@ pub async fn create_group(base: &str, token: &str, name: &str) -> Result<Uuid> {
         .json::<CreatedId>()
         .await?;
     Ok(r.id)
-}
-
-pub async fn get_conversation(
-    base: &str,
-    token: &str,
-    conversation_id: Uuid
-) -> Result<ConversationDto, Box<dyn std::error::Error + Send + Sync>> {
-    let r = Client::new()
-        .get(format!("{}/api/conversations/{}", base, conversation_id))
-        .bearer_auth(token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ConversationDto>()
-        .await?;
-    Ok(r)
 }
 
 // Crea o trova una DM
@@ -112,7 +96,9 @@ pub async fn join_by_token(base: &str, token: &str, invite_token: &str) -> Resul
     let r = Client::new()
         .post(format!("{base}/api/invites/join"))
         .bearer_auth(token)
-        .json(&JoinByTokenReq { token: invite_token })
+        .json(&JoinByTokenReq {
+            token: invite_token,
+        })
         .send()
         .await?
         .error_for_status()?

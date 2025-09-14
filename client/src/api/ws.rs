@@ -1,20 +1,19 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use std::borrow::Cow;
-use tokio::sync::{oneshot, mpsc};
-use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+use tokio::net::TcpStream;
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
 use tokio_tungstenite::{
     connect_async,
-    MaybeTlsStream,
-    WebSocketStream,
     tungstenite::{
         client::IntoClientRequest,
-        http::{Request, HeaderValue, header},
+        http::{header, HeaderValue, Request},
         protocol::Message,
     },
+    MaybeTlsStream, WebSocketStream,
 };
-use tokio::net::TcpStream;
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -41,7 +40,10 @@ pub async fn connect(base: &str, token: &str) -> Result<WsStream> {
     );
 
     let (ws, resp) = connect_async(req).await?;
-    debug!("WebSocket connection established with status: {}", resp.status());
+    debug!(
+        "WebSocket connection established with status: {}",
+        resp.status()
+    );
     Ok(ws)
 }
 
@@ -52,10 +54,7 @@ pub async fn subscribe(ws: &mut WsStream) -> Result<()> {
     let subscribe_msg = Message::Text(r#"{"type":"subscribe"}"#.into());
 
     // Timeout per il subscribe
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        ws.send(subscribe_msg)
-    ).await??;
+    tokio::time::timeout(std::time::Duration::from_secs(10), ws.send(subscribe_msg)).await??;
 
     Ok(())
 }
@@ -133,7 +132,7 @@ pub fn spawn_bidirectional_handler(
                         Ok(Message::Text(text)) => {
                             debug!("Received text message: {}",
                                    text.chars().take(100).collect::<String>());
-                            
+
                             // CORREZIONE: Validazione dimensione messaggio ricevuto
                             if text.len() > 1_000_000 {
                                 error!("Received message too large ({} bytes), ignoring", text.len());
@@ -171,10 +170,10 @@ pub fn spawn_bidirectional_handler(
                         Err(e) => {
                             error!("WebSocket receive error: {}", e);
                             consecutive_failures += 1;
-                            
+
                             // CORREZIONE: Distingui errori fatali
                             let error_str = e.to_string().to_lowercase();
-                            if error_str.contains("connection closed") || 
+                            if error_str.contains("connection closed") ||
                                error_str.contains("broken pipe") {
                                 error!("Connection terminated by peer");
                                 break;
@@ -229,7 +228,10 @@ pub fn spawn_bidirectional_handler(
             }
         }
 
-        debug!("WebSocket handler loop ended (failures: {})", consecutive_failures);
+        debug!(
+            "WebSocket handler loop ended (failures: {})",
+            consecutive_failures
+        );
     });
 
     WsControl {

@@ -6,8 +6,10 @@ use uuid::Uuid;
 pub struct ConversationRepo;
 
 impl ConversationRepo {
-
-    pub async fn get_conversation_kind(pool: &SqlitePool, conversation_id: Uuid) -> Result<Option<String>> {
+    pub async fn get_conversation_kind(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+    ) -> Result<Option<String>> {
         let row = sqlx::query("SELECT kind FROM conversations WHERE id = ?")
             .bind(conversation_id.to_string())
             .fetch_optional(pool)
@@ -17,6 +19,7 @@ impl ConversationRepo {
     }
 
     /// Crea un nuovo gruppo e restituisce l'ID della conversazione (UUID).
+    /// IMPORTANTE: Solo il creatore viene aggiunto come partecipante
     pub async fn create_group(pool: &SqlitePool, title: &str, owner_id: Uuid) -> Result<Uuid> {
         let conversation_id = Uuid::new_v4();
 
@@ -25,62 +28,68 @@ impl ConversationRepo {
             "INSERT INTO conversations(id, kind, title, owner_id, created_at)
              VALUES(?, 'group', ?, ?, strftime('%s','now'))",
         )
-            .bind(conversation_id.to_string())
-            .bind(title)
-            .bind(owner_id.to_string())
-            .execute(pool)
-            .await?;
+        .bind(conversation_id.to_string())
+        .bind(title)
+        .bind(owner_id.to_string())
+        .execute(pool)
+        .await?;
 
-        // Aggiungi il creatore come partecipante con ruolo 'owner'
+        // Aggiungi solo il creatore come partecipante con ruolo 'owner'
+        // Gli altri membri si aggiungeranno tramite lazy registration quando inviano messaggi
         sqlx::query(
             "INSERT INTO participants(conversation_id, user_id, role)
              VALUES(?, ?, 'owner')",
         )
-            .bind(conversation_id.to_string())
-            .bind(owner_id.to_string())
-            .execute(pool)
-            .await?;
+        .bind(conversation_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(pool)
+        .await?;
 
         Ok(conversation_id)
     }
 
-    /// Crea (o trova) una DM tra due utenti. Restituisce l'ID conversazione (UUID).
+    /// Crea una DM tra due utenti SENZA aggiungere partecipanti automaticamente.
+    /// I partecipanti verranno aggiunti tramite lazy registration quando inviano il primo messaggio.
     pub async fn create_dm(pool: &SqlitePool, user1_id: Uuid, user2_id: Uuid) -> Result<Uuid> {
-        // Se esiste già, restituiscila
-        if let Some(existing_id) = Self::find_dm(pool, user1_id, user2_id).await? {
+        // Se esiste già una DM tra questi utenti, restituiscila
+        if let Some(existing_id) = Self::find_dm_by_involved_users(pool, user1_id, user2_id).await?
+        {
             return Ok(existing_id);
         }
 
         let conversation_id = Uuid::new_v4();
 
-        // Crea la conversazione DM (title = NULL)
+        // Crea SOLO la conversazione DM - NESSUN partecipante automatico
         sqlx::query(
             "INSERT INTO conversations(id, kind, title, owner_id, created_at)
              VALUES(?, 'dm', NULL, ?, strftime('%s','now'))",
         )
-            .bind(conversation_id.to_string())
-            .bind(user1_id.to_string())
-            .execute(pool)
-            .await?;
+        .bind(conversation_id.to_string())
+        .bind(user1_id.to_string())
+        .execute(pool)
+        .await?;
 
-        // Aggiungi entrambi i partecipanti
-        sqlx::query(
-            "INSERT INTO participants(conversation_id, user_id, role)
-             VALUES(?, ?, 'member'), (?, ?, 'member')",
-        )
-            .bind(conversation_id.to_string())
-            .bind(user1_id.to_string())
-            .bind(conversation_id.to_string())
-            .bind(user2_id.to_string())
-            .execute(pool)
-            .await?;
+        // RIMOSSO: Non aggiungere automaticamente partecipanti
+        // Questo permetterà la lazy registration quando inviano il primo messaggio
+
+        tracing::info!(
+            "Created empty DM conversation {} for users {} and {} (no auto-participants)",
+            conversation_id,
+            user1_id,
+            user2_id
+        );
 
         Ok(conversation_id)
     }
 
-    /// Trova una DM esistente tra due utenti, se presente.
-    pub async fn find_dm(pool: &SqlitePool, user1_id: Uuid, user2_id: Uuid) -> Result<Option<Uuid>> {
-        let row = sqlx::query(
+    /// Trova una DM esistente tra due utenti basandosi sui messaggi inviati o partecipazione
+    pub async fn find_dm_by_involved_users(
+        pool: &SqlitePool,
+        user1_id: Uuid,
+        user2_id: Uuid,
+    ) -> Result<Option<Uuid>> {
+        // Prima prova: cerca DM con entrambi come partecipanti (metodo tradizionale)
+        let participant_based = sqlx::query_scalar::<_, String>(
             r#"
             SELECT c.id
             FROM conversations c
@@ -96,15 +105,50 @@ impl ConversationRepo {
             LIMIT 1
             "#,
         )
-            .bind(user1_id.to_string())
-            .bind(user2_id.to_string())
-            .fetch_optional(pool)
-            .await?;
+        .bind(user1_id.to_string())
+        .bind(user2_id.to_string())
+        .fetch_optional(pool)
+        .await?;
 
-        Ok(row.map(|r| {
-            let id_str: String = r.get("id");
-            Uuid::parse_str(&id_str).expect("DB must store valid UUIDs")
-        }))
+        if let Some(conv_id_str) = participant_based {
+            return Ok(Some(
+                Uuid::parse_str(&conv_id_str).expect("DB must store valid UUIDs"),
+            ));
+        }
+
+        // Seconda prova: cerca DM basandosi sui messaggi inviati (per lazy registration)
+        let message_based = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT c.id
+            FROM conversations c
+            WHERE c.kind = 'dm'
+              AND EXISTS(
+                    SELECT 1 FROM messages m1
+                    WHERE m1.conversation_id = c.id AND m1.author_id = ?
+              )
+              AND EXISTS(
+                    SELECT 1 FROM messages m2
+                    WHERE m2.conversation_id = c.id AND m2.author_id = ?
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(user1_id.to_string())
+        .bind(user2_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(message_based
+            .map(|conv_id_str| Uuid::parse_str(&conv_id_str).expect("DB must store valid UUIDs")))
+    }
+
+    /// Trova una DM esistente (metodo legacy per compatibilità)
+    pub async fn find_dm(
+        pool: &SqlitePool,
+        user1_id: Uuid,
+        user2_id: Uuid,
+    ) -> Result<Option<Uuid>> {
+        Self::find_dm_by_involved_users(pool, user1_id, user2_id).await
     }
 
     /// Aggiunge un membro a una conversazione (id conversazione e utente sono UUID).
@@ -113,16 +157,19 @@ impl ConversationRepo {
             "INSERT OR IGNORE INTO participants(conversation_id, user_id, role)
              VALUES(?, ?, 'member')",
         )
-            .bind(conversation_id.to_string())
-            .bind(user_id.to_string())
-            .execute(pool)
-            .await?;
+        .bind(conversation_id.to_string())
+        .bind(user_id.to_string())
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
     /// Restituisce le conversazioni dell'utente con tutti i campi necessari.
     /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at)
-    pub async fn by_user(pool: &SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
+    pub async fn by_user(
+        pool: &SqlitePool,
+        user_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
         let rows = sqlx::query(
             r#"
         SELECT
@@ -131,22 +178,38 @@ impl ConversationRepo {
             CASE
                 WHEN c.kind = 'group' THEN c.title
                 WHEN c.kind = 'dm' THEN (
-                    SELECT u.username
-                    FROM participants p2
-                    JOIN users u ON p2.user_id = u.id
-                    WHERE p2.conversation_id = c.id AND p2.user_id != ?
-                    LIMIT 1
+                    -- Per DM, mostra l'altro utente basandosi sui messaggi se non ci sono partecipanti
+                    COALESCE(
+                        (SELECT u.username
+                         FROM participants p2
+                         JOIN users u ON p2.user_id = u.id
+                         WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                         LIMIT 1),
+                        (SELECT u.username
+                         FROM messages m
+                         JOIN users u ON m.author_id = u.id
+                         WHERE m.conversation_id = c.id AND m.author_id != ?
+                         ORDER BY m.created_at DESC
+                         LIMIT 1)
+                    )
                 )
                 ELSE 'Unknown'
             END AS display_title,
             c.owner_id,
             c.created_at
         FROM conversations c
-        JOIN participants p ON c.id = p.conversation_id
+        LEFT JOIN participants p ON c.id = p.conversation_id AND p.user_id = ?
         WHERE p.user_id = ?
+           OR (c.kind = 'dm' AND EXISTS(
+                SELECT 1 FROM messages m 
+                WHERE m.conversation_id = c.id AND m.author_id = ?
+           ))
         ORDER BY c.created_at DESC
         "#,
         )
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
             .bind(user_id.to_string())
             .bind(user_id.to_string())
             .fetch_all(pool)
@@ -157,13 +220,13 @@ impl ConversationRepo {
             .map(|r| {
                 let id_str: String = r.get("id");
                 let kind: String = r.get("kind");
-                let display_title: String = r.get("display_title");
+                let display_title: Option<String> = r.get("display_title");
                 let owner_id_str: String = r.get("owner_id");
                 let created_at: i64 = r.get("created_at");
                 (
                     Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
                     kind,
-                    display_title,
+                    display_title.unwrap_or_else(|| "Unknown".to_string()),
                     Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
                     created_at,
                 )
@@ -173,9 +236,7 @@ impl ConversationRepo {
 
     /// Verifica se `user_id` è owner della conversazione.
     pub async fn is_owner(pool: &SqlitePool, conversation_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT 1 FROM conversations WHERE id = ? AND owner_id = ?",
-        )
+        let row = sqlx::query("SELECT 1 FROM conversations WHERE id = ? AND owner_id = ?")
             .bind(conversation_id.to_string())
             .bind(user_id.to_string())
             .fetch_optional(pool)
@@ -184,14 +245,17 @@ impl ConversationRepo {
     }
 
     /// Verifica se `user_id` è partecipante della conversazione.
-    pub async fn is_participant(pool: &SqlitePool, conversation_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ?",
-        )
-            .bind(conversation_id.to_string())
-            .bind(user_id.to_string())
-            .fetch_optional(pool)
-            .await?;
+    pub async fn is_participant(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool> {
+        let row =
+            sqlx::query("SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ?")
+                .bind(conversation_id.to_string())
+                .bind(user_id.to_string())
+                .fetch_optional(pool)
+                .await?;
         Ok(row.is_some())
     }
 }

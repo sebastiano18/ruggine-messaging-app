@@ -1,4 +1,4 @@
-// In models.rs (client)
+// models.rs - Updated with new events
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -106,42 +106,73 @@ pub enum LoginState {
     LoggedIn,
 }
 
-#[derive(Debug, Clone,Serialize,Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Outgoing {
-    ChatMessage { cid: Uuid, content: String },
+    ChatMessage {
+        cid: Uuid,
+        content: String,
+        target_username: Option<String>
+    },
     InviteUser { cid: Uuid, username: String },
     Typing { cid: Uuid, is_typing: bool },
 }
 
-// === UI EVENTS ===
+// === UPDATED UI EVENTS ===
 #[derive(Debug)]
 pub enum UiEvent {
+    // Auth events
     Info(String),
     Error(String),
     LoginStarted,
     RegisterStarted,
-    Logged(String /* token */, Uuid /* user_id */),
-    Opened(Uuid),
+    Logged(String, Uuid),
+    LoggedOut,
+
+    // WebSocket events
     WsConnected,
     WsDisconnected,
     WsControlReady(crate::api::ws::WsControl),
     WsError(String),
     WsIncoming(MessageDto),
-    RefreshedMsgs(Vec<MessageDto>),
+
+    // Conversation events
+    Opened(Uuid),
+    ConversationCreated(Uuid),
+    DmStubCreated(Uuid, String),
+
+    // Data loading events
     ConversationsLoaded(Vec<ConversationDto>),
-    LoggedOut,
-    InviteCreated(String),
     AllMessagesLoaded(HashMap<Uuid, Vec<MessageDto>>),
+    RefreshedMsgs(Vec<MessageDto>),
+    SingleConversationLoaded(ConversationDto),
     InitialLoadComplete,
     LoadingProgress(String),
+
+    // Message events
     MessageSendFailed(Uuid),
-    ConversationCreated(Uuid),
-    // NUOVO evento per conversazione singola
-    SingleConversationLoaded(ConversationDto),
+
+    // General events
+    InviteCreated(String),
+
+    // FETCH-ON-SUBSCRIBE EVENTS
+    FetchConversationMessages(Uuid, String),
+    FetchedMessages(Uuid, Vec<MessageDto>),
+
+    // NEW: Conversation management events
+    ConversationAdded(Uuid, String), // conversation_id, reason
+    ConversationListUpdated,
+}
+
+#[derive(Deserialize)]
+pub struct MessageResponse {
+    pub id: String,
+    pub author_id: String,
+    pub author_username: String,
+    pub content: String,
+    pub created_at: i64,
 }
 
 impl MessageDto {
-    /// Helper per creare messaggi di sistema
     pub fn system_message(content: String) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -149,6 +180,21 @@ impl MessageDto {
             conversation_id: Uuid::nil(),
             author_username: "system".to_string(),
             content,
+            created_at: chrono::Utc::now().timestamp(),
+        }
+    }
+
+    pub fn is_system_message(&self) -> bool {
+        self.author_id == Uuid::nil() && self.author_username == "system"
+    }
+
+    pub fn fetch_notification(conversation_id: Uuid, message_count: usize, reason: &str) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            author_id: Uuid::nil(),
+            conversation_id,
+            author_username: "system".to_string(),
+            content: format!("Sincronizzati {} messaggi ({})", message_count, reason),
             created_at: chrono::Utc::now().timestamp(),
         }
     }

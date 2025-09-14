@@ -286,45 +286,22 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
                 ui.add_space(8.0);
 
                 let can_dm = !s.dm_user_username_input.trim().is_empty();
+
                 if action_button(ui, "🚀 Inizia Chat", can_dm) {
                     let target_username = s.dm_user_username_input.trim().to_owned();
-                    let base = s.base.clone();
-                    let tx = s.ui_tx.clone();
-                    let token2 = token.to_string();
+
+                    // Genera UUID per lo stub locale
+                    let stub_conversation_id = Uuid::new_v4();
+
+                    // Crea solo lo stub locale - la conversazione sarà creata sul server al primo messaggio
+                    let _ = s.ui_tx.send(UiEvent::DmStubCreated(stub_conversation_id, target_username.clone()));
+
+                    // Pulisci l'input e dai feedback
                     s.dm_user_username_input.clear();
-
-                    rt.spawn(async move {
-                        match api::conversation::create_dm(&base, &token2, target_username).await {
-                            Ok(cid) => {
-                                let _ = tx.send(UiEvent::Info("Chat creata! Aggiornamento lista...".into()));
-
-                                // Attendi un momento per permettere al server di processare
-                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-
-                                // Ricarica le conversazioni
-                                match crate::api::conversation::get_conversations(&base, &token2).await {
-                                    Ok(conversations) => {
-                                        // Invia la lista aggiornata
-                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-
-                                        // Prova ad aprire la conversazione
-                                        let _ = tx.send(UiEvent::Opened(cid));
-                                        let _ = tx.send(UiEvent::Info("Chat privata avviata!".into()));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(UiEvent::Error(format!(
-                                            "Chat creata ma errore nel refresh: {}",
-                                            e
-                                        )));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let _ =
-                                    tx.send(UiEvent::Error(format!("Creazione DM fallita: {}", e)));
-                            }
-                        }
-                    });
+                    let _ = s.ui_tx.send(UiEvent::Info(format!(
+                        "Chat con {} pronta - invia il primo messaggio per iniziare!",
+                        target_username
+                    )));
                 }
 
                 if !can_dm {
