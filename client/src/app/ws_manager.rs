@@ -1,3 +1,5 @@
+// ws_manager.rs - Updated for new events
+
 use crate::state::AppState;
 use serde_json::Value;
 use uuid::Uuid;
@@ -12,14 +14,11 @@ impl WebSocketManager {
     }
 
     pub fn ensure_ws_lifecycle(&mut self, state: &mut AppState) {
-        // 1) drena la coda dei messaggi UI -> WS
         self.process_outgoing_messages(state);
 
-        // 2) se non autenticato, niente WS
         if state.token.is_none() {
             if state.ws_status != WsStatus::Disconnected {
                 state.ws_status = WsStatus::Disconnected;
-                // Chiudi connessione esistente se presente
                 if let Some(ctrl) = state.ws_ctrl.take() {
                     let _ = ctrl.shutdown.send(());
                 }
@@ -27,17 +26,14 @@ impl WebSocketManager {
             return;
         }
 
-        // 3) gestione riconnessione manuale
         if state.request_ws_reconnect && state.ws_status != WsStatus::Connecting {
             state.request_ws_reconnect = false;
             state.ws_status = WsStatus::Disconnected;
-            // Chiudi connessione esistente
             if let Some(ctrl) = state.ws_ctrl.take() {
                 let _ = ctrl.shutdown.send(());
             }
         }
 
-        // 4) avvio/tenuta connessione
         match state.ws_status {
             WsStatus::Disconnected => self.start_websocket_connection(state),
             WsStatus::Connecting | WsStatus::Connected => { /* no-op */ }
@@ -47,37 +43,42 @@ impl WebSocketManager {
     fn process_outgoing_messages(&self, state: &mut AppState) {
         let mut processed_count = 0;
 
-        // Drena la coda UI -> rete con limite per evitare loop infiniti
         while let Ok(outgoing) = state.ui_to_net_rx.try_recv() {
             processed_count += 1;
-            if processed_count > 100 { // Limite di sicurezza
+            if processed_count > 100 {
                 warn!("Too many outgoing messages in queue, stopping processing");
                 break;
             }
 
             if let Some(ref ws_ctrl) = state.ws_ctrl {
-                // Serializza con conversione field names compatibili con server
                 let json_msg = match &outgoing {
-                    Outgoing::ChatMessage { cid, content } => {
-                        // Validazione contenuto messaggio
+                    Outgoing::ChatMessage { cid, content, target_username } => {
                         if content.trim().is_empty() {
                             warn!("Attempted to send empty message, skipping");
                             continue;
                         }
-                        if content.len() > 10000 { // Limite ragionevole
+                        if content.len() > 10000 {
                             warn!("Message too long ({} chars), truncating", content.len());
                             let truncated = content.chars().take(10000).collect::<String>();
-                            serde_json::json!({
+                            let mut json_obj = serde_json::json!({
                                 "type": "chat_message",
                                 "cid": cid,
                                 "content": truncated
-                            }).to_string()
+                            });
+                            if let Some(ref username) = target_username {
+                                json_obj["target_username"] = serde_json::Value::String(username.clone());
+                            }
+                            json_obj.to_string()
                         } else {
-                            serde_json::json!({
+                            let mut json_obj = serde_json::json!({
                                 "type": "chat_message",
                                 "cid": cid,
                                 "content": content
-                            }).to_string()
+                            });
+                            if let Some(ref username) = target_username {
+                                json_obj["target_username"] = serde_json::Value::String(username.clone());
+                            }
+                            json_obj.to_string()
                         }
                     }
                     Outgoing::InviteUser { cid, username } => {
@@ -100,13 +101,13 @@ impl WebSocketManager {
                     }
                 };
 
-                debug!("Sending WebSocket message: {}", 
+                debug!("Sending WebSocket message: {}",
                        json_msg.chars().take(200).collect::<String>());
 
                 if let Err(_) = ws_ctrl.outgoing_tx.send(json_msg) {
                     warn!("WebSocket channel closed, marking as disconnected");
                     let _ = state.ui_tx.send(UiEvent::WsDisconnected);
-                    break; // Esci dal loop se la connessione è morta
+                    break;
                 }
             } else {
                 warn!("Attempted to send message but WebSocket not connected: {:?}", outgoing);
@@ -144,7 +145,6 @@ impl WebSocketManager {
                             let _ = tx.send(UiEvent::WsConnected);
                             let tx_reader = tx.clone();
 
-                            // Handler bidirezionale con gestione errori migliorata
                             let ctrl = crate::api::ws::spawn_bidirectional_handler(ws, move |msg| {
                                 Self::handle_websocket_message(&tx_reader, msg);
                             });
@@ -169,14 +169,12 @@ impl WebSocketManager {
         debug!("Received WebSocket message: {}",
                msg.chars().take(200).collect::<String>());
 
-        // Validazione lunghezza messaggio
-        if msg.len() > 100_000 { // 100KB limit
+        if msg.len() > 100_000 {
             error!("WebSocket message too large ({} bytes), ignoring", msg.len());
             let _ = tx.send(UiEvent::Error("Messaggio WebSocket troppo grande".into()));
             return;
         }
 
-        // Prima prova a parsare come JSON generale con gestione errori rigorosa
         let parsed_value: Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
             Err(e) => {
@@ -186,7 +184,6 @@ impl WebSocketManager {
             }
         };
 
-        // Estrazione rigorosa del tipo di messaggio
         let msg_type = match parsed_value.get("type").and_then(|t| t.as_str()) {
             Some(t) => t,
             None => {
@@ -196,10 +193,16 @@ impl WebSocketManager {
             }
         };
 
-        // Gestione esplicita per ogni tipo di messaggio
         match msg_type {
             "chat_message" => {
                 Self::handle_chat_message(tx, &parsed_value);
+            }
+            "fetch_conversation_messages" => {
+                Self::handle_fetch_request(tx, &parsed_value);
+            }
+            // NEW: Handle conversation added event
+            "conversation_added" => {
+                Self::handle_conversation_added(tx, &parsed_value);
             }
             "typing" => {
                 Self::handle_typing_indicator(tx, &parsed_value);
@@ -209,7 +212,6 @@ impl WebSocketManager {
             }
             "heartbeat_ack" | "server_heartbeat" | "pong" => {
                 debug!("Received heartbeat from server");
-                // Heartbeat dal server, nessuna azione necessaria
             }
             "system" => {
                 Self::handle_system_message(tx, &parsed_value);
@@ -228,8 +230,45 @@ impl WebSocketManager {
         }
     }
 
+    // NEW: Handle conversation added event
+    fn handle_conversation_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        let conversation_id = match Self::parse_conversation_id(value) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid conversation_id in conversation_added event");
+                return;
+            }
+        };
+
+        let reason = value.get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("unknown");
+
+        info!("Received conversation_added event for conversation {} (reason: {})", conversation_id, reason);
+
+        // Trigger conversation list refresh
+        let _ = tx.send(UiEvent::ConversationAdded(conversation_id, reason.to_string()));
+        let _ = tx.send(UiEvent::ConversationListUpdated);
+    }
+
+    fn handle_fetch_request(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        let conversation_id = match Self::parse_conversation_id(value) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid conversation_id in fetch request");
+                return;
+            }
+        };
+
+        let reason = value.get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("unknown");
+
+        info!("Received fetch request for conversation {} (reason: {})", conversation_id, reason);
+        let _ = tx.send(UiEvent::FetchConversationMessages(conversation_id, reason.to_string()));
+    }
+
     fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        // Validazione rigorosa dei campi obbligatori
         let id = match Self::parse_uuid_field(value, "id") {
             Some(id) => id,
             None => {
@@ -272,7 +311,6 @@ impl WebSocketManager {
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-        // Validazione aggiuntiva del contenuto
         let content = if content.len() > 10000 {
             warn!("Message content too long ({} chars), truncating", content.len());
             content.chars().take(10000).collect()
@@ -294,7 +332,6 @@ impl WebSocketManager {
         let _ = tx.send(UiEvent::WsIncoming(dto));
     }
 
-    // Helper functions for UUID parsing
     fn parse_uuid_field(value: &Value, field_name: &str) -> Option<Uuid> {
         value.get(field_name)
             .and_then(|v| v.as_str())
@@ -302,18 +339,15 @@ impl WebSocketManager {
     }
 
     fn parse_conversation_id(value: &Value) -> Option<Uuid> {
-        value.get("cid")
-            .or_else(|| value.get("conversation_id"))
+        value.get("conversation_id")
+            .or_else(|| value.get("cid"))
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok())
     }
 
     fn handle_typing_indicator(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        debug!("Received typing indicator: {}", 
+        debug!("Received typing indicator: {}",
                value.to_string().chars().take(100).collect::<String>());
-
-        // Qui potresti implementare la gestione degli indicatori di scrittura
-        // Per ora li ignoriamo semplicemente
     }
 
     fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
@@ -358,10 +392,8 @@ impl WebSocketManager {
     }
 
     fn handle_conversation_update(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        debug!("Conversation update received: {}", 
+        debug!("Conversation update received: {}",
                value.to_string().chars().take(200).collect::<String>());
-
-        // Qui potresti implementare l'aggiornamento delle conversazioni
         let _ = tx.send(UiEvent::Info("Conversazione aggiornata".into()));
     }
 }

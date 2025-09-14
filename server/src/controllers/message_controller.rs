@@ -1,13 +1,19 @@
 use crate::models::Message;
 use crate::{
-    auth::AuthUser, error::Result, services::message_service::MessageService, state::AppState,
+    auth::AuthUser,
+    error::Result,
+    services::message_service::MessageService,
+    state::AppState,
+    web_socket::helpers::{get_conversation_messages_api, MessageResponse},
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, State, Query},
+    http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::error::AppError;
 
 #[derive(Deserialize)]
 pub struct PostMessageReq {
@@ -17,6 +23,11 @@ pub struct PostMessageReq {
 #[derive(Serialize)]
 pub struct CreatedId {
     pub id: Uuid,
+}
+
+#[derive(Deserialize)]
+pub struct MessageQuery {
+    pub limit: Option<i64>,
 }
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
@@ -57,6 +68,18 @@ pub async fn post(
         &req.content,
         &st,
     )
-    .await?;
+        .await?;
     Ok(Json(CreatedId { id: message_id }))
+}
+
+/// NUOVO: Endpoint per fetch messaggi (usato dal sistema fetch-on-subscribe)
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn fetch_messages(
+    user: AuthUser,
+    Path(conversation_id): Path<Uuid>,
+    Query(params): Query<MessageQuery>,
+    State(st): State<AppState>,
+) -> Result<Json<Vec<MessageResponse>>> {
+    let messages = get_conversation_messages_api(&st, conversation_id, user.id, params.limit).await?;
+    Ok(Json(messages))
 }

@@ -34,19 +34,7 @@ CREATE TABLE messages
     content         TEXT    NOT NULL,
     created_at      INTEGER NOT NULL
 );
-CREATE TABLE pending_messages
-(
-    id              TEXT PRIMARY KEY, -- UUID
-    conversation_id TEXT    NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-    author_id       TEXT    NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    content         TEXT    NOT NULL,
-    created_at      INTEGER NOT NULL
-);
 
--- Indici per performance
-CREATE INDEX idx_pending_messages_conv ON pending_messages (conversation_id);
-CREATE INDEX idx_pending_messages_author ON pending_messages (author_id);
-CREATE INDEX idx_pending_messages_conv_ts ON pending_messages (conversation_id, created_at);
 CREATE TABLE invites
 (
     id              TEXT PRIMARY KEY, -- UUID
@@ -57,3 +45,4 @@ CREATE TABLE invites
 );
 
 CREATE INDEX idx_msgs_conv_ts ON messages (conversation_id, created_at);
+

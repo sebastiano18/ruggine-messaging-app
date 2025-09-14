@@ -47,6 +47,8 @@ impl MessageService {
             .collect())
     }
 
+    /// Post di un messaggio con lazy registration gestita tramite WebSocket
+    /// IMPORTANTE: Rimossa la logica di auto-join, ora gestita in handle_chat_message
     pub async fn post(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
@@ -58,15 +60,42 @@ impl MessageService {
         // Validazione contenuto
         let trimmed_content = content.trim();
         if trimmed_content.is_empty() {
-            return Err(crate::error::AppError::BadRequest("Contenuto messaggio vuoto".into()));
+            return Err(crate::error::AppError::BadRequest(
+                "Contenuto messaggio vuoto".into(),
+            ));
         }
 
         if trimmed_content.len() > 10000 {
-            return Err(crate::error::AppError::BadRequest("Messaggio troppo lungo".into()));
+            return Err(crate::error::AppError::BadRequest(
+                "Messaggio troppo lungo".into(),
+            ));
         }
 
-        // Modello WhatsApp: auto-join dei partecipanti nelle conversazioni DM
-        Self::ensure_dm_participants(pool, conversation_id, author_id).await?;
+        // Verifica che la conversazione esista
+        let conversation_exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE id = ?")
+                .bind(conversation_id.to_string())
+                .fetch_one(pool)
+                .await?;
+
+        if conversation_exists == 0 {
+            return Err(crate::error::AppError::NotFound);
+        }
+
+        // Verifica che l'utente sia autorizzato (partecipante della conversazione)
+        let is_participant: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
+        )
+            .bind(conversation_id.to_string())
+            .bind(author_id.to_string())
+            .fetch_one(pool)
+            .await?;
+
+        if is_participant == 0 {
+            return Err(crate::error::AppError::Forbidden);
+        }
+
+        // RIMOSSO: ensure_dm_participants - ora la lazy registration è gestita in handle_chat_message
 
         let msg_id = MessageRepo::insert(pool, conversation_id, author_id, trimmed_content).await?;
 
@@ -102,170 +131,5 @@ impl MessageService {
         }
 
         Ok(msg_id)
-    }
-
-    // Funzione per auto-join stile WhatsApp nelle conversazioni DM
-    async fn ensure_dm_participants(
-        pool: &SqlitePool,
-        conversation_id: Uuid,
-        author_id: Uuid,
-    ) -> Result<()> {
-        // Controlla se è una conversazione DM
-        let conversation_kind: Option<String> = sqlx::query_scalar(
-            "SELECT kind FROM conversations WHERE id = ?"
-        )
-            .bind(conversation_id.to_string())
-            .fetch_optional(pool)
-            .await?;
-
-        let kind = match conversation_kind {
-            Some(k) => k,
-            None => return Err(crate::error::AppError::NotFound),
-        };
-
-        // Solo per conversazioni DM
-        if kind != "dm" {
-            return Ok(());
-        }
-
-        // Trova tutti gli utenti che hanno mai partecipato a questa conversazione
-        let all_involved_users: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT author_id FROM messages WHERE conversation_id = ?
-             UNION
-             SELECT DISTINCT user_id FROM participants WHERE conversation_id = ?"
-        )
-            .bind(conversation_id.to_string())
-            .bind(conversation_id.to_string())
-            .fetch_all(pool)
-            .await?;
-
-        // Converti in UUID e includi l'autore corrente
-        let mut user_ids: std::collections::HashSet<Uuid> = all_involved_users
-            .into_iter()
-            .filter_map(|id| Uuid::parse_str(&id).ok())
-            .collect();
-
-        user_ids.insert(author_id);
-
-        // Assicurati che tutti siano partecipanti
-        for user_id in user_ids {
-            let is_participant: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
-            )
-                .bind(conversation_id.to_string())
-                .bind(user_id.to_string())
-                .fetch_one(pool)
-                .await?;
-
-            if is_participant == 0 {
-                sqlx::query(
-                    "INSERT INTO participants (conversation_id, user_id, role) 
-                     VALUES (?, ?, 'member')"
-                )
-                    .bind(conversation_id.to_string())
-                    .bind(user_id.to_string())
-                    .execute(pool)
-                    .await?;
-
-                tracing::info!(
-                    "auto-joined user {} to DM conversation {}",
-                    user_id,
-                    conversation_id
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    // Broadcast di eventi di sistema
-    pub async fn broadcast_system_event(
-        state: &AppState,
-        conversation_id: Uuid,
-        event_type: &str,
-        message: &str,
-    ) -> Result<()> {
-        let event = json!({
-            "type": event_type,
-            "conversation_id": conversation_id,
-            "message": message,
-            "timestamp": chrono::Utc::now().timestamp(),
-        });
-
-        broadcast_to_conversation(state, conversation_id, event)
-            .await
-            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
-
-        Ok(())
-    }
-
-    // Indicatori di scrittura
-    pub async fn broadcast_typing_indicator(
-        state: &AppState,
-        conversation_id: Uuid,
-        user_id: Uuid,
-        username: &str,
-        is_typing: bool,
-    ) -> Result<()> {
-        let event = json!({
-            "type": "typing",
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "username": username,
-            "is_typing": is_typing,
-            "timestamp": chrono::Utc::now().timestamp(),
-        });
-
-        broadcast_to_conversation(state, conversation_id, event)
-            .await
-            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
-
-        Ok(())
-    }
-
-    // Notifica utente entrato
-    pub async fn broadcast_user_joined(
-        state: &AppState,
-        conversation_id: Uuid,
-        joined_user_id: Uuid,
-        joined_username: &str,
-    ) -> Result<()> {
-        let event = json!({
-            "type": "user_joined",
-            "conversation_id": conversation_id,
-            "user_id": joined_user_id,
-            "username": joined_username,
-            "message": format!("{} si è unito alla conversazione", joined_username),
-            "timestamp": chrono::Utc::now().timestamp(),
-        });
-
-        broadcast_to_conversation(state, conversation_id, event)
-            .await
-            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
-
-        Ok(())
-    }
-
-    // Notifica utente uscito
-    pub async fn broadcast_user_left(
-        state: &AppState,
-        conversation_id: Uuid,
-        left_user_id: Uuid,
-        left_username: &str,
-    ) -> Result<()> {
-        let event = json!({
-            "type": "user_left",
-            "conversation_id": conversation_id,
-            "user_id": left_user_id,
-            "username": left_username,
-            "message": format!("{} ha lasciato la conversazione", left_username),
-            "timestamp": chrono::Utc::now().timestamp(),
-        });
-
-        broadcast_to_conversation(state, conversation_id, event)
-            .await
-            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
-
-        Ok(())
     }
 }
