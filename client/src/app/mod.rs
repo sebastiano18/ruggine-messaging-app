@@ -4,6 +4,7 @@ pub mod header;
 mod app;
 mod sidebar;
 mod components;
+pub(crate) mod events;
 
 pub use app::App;
 

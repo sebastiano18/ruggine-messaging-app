@@ -5,7 +5,6 @@ use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;
 
 use super::data_loader::DataLoader;
-use super::events::EventHandler;
 
 pub struct AppState {
     pub rt: Runtime,
@@ -109,7 +108,7 @@ impl AppState {
 
     pub fn drain_events(&mut self) {
         while let Ok(ev) = self.ui_rx.try_recv() {
-            EventHandler::handle_event(self, ev);
+            crate::app::events::EventDispatcher::handle_event(self, ev);
         }
     }
 
@@ -139,7 +138,7 @@ impl AppState {
             self.send_via_websocket(Outgoing::ChatMessage {
                 cid,
                 content,
-                target_username
+                target_username,
             });
         }
     }

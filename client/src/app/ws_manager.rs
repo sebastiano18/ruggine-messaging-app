@@ -1,4 +1,4 @@
-// ws_manager.rs - Updated for new events
+// ws_manager.rs - Updated for new events with new_conversation_available handler
 
 use crate::state::AppState;
 use serde_json::Value;
@@ -200,7 +200,10 @@ impl WebSocketManager {
             "fetch_conversation_messages" => {
                 Self::handle_fetch_request(tx, &parsed_value);
             }
-            // NEW: Handle conversation added event
+            // NUOVO: Handle new conversation available event
+            "new_conversation_available" => {
+                Self::handle_new_conversation_available(tx, &parsed_value);
+            }
             "conversation_added" => {
                 Self::handle_conversation_added(tx, &parsed_value);
             }
@@ -210,8 +213,8 @@ impl WebSocketManager {
             "error" => {
                 Self::handle_server_error(tx, &parsed_value);
             }
-            "heartbeat_ack" | "server_heartbeat" | "pong" => {
-                debug!("Received heartbeat from server");
+            "heartbeat_ack" | "server_heartbeat" | "pong" | "user_channel_ready" => {
+                debug!("Received heartbeat/control message from server");
             }
             "system" => {
                 Self::handle_system_message(tx, &parsed_value);
@@ -230,7 +233,35 @@ impl WebSocketManager {
         }
     }
 
-    // NEW: Handle conversation added event
+    // NUOVO: Handle new conversation available event
+    fn handle_new_conversation_available(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+        let conversation_id = match Self::parse_conversation_id(value) {
+            Some(id) => id,
+            None => {
+                warn!("Invalid conversation_id in new_conversation_available event");
+                return;
+            }
+        };
+
+        let creator_id = value.get("creator_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
+        let kind = value.get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        info!("Received new_conversation_available for conversation {} (kind: {}, creator: {:?})",
+              conversation_id, kind, creator_id);
+
+        // Triggera il refresh delle conversazioni per vedere la nuova chat
+        let _ = tx.send(UiEvent::ConversationListUpdated);
+
+        // Invia notifica di nuova conversazione
+        let _ = tx.send(UiEvent::Info(format!("Nuova {} disponibile!",
+                                              if kind == "dm" { "chat privata" } else { "conversazione" })));
+    }
+
     fn handle_conversation_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
         let conversation_id = match Self::parse_conversation_id(value) {
             Some(id) => id,

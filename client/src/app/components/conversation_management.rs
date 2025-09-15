@@ -3,6 +3,7 @@ use crate::api;
 use crate::state::AppState;
 use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Stroke, TextEdit};
 use tokio::runtime::Handle;
+use tracing::info;
 use uuid::Uuid;
 
 // Costanti di stile per matching con sidebar
@@ -292,6 +293,7 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
 
                     // Genera UUID per lo stub locale
                     let stub_conversation_id = Uuid::new_v4();
+                    info!("Creating DM stub with ID: {}", stub_conversation_id);
 
                     // Crea solo lo stub locale - la conversazione sarà creata sul server al primo messaggio
                     let _ = s.ui_tx.send(UiEvent::DmStubCreated(stub_conversation_id, target_username.clone()));

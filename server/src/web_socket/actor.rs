@@ -10,7 +10,11 @@ use tokio::{
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::{helpers::cleanup_empty_channels, reader::spawn_reader, recv_merge::spawn_receiver};
+use super::{
+    helpers::{cleanup_empty_channels, send_initial_fetch_events},
+    reader::spawn_reader,
+    recv_merge::spawn_receiver
+};
 use crate::{error::Result, state::AppState};
 
 #[derive(Debug)]
@@ -38,6 +42,23 @@ impl ConnectionActor {
 
         // Clone dedicato del receiver per il writer
         let mut stop_rx_writer = stop_rx.clone();
+
+        // NUOVO: Auto-subscribe al canale utente per notifiche
+        // Questo assicura che l'utente riceva sempre le notifiche di nuove conversazioni
+        let _user_tx = state.get_or_create_user_notification_channel(user_id).await;
+        info!("Auto-subscribed user {} to their notification channel", user_id);
+
+        // Invia conferma di iscrizione al canale utente
+        let user_channel_ready = json!({
+            "type": "user_channel_ready",
+            "message": "Subscribed to user notification channel",
+            "user_id": user_id,
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        if let Ok(txt) = serde_json::to_string(&user_channel_ready) {
+            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+        }
 
         // Writer: unico proprietario di ws_tx con gestione degli errori migliorata
         let mut writer: JoinHandle<()> = tokio::spawn(async move {
@@ -142,6 +163,14 @@ impl ConnectionActor {
             info!("Writer task ended for user {}", user_id);
         });
 
+        // Invia fetch events iniziali per tutte le conversazioni con messaggi
+        // Fallo PRIMA di avviare il receiver per evitare race conditions
+        if let Err(e) = send_initial_fetch_events(&state, user_id, &out_tx).await {
+            warn!("Failed to send initial fetch events for user {}: {}", user_id, e);
+        } else {
+            info!("Successfully sent initial fetch events for user {}", user_id);
+        }
+
         // Receiver: merge dei broadcast delle conversazioni (server -> client)
         let recv_task_result = spawn_receiver(
             state.clone(),
@@ -150,7 +179,7 @@ impl ConnectionActor {
             stop_tx.clone(),
             stop_rx.clone(),
         )
-        .await;
+            .await;
 
         let mut recv_task = match recv_task_result {
             Ok(task) => task,
