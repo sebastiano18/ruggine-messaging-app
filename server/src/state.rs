@@ -7,7 +7,10 @@ use uuid::Uuid;
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub jwt_secret: String,
+    // Canali per messaggi delle conversazioni (compatibile con codice esistente)
     pub channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
+    // NUOVO: Canali per notifiche utente (nuove conversazioni, etc.)
+    pub user_notification_channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
 }
 
 impl AppState {
@@ -16,6 +19,7 @@ impl AppState {
             pool,
             jwt_secret,
             channels: Arc::new(RwLock::new(HashMap::new())),
+            user_notification_channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -49,6 +53,29 @@ impl AppState {
         tx
     }
 
+    /// Ottiene o crea canale notifiche per un utente
+    pub async fn get_or_create_user_notification_channel(
+        &self,
+        user_id: Uuid,
+    ) -> broadcast::Sender<serde_json::Value> {
+        {
+            let map = self.user_notification_channels.read().await;
+            if let Some(tx) = map.get(&user_id) {
+                return tx.clone();
+            }
+        }
+
+        let mut map = self.user_notification_channels.write().await;
+        if let Some(tx) = map.get(&user_id) {
+            return tx.clone();
+        }
+
+        let (tx, _rx) = broadcast::channel::<serde_json::Value>(256);
+        map.insert(user_id, tx.clone());
+        info!("Created user notification channel for {}", user_id);
+        tx
+    }
+
     /// Metodo helper per ottenere tutti i canali di un utente in modo thread-safe
     pub async fn get_user_channels(
         &self,
@@ -74,6 +101,45 @@ impl AppState {
         Ok(result)
     }
 
+    /// CORE: Notifica creazione di nuova conversazione a tutti i partecipanti
+    pub async fn notify_conversation_created(
+        &self,
+        conversation_id: Uuid,
+        participant_ids: &[Uuid],
+        creator_id: Uuid,
+        conversation_kind: &str,
+        conversation_title: Option<&str>,
+    ) -> usize {
+        let notification = serde_json::json!({
+            "type": "conversation_created",
+            "conversation_id": conversation_id,
+            "creator_id": creator_id,
+            "kind": conversation_kind,
+            "title": conversation_title,
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        let mut total_notified = 0;
+
+        for &participant_id in participant_ids {
+            let user_tx = self.get_or_create_user_notification_channel(participant_id).await;
+
+            match user_tx.send(notification.clone()) {
+                Ok(receivers) => {
+                    total_notified += receivers;
+                    info!("Notified user {} of new conversation {} ({} active receivers)",
+                          participant_id, conversation_id, receivers);
+                }
+                Err(_) => {
+                    info!("No active receivers for user {} notification", participant_id);
+                }
+            }
+        }
+
+        info!("Sent conversation creation notification to {} total receivers", total_notified);
+        total_notified
+    }
+
     /// Ottiene statistiche sui canali (utile per monitoring)
     pub async fn get_channel_stats(&self) -> (usize, usize) {
         let map = self.channels.read().await;
@@ -95,5 +161,39 @@ impl AppState {
         }
 
         false
+    }
+
+    /// Cleanup canali vuoti (migliorato)
+    pub async fn cleanup_empty_channels(&self, user_id: Uuid) {
+        let user_conversations = self.get_user_channels(user_id).await
+            .unwrap_or_default();
+
+        let mut cleaned = 0;
+
+        // Cleanup conversation channels
+        {
+            let mut conv_map = self.channels.write().await;
+            for (conv_id, tx) in &user_conversations {
+                if tx.receiver_count() == 0 {
+                    conv_map.remove(conv_id);
+                    cleaned += 1;
+                }
+            }
+        }
+
+        // Cleanup user notification channel
+        {
+            let mut user_map = self.user_notification_channels.write().await;
+            if let Some(tx) = user_map.get(&user_id) {
+                if tx.receiver_count() == 0 {
+                    user_map.remove(&user_id);
+                    cleaned += 1;
+                }
+            }
+        }
+
+        if cleaned > 0 {
+            info!("Cleaned up {} empty channels for user {}", cleaned, user_id);
+        }
     }
 }
