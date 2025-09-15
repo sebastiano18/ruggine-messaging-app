@@ -3,7 +3,7 @@ use crate::api;
 use crate::state::AppState;
 use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Stroke, TextEdit};
 use tokio::runtime::Handle;
-use tracing::info;
+use tracing::{info, warn, error};
 use uuid::Uuid;
 
 // Costanti di stile per matching con sidebar
@@ -176,7 +176,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             // Sezione sistema inviti
             invites_section(ui, s, &token, &rt_handle);
             ui.add_space(12.0);
-
         });
 }
 
@@ -291,19 +290,56 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
                 if action_button(ui, "🚀 Inizia Chat", can_dm) {
                     let target_username = s.dm_user_username_input.trim().to_owned();
 
-                    // Genera UUID per lo stub locale
+                    // LOGGING PER DEBUG - Genera UUID per lo stub locale
                     let stub_conversation_id = Uuid::new_v4();
-                    info!("Creating DM stub with ID: {}", stub_conversation_id);
+                    info!("Creating DM stub with ID: {} for target: {}", stub_conversation_id, target_username);
 
-                    // Crea solo lo stub locale - la conversazione sarà creata sul server al primo messaggio
-                    let _ = s.ui_tx.send(UiEvent::DmStubCreated(stub_conversation_id, target_username.clone()));
+                    // CONTROLLO DUPLICATI: Verifica se esiste già una conversazione con questo target
+                    let mut duplicate_found = false;
+                    if let Some(ref conversations) = s.conversations {
+                        for conv in conversations {
+                            if conv.kind == "dm" && conv.title == target_username {
+                                warn!("Chat with {} already exists: {}", target_username, conv.id);
+                                let _ = s.ui_tx.send(UiEvent::Info(format!(
+                                    "Chat con {} già esistente",
+                                    target_username
+                                )));
+                                let _ = s.ui_tx.send(UiEvent::Opened(conv.id));
+                                duplicate_found = true;
+                                break;
+                            }
+                        }
+                    }
 
-                    // Pulisci l'input e dai feedback
-                    s.dm_user_username_input.clear();
-                    let _ = s.ui_tx.send(UiEvent::Info(format!(
-                        "Chat con {} pronta - invia il primo messaggio per iniziare!",
-                        target_username
-                    )));
+                    // CONTROLLO DM STUB: Verifica se esiste già uno stub per questo target
+                    if !duplicate_found {
+                        for (existing_id, existing_target) in &s.dm_stubs {
+                            if existing_target == &target_username {
+                                warn!("DM stub for {} already exists: {}", target_username, existing_id);
+                                let _ = s.ui_tx.send(UiEvent::Info(format!(
+                                    "Chat con {} già in preparazione",
+                                    target_username
+                                )));
+                                let _ = s.ui_tx.send(UiEvent::Opened(*existing_id));
+                                duplicate_found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if !duplicate_found {
+                        // Crea solo lo stub locale - la conversazione sarà creata sul server al primo messaggio
+                        let _ = s.ui_tx.send(UiEvent::DmStubCreated(stub_conversation_id, target_username.clone()));
+
+                        // Pulisci l'input e dai feedback
+                        s.dm_user_username_input.clear();
+                        let _ = s.ui_tx.send(UiEvent::Info(format!(
+                            "Chat con {} pronta - invia il primo messaggio per iniziare!",
+                            target_username
+                        )));
+                    } else {
+                        // Non pulire l'input in caso di duplicato per permettere correzioni
+                    }
                 }
 
                 if !can_dm {

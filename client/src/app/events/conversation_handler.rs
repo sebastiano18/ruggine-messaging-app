@@ -1,6 +1,6 @@
 // events/conversation_handler.rs - Gestione conversazioni
 use crate::models::{UiEvent, Page, MessageDto};
-use tracing::{debug, info, error};
+use tracing::{debug, info, error, warn};
 use uuid::Uuid;
 
 pub struct ConversationHandler;
@@ -70,6 +70,31 @@ impl ConversationHandler {
     fn handle_dm_stub_created(state: &mut crate::state::core::AppState, conversation_id: Uuid, other_username: String) {
         info!("Creating DM stub for conversation {} with {}", conversation_id, other_username);
 
+        // CONTROLLO DUPLICATI: Verifica se esiste già una conversazione con questo ID
+        if let Some(ref conversations) = state.conversations {
+            let existing_count = conversations.iter().filter(|c| c.id == conversation_id).count();
+            if existing_count > 0 {
+                error!("ATTEMPTING TO CREATE DUPLICATE STUB! ID {} already exists {} times",
+                       conversation_id, existing_count);
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    "Errore: conversazione già esistente".into()
+                );
+                return;
+            }
+        }
+
+        // CONTROLLO DM STUB: Verifica se esiste già uno stub con questo ID
+        if state.dm_stubs.contains_key(&conversation_id) {
+            warn!("DM stub with ID {} already exists, not creating duplicate", conversation_id);
+            crate::app::events::helpers::add_system_message(
+                state,
+                "Chat già esistente con questo utente".into()
+            );
+            return;
+        }
+
+        // Crea lo stub in modo sicuro
         state.add_dm_stub(conversation_id, other_username.clone());
         state.conversation_messages.insert(conversation_id, vec![]);
 
@@ -83,13 +108,21 @@ impl ConversationHandler {
         );
         state.messages.push(welcome_msg);
 
-        crate::app::events::helpers::add_system_message(state, format!("Chat con {} aperta - invia un messaggio per iniziare!", other_username));
+        crate::app::events::helpers::add_system_message(
+            state,
+            format!("Chat con {} aperta - invia un messaggio per iniziare!", other_username)
+        );
+
+        debug!("Successfully created DM stub: {} -> {}", conversation_id, other_username);
     }
 
     fn handle_conversation_added(state: &mut crate::state::core::AppState, conversation_id: Uuid, reason: String) {
         info!("User added to conversation {} (reason: {})", conversation_id, reason);
         crate::app::events::helpers::add_system_message(state, format!("Aggiunto a nuova conversazione ({})", reason));
         state.conversation_messages.entry(conversation_id).or_insert_with(Vec::new);
+
+        // Richiedi refresh per ottenere i dettagli della nuova conversazione
+        state.request_conversations_refresh = true;
     }
 
     fn handle_conversation_list_updated(state: &mut crate::state::core::AppState) {
@@ -98,9 +131,12 @@ impl ConversationHandler {
             let token = token.clone();
             let tx = state.ui_tx.clone();
 
+            debug!("Executing conversation list refresh");
+
             state.rt.spawn(async move {
                 match crate::api::conversation::get_conversations(&base, &token).await {
                     Ok(conversations) => {
+                        info!("Successfully refreshed {} conversations", conversations.len());
                         let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
                     }
                     Err(e) => {
@@ -109,6 +145,8 @@ impl ConversationHandler {
                     }
                 }
             });
+        } else {
+            warn!("Cannot refresh conversations: no token available");
         }
     }
 }
