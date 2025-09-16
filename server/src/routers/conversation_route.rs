@@ -7,8 +7,11 @@ pub fn router() -> Router<AppState> {
         // Gestione conversazioni unificate
         .route("/conversations", get(c::mine))
 
-        // NUOVO: Singola conversazione per fetch mirata
+        // Singola conversazione per fetch mirata
         .route("/conversations/:id", get(c::get_conversation))
+
+        // NUOVO: Conversazione con messaggi in una sola chiamata
+        .route("/conversations/:id/with-messages", get(c::get_conversation_with_messages))
 
         // Creazione gruppi
         .route("/conversations/groups", post(c::create_group))

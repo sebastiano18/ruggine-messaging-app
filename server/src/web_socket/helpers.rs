@@ -221,7 +221,7 @@ pub async fn handle_chat_message(
     Ok(())
 }
 
-/// NUOVO: Gestisce notifiche dal canale utente (conversation_created)
+/// Gestisce notifiche dal canale utente - SEMPLIFICATO: solo fetch_conversation_messages
 pub async fn handle_user_notification(
     state: &AppState,
     notification: &Value,
@@ -251,45 +251,43 @@ pub async fn handle_user_notification(
             info!("Processing conversation_created notification for user {} - conversation {}",
                   user_id, conversation_id);
 
-            // Invia notifica al client della nuova conversazione
-            let client_notification = json!({
-                "type": "new_conversation_available",
-                "conversation_id": conversation_id,
-                "creator_id": notification.get("creator_id"),
-                "kind": notification.get("kind"),
-                "title": notification.get("title"),
-                "timestamp": notification.get("timestamp")
-            });
-
-            if let Ok(txt) = serde_json::to_string(&client_notification) {
-                if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                    warn!("Failed to send new conversation notification to user {}", user_id);
-                }
-            }
-
-            // Triggera fetch automatico SOLO se l'utente NON è il creatore
+            // Il creatore non riceve nessun evento - ha già il messaggio
             if let Some(creator) = creator_id {
-                if user_id != creator {
-                    send_fetch_event_for_conversation(
-                        state,
-                        user_id,
-                        conversation_id,
-                        "new_conversation",
-                        out_tx
-                    ).await;
-                } else {
-                    info!("Skipping fetch for conversation creator {} - they already have the message", user_id);
+                if user_id == creator {
+                    info!("Skipping notification for creator {} - they created it themselves", user_id);
+
+                    // Il creatore riceve solo la configurazione della subscription
+                    if let Err(e) = setup_conversation_subscription(state, user_id, conversation_id).await {
+                        warn!("Failed to setup conversation subscription for creator {} and conversation {}: {}", 
+                              user_id, conversation_id, e);
+                    } else {
+                        info!("Successfully set up subscription for creator {} to conversation {}", 
+                              user_id, conversation_id);
+                    }
+
+                    return Ok(()); // Exit early per il creatore
                 }
-            } else {
-                // Se non riusciamo a determinare il creatore, invia fetch per sicurezza
-                send_fetch_event_for_conversation(
-                    state,
-                    user_id,
-                    conversation_id,
-                    "new_conversation",
-                    out_tx
-                ).await;
             }
+
+            // Per i non-creatori: setup subscription e fetch
+
+            // STEP 1: Configura l'iscrizione al broadcast channel della conversazione
+            if let Err(e) = setup_conversation_subscription(state, user_id, conversation_id).await {
+                warn!("Failed to setup conversation subscription for user {} and conversation {}: {}", 
+                      user_id, conversation_id, e);
+            } else {
+                info!("Successfully set up subscription for user {} to conversation {}", 
+                      user_id, conversation_id);
+            }
+
+            // STEP 2: Invia solo fetch event (no new_conversation_available)
+            send_fetch_event_for_conversation(
+                state,
+                user_id,
+                conversation_id,
+                "new_conversation_subscriber",
+                out_tx
+            ).await;
 
             Ok(())
         }
@@ -298,6 +296,39 @@ pub async fn handle_user_notification(
             Ok(())
         }
     }
+}
+
+/// Configura l'iscrizione dell'utente al broadcast channel della conversazione
+async fn setup_conversation_subscription(
+    state: &AppState,
+    user_id: Uuid,
+    conversation_id: Uuid,
+) -> Result<()> {
+    let conversation_id_str = conversation_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    // Verifica che l'utente sia effettivamente partecipante della conversazione
+    let is_participant: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
+    )
+        .bind(&conversation_id_str)
+        .bind(&user_id_str)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    if is_participant == 0 {
+        return Err(AppError::Forbidden);
+    }
+
+    // Ottieni/crea il broadcast channel per questa conversazione
+    let conv_tx = state.get_or_create_broadcast_tx(conversation_id).await;
+    let receiver_count = conv_tx.receiver_count();
+
+    info!("Conversation {} broadcast channel ready for user {} ({} current receivers)", 
+          conversation_id, user_id, receiver_count);
+
+    Ok(())
 }
 
 /// Invia fetch event per una conversazione specifica

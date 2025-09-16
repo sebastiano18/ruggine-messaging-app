@@ -5,8 +5,9 @@ mod api;
 mod style;
 
 fn main() -> eframe::Result<()> {
-
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
 
     eframe::run_native(
         "Ruggine",
