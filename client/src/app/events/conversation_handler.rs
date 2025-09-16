@@ -1,4 +1,5 @@
-// events/conversation_handler.rs - Gestione conversazioni
+// conversation_handler.rs - Handler conversazioni ottimizzato
+
 use crate::models::{UiEvent, Page, MessageDto, ConversationDto};
 use tracing::{debug, info, error, warn};
 use uuid::Uuid;
@@ -6,6 +7,84 @@ use uuid::Uuid;
 pub struct ConversationHandler;
 
 impl ConversationHandler {
+    // ... (altri metodi rimangono identici fino a handle_fetched_messages)
+
+    // MODIFICATO: Rimosso refresh automatico per conversazioni sconosciute
+    fn handle_fetched_messages(state: &mut crate::state::core::AppState, conversation_id: Uuid, messages: Vec<MessageDto>) {
+        info!("Processing {} fetched messages for conversation {}", messages.len(), conversation_id);
+
+        let messages_count = messages.len();
+        // Aggiorna la cache dei messaggi
+        state.conversation_messages.insert(conversation_id, messages.clone());
+
+        // Se è la conversazione corrente, aggiorna anche la UI
+        if Some(conversation_id) == state.cid {
+            info!("Updating UI with {} messages for current conversation {}", messages.len(), conversation_id);
+            state.messages = messages;
+        } else {
+            debug!("Messages cached for conversation {} (not current)", conversation_id);
+        }
+
+        // RIMOSSO: Non fare più refresh automatico se la conversazione non esiste
+        // Ora viene gestito tramite FetchSingleConversation specifico
+
+        // Notifica successo
+        crate::app::events::helpers::add_system_message(
+            state,
+            format!("Sincronizzati {} messaggi", messages_count)
+        );
+    }
+
+    // MODIFICATO: Migliore gestione del single conversation fetched
+    fn handle_single_conversation_fetched(state: &mut crate::state::core::AppState, conversation: ConversationDto) {
+        info!("Processing fetched conversation: {} ({})", conversation.id, conversation.title);
+
+        // Initialize conversation messages cache if needed
+        state.conversation_messages.entry(conversation.id).or_insert_with(Vec::new);
+
+        // Add or update conversation in the list
+        if let Some(ref mut conversations) = state.conversations {
+            // Check if conversation already exists
+            if let Some(existing_pos) = conversations.iter().position(|c| c.id == conversation.id) {
+                // Update existing conversation
+                debug!("Updating existing conversation: {}", conversation.id);
+                conversations[existing_pos] = conversation.clone();
+            } else {
+                // Add new conversation
+                debug!("Adding new conversation to list: {}", conversation.id);
+                conversations.push(conversation.clone());
+
+                // Sort conversations by created_at (most recent first)
+                conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+                // Notifica che è stata aggiunta una nuova conversazione
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    format!("Nuova conversazione aggiunta: {}", conversation.title)
+                );
+            }
+        } else {
+            // Create new conversation list
+            debug!("Creating new conversation list with: {}", conversation.id);
+            state.conversations = Some(vec![conversation.clone()]);
+        }
+
+        // Clean up old conversation caches periodically
+        crate::app::events::helpers::cleanup_old_conversations(state);
+
+        debug!("Single conversation fetch completed for: {}", conversation.id);
+    }
+
+    // NUOVO: Metodo helper per verificare se una conversazione esiste
+    fn conversation_exists_in_list(state: &crate::state::core::AppState, conversation_id: Uuid) -> bool {
+        state
+            .conversations
+            .as_ref()
+            .map(|convs| convs.iter().any(|c| c.id == conversation_id))
+            .unwrap_or(false)
+    }
+
+    // Gli altri metodi rimangono identici...
     pub fn handle(state: &mut crate::state::core::AppState, event: UiEvent) {
         match event {
             UiEvent::Opened(cid) => {
@@ -29,10 +108,17 @@ impl ConversationHandler {
             UiEvent::SingleConversationFetched(conversation) => {
                 Self::handle_single_conversation_fetched(state, conversation);
             }
+            UiEvent::FetchConversationMessages(conversation_id, reason) => {
+                Self::handle_fetch_conversation_messages(state, conversation_id, reason);
+            }
+            UiEvent::FetchedMessages(conversation_id, messages) => {
+                Self::handle_fetched_messages(state, conversation_id, messages);
+            }
             _ => unreachable!("Invalid conversation event"),
         }
     }
 
+    // ... (tutti gli altri metodi rimangono identici al file originale)
     fn handle_conversation_opened(state: &mut crate::state::core::AppState, cid: Uuid) {
         debug!("Opening conversation: {}", cid);
 
@@ -76,7 +162,6 @@ impl ConversationHandler {
     fn handle_dm_stub_created(state: &mut crate::state::core::AppState, conversation_id: Uuid, other_username: String) {
         info!("Creating DM stub for conversation {} with {}", conversation_id, other_username);
 
-        // CONTROLLO DUPLICATI: Verifica se esiste già una conversazione con questo ID
         if let Some(ref conversations) = state.conversations {
             let existing_count = conversations.iter().filter(|c| c.id == conversation_id).count();
             if existing_count > 0 {
@@ -90,7 +175,6 @@ impl ConversationHandler {
             }
         }
 
-        // CONTROLLO DM STUB: Verifica se esiste già uno stub con questo ID
         if state.dm_stubs.contains_key(&conversation_id) {
             warn!("DM stub with ID {} already exists, not creating duplicate", conversation_id);
             crate::app::events::helpers::add_system_message(
@@ -100,7 +184,6 @@ impl ConversationHandler {
             return;
         }
 
-        // Crea lo stub in modo sicuro
         state.add_dm_stub(conversation_id, other_username.clone());
         state.conversation_messages.insert(conversation_id, vec![]);
 
@@ -127,8 +210,8 @@ impl ConversationHandler {
         crate::app::events::helpers::add_system_message(state, format!("Aggiunto a nuova conversazione ({})", reason));
         state.conversation_messages.entry(conversation_id).or_insert_with(Vec::new);
 
-        // Richiedi refresh per ottenere i dettagli della nuova conversazione
-        state.request_conversations_refresh = true;
+        // Usa fetch specifico invece di refresh globale
+        let _ = state.ui_tx.send(UiEvent::FetchSingleConversation(conversation_id));
     }
 
     fn handle_conversation_list_updated(state: &mut crate::state::core::AppState) {
@@ -184,40 +267,31 @@ impl ConversationHandler {
         }
     }
 
-    fn handle_single_conversation_fetched(state: &mut crate::state::core::AppState, conversation: ConversationDto) {
-        info!("Processing fetched conversation: {} ({})", conversation.id, conversation.title);
+    fn handle_fetch_conversation_messages(state: &mut crate::state::core::AppState, conversation_id: Uuid, reason: String) {
+        if let Some(ref token) = state.token {
+            let base = state.base.clone();
+            let token = token.clone();
+            let tx = state.ui_tx.clone();
 
-        // Initialize conversation messages cache if needed
-        state.conversation_messages.entry(conversation.id).or_insert_with(Vec::new);
+            info!("Fetching messages for conversation {} (reason: {})", conversation_id, reason);
 
-        // Add or update conversation in the list
-        if let Some(ref mut conversations) = state.conversations {
-            // Check if conversation already exists
-            if let Some(existing_pos) = conversations.iter().position(|c| c.id == conversation.id) {
-                // Update existing conversation
-                debug!("Updating existing conversation: {}", conversation.id);
-                conversations[existing_pos] = conversation.clone();
-            } else {
-                // Add new conversation
-                debug!("Adding new conversation: {}", conversation.id);
-                conversations.push(conversation.clone());
-
-                // Sort conversations by created_at (most recent first)
-                conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-            }
+            state.rt.spawn(async move {
+                match crate::api::chat::get_messages(&base, &token, conversation_id).await {
+                    Ok(messages) => {
+                        debug!("Successfully fetched {} messages for conversation {}", messages.len(), conversation_id);
+                        let _ = tx.send(UiEvent::FetchedMessages(conversation_id, messages));
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch messages for conversation {}: {}", conversation_id, e);
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Errore caricamento messaggi conversazione {}: {}",
+                            conversation_id, e
+                        )));
+                    }
+                }
+            });
         } else {
-            // Create new conversation list
-            state.conversations = Some(vec![conversation.clone()]);
+            warn!("Cannot fetch messages: no token available");
         }
-
-        crate::app::events::helpers::add_system_message(
-            state,
-            format!("Conversazione {} aggiornata", conversation.title)
-        );
-
-        // Clean up old conversation caches
-        crate::app::events::helpers::cleanup_old_conversations(state);
-
-        debug!("Single conversation fetch completed for: {}", conversation.id);
     }
 }

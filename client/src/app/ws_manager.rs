@@ -1,4 +1,4 @@
-// ws_manager.rs - Updated with targeted conversation fetch
+// ws_manager.rs - Updated to remove new_conversation_available
 
 use crate::state::AppState;
 use serde_json::Value;
@@ -200,10 +200,6 @@ impl WebSocketManager {
             "fetch_conversation_messages" => {
                 Self::handle_fetch_request(tx, &parsed_value);
             }
-            // MODIFICATO: Handle new conversation con fetch mirata
-            "new_conversation_available" => {
-                Self::handle_new_conversation_available(tx, &parsed_value);
-            }
             "conversation_added" => {
                 Self::handle_conversation_added(tx, &parsed_value);
             }
@@ -225,41 +221,13 @@ impl WebSocketManager {
             "conversation_updated" => {
                 Self::handle_conversation_update(tx, &parsed_value);
             }
+            // REMOVED: new_conversation_available handler
             unknown => {
                 warn!("Unknown WebSocket message type '{}', ignoring", unknown);
                 debug!("Unknown message content: {}",
                        parsed_value.to_string().chars().take(500).collect::<String>());
             }
         }
-    }
-
-    // MODIFICATO: Handle new conversation con fetch mirata invece di refresh completo
-    fn handle_new_conversation_available(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        let conversation_id = match Self::parse_conversation_id(value) {
-            Some(id) => id,
-            None => {
-                warn!("Invalid conversation_id in new_conversation_available event");
-                return;
-            }
-        };
-
-        let creator_id = value.get("creator_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        let kind = value.get("kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-
-        info!("Received new_conversation_available for conversation {} (kind: {}, creator: {:?})",
-              conversation_id, kind, creator_id);
-
-        // NUOVO: Triggera fetch mirata invece di refresh completo
-        let _ = tx.send(UiEvent::FetchSingleConversation(conversation_id));
-
-        // Invia notifica di nuova conversazione
-        let _ = tx.send(UiEvent::Info(format!("Nuova {} disponibile!",
-                                              if kind == "dm" { "chat privata" } else { "conversazione" })));
     }
 
     fn handle_conversation_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
@@ -277,8 +245,8 @@ impl WebSocketManager {
 
         info!("Received conversation_added event for conversation {} (reason: {})", conversation_id, reason);
 
-        // MODIFICATO: Usa fetch mirata anche per conversation_added
-        let _ = tx.send(UiEvent::FetchSingleConversation(conversation_id));
+        // Use fetch_conversation_messages for consistency
+        let _ = tx.send(UiEvent::FetchConversationMessages(conversation_id, reason.to_string()));
         let _ = tx.send(UiEvent::ConversationAdded(conversation_id, reason.to_string()));
     }
 

@@ -1,79 +1,95 @@
-// events/helpers.rs - Utilities condivise
+// events/helpers.rs - Helper functions for event handling
+
 use crate::models::MessageDto;
+use crate::state::core::AppState;
+use tracing::{debug, warn};
 use uuid::Uuid;
-use tracing::{info, warn};
 
-pub fn add_system_message(state: &mut crate::state::core::AppState, content: String) {
-    let msg = MessageDto::system_message(content);
-    state.messages.push(msg);
+/// Aggiunge un messaggio di sistema alla conversazione corrente
+pub fn add_system_message(state: &mut AppState, content: String) {
+    let system_msg = MessageDto::system_message(content);
+    state.messages.push(system_msg.clone());
 
-    let system_message_count = state
-        .messages
-        .iter()
-        .filter(|m| m.author_id == Uuid::nil())
-        .count();
-
-    if system_message_count > 50 {
-        let mut non_system: Vec<_> = state
-            .messages
-            .iter()
-            .filter(|m| m.author_id != Uuid::nil())
-            .cloned()
-            .collect();
-
-        let recent_system: Vec<_> = state
-            .messages
-            .iter()
-            .filter(|m| m.author_id == Uuid::nil())
-            .rev()
-            .take(20)
-            .cloned()
-            .collect();
-
-        non_system.extend(recent_system);
-        non_system.sort_by_key(|m| m.created_at);
-        state.messages = non_system;
+    // Se c'è una conversazione corrente, aggiungi anche alla cache
+    if let Some(cid) = state.cid {
+        if let Some(messages) = state.conversation_messages.get_mut(&cid) {
+            messages.push(system_msg);
+        }
     }
+
+    debug!("Added system message to UI");
 }
 
+/// Valida un messaggio in arrivo dal WebSocket
 pub fn validate_incoming_message(msg: &MessageDto) -> bool {
-    if msg.conversation_id == Uuid::nil() {
-        warn!("Received message with nil conversation_id, ignoring: {:?}", msg.id);
+    // Controlli di base
+    if msg.content.is_empty() {
+        warn!("Received message with empty content: {}", msg.id);
         return false;
     }
 
-    if msg.content.trim().is_empty() {
-        warn!("Received message with empty content, ignoring: {:?}", msg.id);
+    if msg.author_username.trim().is_empty() && !msg.is_system_message() {
+        warn!("Received message with empty username: {}", msg.id);
         return false;
     }
 
-    if msg.author_id == Uuid::nil() && msg.author_username != "system" {
-        warn!("Received message with nil author_id (non-system), ignoring: {:?}", msg.id);
+    if msg.content.len() > 50000 {
+        warn!("Received message too long ({} chars): {}", msg.content.len(), msg.id);
         return false;
     }
 
     true
 }
 
-pub fn deduplicate_messages(messages: &mut Vec<MessageDto>) {
-    messages.sort_by_key(|m| m.id);
-    messages.dedup_by_key(|m| m.id);
-    messages.sort_by_key(|m| m.created_at);
-}
+/// Pulisce le conversazioni vecchie dalla cache per evitare memory leaks
+pub fn cleanup_old_conversations(state: &mut AppState) {
+    const MAX_CACHED_CONVERSATIONS: usize = 50;
 
-pub fn cleanup_old_conversations(state: &mut crate::state::core::AppState) {
-    if let Some(ref conversations) = state.conversations {
-        let valid_ids: std::collections::HashSet<_> =
-            conversations.iter().map(|c| c.id).collect();
+    if state.conversation_messages.len() > MAX_CACHED_CONVERSATIONS {
+        // Ottieni le conversazioni attive
+        let active_conversation_ids: Vec<Uuid> = state
+            .conversations
+            .as_ref()
+            .map(|convs| convs.iter().map(|c| c.id).collect())
+            .unwrap_or_default();
 
-        let old_count = state.conversation_messages.len();
-        state
-            .conversation_messages
-            .retain(|cid, _| valid_ids.contains(cid));
-        let removed = old_count - state.conversation_messages.len();
+        // Rimuovi le conversazioni che non sono più nella lista
+        let mut to_remove = Vec::new();
+        for &cached_id in state.conversation_messages.keys() {
+            if !active_conversation_ids.contains(&cached_id) && Some(cached_id) != state.cid {
+                to_remove.push(cached_id);
+            }
+        }
 
-        if removed > 0 {
-            info!("Cleaned up {} old conversation caches", removed);
+        for id in to_remove {
+            state.conversation_messages.remove(&id);
+            debug!("Removed cached messages for inactive conversation: {}", id);
         }
     }
+}
+
+/// Trova una conversazione per ID
+pub fn find_conversation_by_id(state: &AppState, conversation_id: Uuid) -> Option<&crate::models::ConversationDto> {
+    state
+        .conversations
+        .as_ref()
+        .and_then(|convs| convs.iter().find(|c| c.id == conversation_id))
+}
+
+/// Conta il numero totale di messaggi nella cache
+pub fn count_cached_messages(state: &AppState) -> usize {
+    state
+        .conversation_messages
+        .values()
+        .map(|msgs| msgs.len())
+        .sum()
+}
+
+/// Ottiene statistiche sullo stato dell'app
+pub fn get_app_stats(state: &AppState) -> (usize, usize, usize) {
+    let conversation_count = state.conversations.as_ref().map_or(0, |c| c.len());
+    let cached_conversation_count = state.conversation_messages.len();
+    let total_cached_messages = count_cached_messages(state);
+
+    (conversation_count, cached_conversation_count, total_cached_messages)
 }

@@ -1,10 +1,10 @@
-// recv_merge.rs - Implementazione con dynamic stream management
+// recv_merge.rs - Complete rewrite with centralized notification handling
 use futures::StreamExt;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::{
     select,
     sync::{mpsc, watch},
-    task::{JoinHandle, JoinSet},
+    task::JoinHandle,
     time::{Duration, sleep},
 };
 use tokio_stream::wrappers::BroadcastStream;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use super::{actor::OutboundMsg, helpers::handle_user_notification};
 use crate::{error::Result, state::AppState, error::AppError};
 
-// Messaggi interni per gestire i stream
+// Messaggi interni per gestire i stream dinamici
 #[derive(Debug)]
 enum InternalMessage {
     ConversationMessage {
@@ -27,7 +27,7 @@ enum InternalMessage {
     },
 }
 
-// Struttura per gestire stream dinamici con task separati
+// Gestisce stream dinamici con task separati per ogni conversazione
 struct DynamicStreamManager {
     // Task handles per ogni conversazione
     conversation_tasks: HashMap<Uuid, JoinHandle<()>>,
@@ -115,6 +115,48 @@ impl DynamicStreamManager {
             debug!("Aborted stream task for conversation {}", conv_id);
         }
     }
+
+    // Aggiorna dinamicamente i stream con le nuove conversazioni dell'utente
+    async fn refresh_conversation_streams(&mut self, state: &AppState, user_id: Uuid) {
+        // Ottieni le conversazioni correnti dell'utente
+        let current_channels = match state.get_user_channels(user_id).await {
+            Ok(channels) => channels,
+            Err(e) => {
+                error!("Failed to get user channels for {}: {}", user_id, e);
+                return;
+            }
+        };
+
+        let current_conv_ids: std::collections::HashSet<Uuid> =
+            current_channels.iter().map(|(id, _)| *id).collect();
+        let existing_conv_ids: std::collections::HashSet<Uuid> =
+            self.conversation_tasks.keys().cloned().collect();
+
+        // Aggiungi nuove conversazioni
+        for (conv_id, tx) in current_channels {
+            if !existing_conv_ids.contains(&conv_id) {
+                let receiver = tx.subscribe();
+                let stream = BroadcastStream::new(receiver);
+                self.add_conversation_stream(conv_id, stream).await;
+
+                let receiver_count = tx.receiver_count();
+                info!("User {} subscribed to new conversation {} ({} receivers)", 
+                      user_id, conv_id, receiver_count);
+            }
+        }
+
+        // Rimuovi conversazioni che non esistono più
+        let conversations_to_remove: Vec<Uuid> = existing_conv_ids
+            .difference(&current_conv_ids)
+            .cloned()
+            .collect();
+
+        for conv_id in conversations_to_remove {
+            self.remove_conversation_stream(conv_id);
+            info!("Removed stream for conversation {} (user {} no longer participant)", 
+                  conv_id, user_id);
+        }
+    }
 }
 
 impl Drop for DynamicStreamManager {
@@ -130,7 +172,7 @@ pub async fn spawn_receiver(
     stop_tx: watch::Sender<bool>,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<JoinHandle<()>> {
-
+    // Carica le conversazioni iniziali
     let initial_channels = state
         .get_user_channels(user_id)
         .await
@@ -152,66 +194,72 @@ pub async fn spawn_receiver(
               user_id, conv_id, receiver_count);
     }
 
-    // Canale utente per notifiche (separato dal manager dinamico)
+    // Setup canale utente per notifiche (conversation_created, etc.)
     let user_tx = state.get_or_create_user_notification_channel(user_id).await;
     let mut user_channel_stream = BroadcastStream::new(user_tx.subscribe());
     info!("User {} subscribed to notification channel", user_id);
 
-    // Variabili per tracking del backoff
+    // Variabili per gestione backoff e refresh periodici
     let mut empty_backoff_seconds = 30u64;
     const MAX_BACKOFF_SECONDS: u64 = 300;
     let mut consecutive_none_count = 0u32;
     const MAX_CONSECUTIVE_NONE: u32 = 5;
+
+    // Timer per refresh periodico delle conversazioni
+    let mut refresh_interval = tokio::time::interval(Duration::from_secs(300)); // 5 minuti
+    refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     Ok(tokio::spawn(async move {
         loop {
             select! {
                 _ = stop_rx.changed() => {
                     info!("Stop signal received for recv-merge user {}", user_id);
-                    stream_manager.cleanup(); // Pulisci tutti i task
+                    stream_manager.cleanup();
                     break;
                 }
 
-                // Messaggi dal canale utente (notifiche, controllo)
+                // Messaggi dal canale utente (notifiche, conversation_created, etc.)
                 user_msg = user_channel_stream.next() => {
                     match user_msg {
                         Some(Ok(val)) => {
                             if let Some(msg_type) = val.get("type").and_then(|t| t.as_str()) {
-                                if msg_type == "conversation_created" {
-                                    debug!("Received conversation_created notification for user {}", user_id);
+                                match msg_type {
+                                    "conversation_created" => {
+                                        debug!("Received conversation_created notification for user {}", user_id);
 
-                                    // Gestisci la notifica tramite helper
-                                    if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
-                                        warn!("Failed to handle user notification for user {}: {}", user_id, e);
+                                        // CENTRALIZZATO: Tutta la logica in handle_user_notification
+                                        if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
+                                            warn!("Failed to handle conversation_created notification for user {}: {}", user_id, e);
+                                        } else {
+                                            // Aggiorna i stream per includere la nuova conversazione
+                                            stream_manager.refresh_conversation_streams(&state, user_id).await;
+                                            
+                                            // Reset contatori di backoff su successo
+                                            empty_backoff_seconds = 30;
+                                            consecutive_none_count = 0;
+                                        }
                                     }
-
-                                    // AGGIUNTA INCREMENTALE - No refresh completo!
-                                    if let Some(conv_id_str) = val.get("conversation_id").and_then(|v| v.as_str()) {
-                                        if let Ok(new_conv_id) = Uuid::parse_str(conv_id_str) {
-                                            match add_single_conversation_stream(&state, user_id, new_conv_id, &mut stream_manager).await {
-                                                Ok(()) => {
-                                                    info!("Successfully added conversation {} to user {} (total: {})", 
-                                                          new_conv_id, user_id, stream_manager.conversation_count());
-                                                    empty_backoff_seconds = 30;
-                                                    consecutive_none_count = 0;
-                                                }
-                                                Err(e) => {
-                                                    error!("Failed to add conversation {} for user {}: {}", 
-                                                           new_conv_id, user_id, e);
-                                                }
+                                    _ => {
+                                        // Altri tipi di notifiche utente - forward al client
+                                        debug!("Received user notification type '{}' for user {}", msg_type, user_id);
+                                        if let Ok(txt) = serde_json::to_string(&val) {
+                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                                warn!("Failed to send user notification to user {}, stopping receiver", user_id);
+                                                let _ = stop_tx.send(true);
+                                                break;
                                             }
                                         }
                                     }
-                                    continue;
                                 }
-                            }
-
-                            // Altri messaggi dal canale utente (forward al client)
-                            if let Ok(txt) = serde_json::to_string(&val) {
-                                if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                    warn!("Failed to send user notification to user {}, stopping receiver", user_id);
-                                    let _ = stop_tx.send(true);
-                                    break;
+                            } else {
+                                // Notifiche senza type - forward comunque
+                                debug!("Received user notification without type for user {}", user_id);
+                                if let Ok(txt) = serde_json::to_string(&val) {
+                                    if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                        warn!("Failed to send user notification to user {}, stopping receiver", user_id);
+                                        let _ = stop_tx.send(true);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -220,6 +268,7 @@ pub async fn spawn_receiver(
                         }
                         None => {
                             warn!("User notification channel closed for user {}", user_id);
+                            // Non interrompere per questo - potrebbe essere temporaneo
                         }
                     }
                 }
@@ -232,7 +281,7 @@ pub async fn spawn_receiver(
                             empty_backoff_seconds = 30;
                             consecutive_none_count = 0;
 
-                            // Prevenzione echo al mittente
+                            // Prevenzione echo: non inviare messaggi al mittente
                             if let Some(author) = message.get("author_id")
                                 .and_then(|x| x.as_str())
                                 .and_then(|s| Uuid::parse_str(s).ok())
@@ -243,7 +292,7 @@ pub async fn spawn_receiver(
                                 }
                             }
 
-                            // Forward messaggio al client
+                            // Forward messaggio al client WebSocket
                             match serde_json::to_string(&message) {
                                 Ok(txt) => {
                                     if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
@@ -251,6 +300,7 @@ pub async fn spawn_receiver(
                                         let _ = stop_tx.send(true);
                                         break;
                                     }
+                                    debug!("Forwarded message from conversation {} to user {}", conversation_id, user_id);
                                 }
                                 Err(e) => {
                                     error!("Serialization error for user {}: {}", user_id, e);
@@ -265,12 +315,16 @@ pub async fn spawn_receiver(
                             stream_manager.remove_conversation_stream(conversation_id);
                             consecutive_none_count += 1;
 
+                            // Backoff progressivo per evitare thrashing
                             if consecutive_none_count >= MAX_CONSECUTIVE_NONE {
                                 warn!("Too many stream closures for user {}, backing off for {} seconds",
                                       user_id, empty_backoff_seconds);
                                 sleep(Duration::from_secs(empty_backoff_seconds)).await;
                                 empty_backoff_seconds = (empty_backoff_seconds * 2).min(MAX_BACKOFF_SECONDS);
                                 consecutive_none_count = 0;
+                                
+                                // Refresh dopo backoff per recuperare eventuali conversazioni perse
+                                stream_manager.refresh_conversation_streams(&state, user_id).await;
                             }
                         }
                         None => {
@@ -281,122 +335,50 @@ pub async fn spawn_receiver(
                     }
                 }
 
+                // Refresh periodico delle conversazioni (ogni 5 minuti)
+                _ = refresh_interval.tick() => {
+                    debug!("Performing periodic conversation refresh for user {}", user_id);
+                    stream_manager.refresh_conversation_streams(&state, user_id).await;
+                }
+
                 // Branch eseguito quando non ci sono conversazioni attive
-                _ = sleep(Duration::from_secs(5)), if stream_manager.conversation_count() == 0 => {
-                    debug!("No active conversations for user {}, waiting...", user_id);
+                _ = sleep(Duration::from_secs(10)), if stream_manager.conversation_count() == 0 => {
+                    debug!("No active conversations for user {}, checking for new ones...", user_id);
+                    // Prova a ricaricare le conversazioni nel caso ne siano state aggiunte
+                    stream_manager.refresh_conversation_streams(&state, user_id).await;
                 }
             }
         }
 
         // Cleanup finale
         stream_manager.cleanup();
-        info!("recv-merge ended for user {}", user_id);
+        info!("recv-merge ended for user {} (processed conversations: {})", 
+              user_id, stream_manager.conversation_tasks.len());
     }))
 }
 
-/// Aggiunge una singola conversazione al manager degli stream
-/// QUESTA È LA FUNZIONE CHIAVE - Aggiunta incrementale senza refresh
-async fn add_single_conversation_stream(
-    state: &AppState,
-    user_id: Uuid,
-    conversation_id: Uuid,
-    stream_manager: &mut DynamicStreamManager,
-) -> Result<()> {
-
-    // Verifica che l'utente sia partecipante della conversazione
-    let conversation_id_str = conversation_id.to_string();
-    let user_id_str = user_id.to_string();
-
-    let is_participant: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
-    )
-        .bind(&conversation_id_str)
-        .bind(&user_id_str)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::from)?;
-
-    if is_participant == 0 {
-        return Err(AppError::Forbidden);
-    }
-
-    // Ottieni il broadcast channel e crea il receiver
-    let conv_tx = state.get_or_create_broadcast_tx(conversation_id).await;
-    let receiver = conv_tx.subscribe();
-    let stream = BroadcastStream::new(receiver);
-
-    let receiver_count = conv_tx.receiver_count();
-    info!("User {} subscribing to conversation {} ({} receivers)", 
-          user_id, conversation_id, receiver_count);
-
-    // AGGIUNTA INCREMENTALE - questo è il punto chiave!
-    stream_manager.add_conversation_stream(conversation_id, stream).await;
-
-    Ok(())
-}
-
-/// Mantenuta per compatibilità ma non più utilizzata
+/// Forza un refresh completo con fetch - usata per recovery da errori
+/// NOTA: Questa funzione è mantenuta per compatibilità ma non dovrebbe essere necessaria
+/// con il nuovo sistema di gestione dinamica
 pub async fn force_refresh_with_fetch(
     state: &AppState,
     user_id: Uuid,
     out_tx: &mpsc::Sender<OutboundMsg>,
 ) {
-    info!("Force refresh with fetch for user {} (legacy function)", user_id);
-    warn!("force_refresh_with_fetch called but not needed with dynamic stream approach");
-}
+    info!("Force refresh with fetch requested for user {} (legacy function)", user_id);
 
-/// Invia fetch events per conversazioni specifiche - mantenuta per initial fetch
-async fn send_fetch_events_for_conversations(
-    state: &AppState,
-    user_id: Uuid,
-    conversation_ids: &[Uuid],
-    out_tx: &mpsc::Sender<OutboundMsg>,
-) {
-    debug!("Checking {} conversations for messages to fetch", conversation_ids.len());
+    // Nel nuovo sistema, il refresh avviene automaticamente
+    // Ma possiamo inviare un messaggio di debug al client
+    let debug_msg = serde_json::json!({
+        "type": "debug",
+        "message": "Conversation refresh requested",
+        "user_id": user_id,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
 
-    let mut events_sent = 0;
-
-    for &conversation_id in conversation_ids {
-        let conversation_id_str = conversation_id.to_string();
-
-        let message_count: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?"
-        )
-            .bind(&conversation_id_str)
-            .fetch_one(&state.pool)
-            .await {
-            Ok(count) => count,
-            Err(e) => {
-                warn!("Failed to count messages for conversation {}: {}", conversation_id, e);
-                continue;
-            }
-        };
-
-        if message_count > 0 {
-            let fetch_event = json!({
-                "type": "fetch_conversation_messages",
-                "conversation_id": conversation_id,
-                "message_count": message_count,
-                "reason": "initial_fetch",
-                "timestamp": chrono::Utc::now().timestamp()
-            });
-
-            if let Ok(txt) = serde_json::to_string(&fetch_event) {
-                if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                    warn!("Failed to send fetch event to user {}", user_id);
-                    break;
-                } else {
-                    events_sent += 1;
-                    info!("Sent fetch event to user {} for conversation {} ({} messages)",
-                          user_id, conversation_id, message_count);
-                }
-            }
-        } else {
-            debug!("Skipping empty conversation {} for user {}", conversation_id, user_id);
-        }
+    if let Ok(txt) = serde_json::to_string(&debug_msg) {
+        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
     }
 
-    if events_sent > 0 {
-        info!("Sent {} fetch events for user {}", events_sent, user_id);
-    }
+    warn!("force_refresh_with_fetch is deprecated - using dynamic stream management instead");
 }
