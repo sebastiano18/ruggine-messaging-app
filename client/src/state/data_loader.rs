@@ -18,7 +18,7 @@ impl DataLoader {
         });
     }
 
-    /// Carica i messaggi di una singola conversazione
+    /// Carica i messaggi di una singola conversazione (DEPRECATO - usa TriggerConversationFetch)
     pub fn load_single_conversation_messages(state: &super::core::AppState, cid: Uuid) {
         if let Some(ref token) = state.token {
             let base = state.base.clone();
@@ -47,7 +47,7 @@ impl DataLoader {
             tokio::time::Duration::from_secs(30),
             crate::api::conversation::get_conversations(&base, &token),
         )
-        .await
+            .await
         {
             Ok(Ok(convs)) => {
                 let _ = tx.send(UiEvent::ConversationsLoaded(convs.clone()));
@@ -77,7 +77,7 @@ impl DataLoader {
             return;
         }
 
-        // 2. Carica i messaggi per ogni conversazione in parallelo con controllo concorrenza
+        // 2. NUOVO: Usa l'endpoint unificato per caricare conversazioni + messaggi
         let total_conversations = conversations.len();
         let _ = tx.send(UiEvent::LoadingProgress(format!(
             "Caricamento messaggi per {} conversazioni...",
@@ -85,7 +85,6 @@ impl DataLoader {
         )));
 
         let mut all_messages = HashMap::new();
-        // Limita concorrenza basata sul numero di conversazioni
         let max_concurrent = (total_conversations.min(8)).max(2);
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent));
 
@@ -100,18 +99,18 @@ impl DataLoader {
                 let _permit = semaphore_clone.acquire().await.unwrap();
 
                 let _ = tx_clone.send(UiEvent::LoadingProgress(format!(
-                    "Caricando messaggi ({}/{}): {}",
+                    "Caricando conversazione ({}/{}): {}",
                     index + 1,
                     total_conversations,
                     conv.title.chars().take(30).collect::<String>()
                 )));
 
-                // Timeout per singola conversazione
+                // NUOVO: Usa endpoint unificato con timeout
                 let messages = match tokio::time::timeout(
                     tokio::time::Duration::from_secs(20),
-                    Self::load_conversation_messages(&base_clone, &token_clone, conv.id),
+                    Self::load_conversation_with_messages(&base_clone, &token_clone, conv.id),
                 )
-                .await
+                    .await
                 {
                     Ok(Ok(msgs)) => msgs,
                     Ok(Err(e)) => {
@@ -164,14 +163,18 @@ impl DataLoader {
         let _ = tx.send(UiEvent::InitialLoadComplete);
     }
 
-    /// Esegue il caricamento dei messaggi di una singola conversazione
-    /// MIGLIORATO: Aggiunto timeout
+
+
+    /// Esegue il caricamento dei messaggi di una singola conversazione (DEPRECATO)
+    /// Mantenuto per compatibilità, ma usa TriggerConversationFetch nel nuovo sistema
     async fn execute_single_conversation_load(
         base: String,
         token: String,
         cid: Uuid,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
     ) {
+        warn!("Using deprecated single conversation load for conversation {}", cid);
+
         let load_future = Self::load_conversation_messages(&base, &token, cid);
 
         match tokio::time::timeout(tokio::time::Duration::from_secs(15), load_future).await {
@@ -190,7 +193,8 @@ impl DataLoader {
         }
     }
 
-    /// Helper per caricare i messaggi di una conversazione specifica
+    /// Helper per caricare i messaggi di una conversazione specifica (DEPRECATO)
+    /// Mantenuto per compatibility e fallback
     async fn load_conversation_messages(
         base: &str,
         token: &str,
@@ -199,4 +203,17 @@ impl DataLoader {
         let messages = crate::api::chat::get_messages(base, token, conversation_id).await?;
         Ok(messages)
     }
+
+
+    async fn load_conversation_with_messages(
+        base: &str,
+        token: &str,
+        conversation_id: Uuid,
+    ) -> Result<Vec<MessageDto>, Box<dyn std::error::Error + Send + Sync>> {
+        // Usa SOLO l'endpoint unificato
+        let conversation_with_messages = crate::api::conversation::get_conversation_with_messages(base, token, conversation_id).await?;
+        Ok(conversation_with_messages.messages)
+    }
+
+   
 }

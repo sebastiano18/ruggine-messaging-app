@@ -1,5 +1,3 @@
-// models.rs - Updated with new events
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -117,7 +115,7 @@ pub enum Outgoing {
     Typing { cid: Uuid, is_typing: bool },
 }
 
-// === UPDATED UI EVENTS ===
+// === EVENTI UI UNIFICATI ===
 #[derive(Debug)]
 pub enum UiEvent {
     // Auth events
@@ -154,16 +152,11 @@ pub enum UiEvent {
     // General events
     InviteCreated(String),
 
-    // FETCH-ON-SUBSCRIBE EVENTS
-    FetchConversationMessages(Uuid, String),
-    FetchedMessages(Uuid, Vec<MessageDto>),
+    // NUOVO: Sistema unificato di fetch conversazione
+    TriggerConversationFetch(Uuid, String), // conversation_id, reason
+    ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
 
-    // NEW: Single conversation fetch events
-    FetchSingleConversation(Uuid),
-    SingleConversationFetched(ConversationDto),
-
-    // NEW: Conversation management events
-    ConversationAdded(Uuid, String), // conversation_id, reason
+    // Conversation management events
     ConversationListUpdated,
 }
 

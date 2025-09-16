@@ -1,5 +1,3 @@
-// ws_manager.rs - Updated to remove new_conversation_available
-
 use crate::state::AppState;
 use serde_json::Value;
 use uuid::Uuid;
@@ -197,12 +195,14 @@ impl WebSocketManager {
             "chat_message" => {
                 Self::handle_chat_message(tx, &parsed_value);
             }
-            "fetch_conversation_messages" => {
-                Self::handle_fetch_request(tx, &parsed_value);
+
+            // UNIFICATO: Gestisce conversation_added, fetch_conversation e altri eventi che richiedono fetch
+            "conversation_added" | "fetch_conversation" | "conversation_updated"
+            | "fetch_conversation_messages" => {
+                info!("Processing conversation fetch trigger: {}", msg_type);
+                Self::handle_conversation_fetch_trigger(tx, &parsed_value, msg_type);
             }
-            "conversation_added" => {
-                Self::handle_conversation_added(tx, &parsed_value);
-            }
+
             "typing" => {
                 Self::handle_typing_indicator(tx, &parsed_value);
             }
@@ -218,10 +218,6 @@ impl WebSocketManager {
             "user_joined" | "user_left" => {
                 Self::handle_user_status(tx, &parsed_value, msg_type);
             }
-            "conversation_updated" => {
-                Self::handle_conversation_update(tx, &parsed_value);
-            }
-            // REMOVED: new_conversation_available handler
             unknown => {
                 warn!("Unknown WebSocket message type '{}', ignoring", unknown);
                 debug!("Unknown message content: {}",
@@ -230,41 +226,28 @@ impl WebSocketManager {
         }
     }
 
-    fn handle_conversation_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    // NUOVO: Handler unificato per qualsiasi evento che richiede fetch di conversazione
+    fn handle_conversation_fetch_trigger(
+        tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
+        value: &Value,
+        event_type: &str
+    ) {
         let conversation_id = match Self::parse_conversation_id(value) {
             Some(id) => id,
             None => {
-                warn!("Invalid conversation_id in conversation_added event");
+                warn!("Invalid conversation_id in {} event", event_type);
                 return;
             }
         };
 
         let reason = value.get("reason")
             .and_then(|r| r.as_str())
-            .unwrap_or("unknown");
+            .unwrap_or(event_type); // Usa event_type come fallback per reason
 
-        info!("Received conversation_added event for conversation {} (reason: {})", conversation_id, reason);
+        info!("Received {} event for conversation {} (reason: {})", event_type, conversation_id, reason);
 
-        // Use fetch_conversation_messages for consistency
-        let _ = tx.send(UiEvent::FetchConversationMessages(conversation_id, reason.to_string()));
-        let _ = tx.send(UiEvent::ConversationAdded(conversation_id, reason.to_string()));
-    }
-
-    fn handle_fetch_request(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        let conversation_id = match Self::parse_conversation_id(value) {
-            Some(id) => id,
-            None => {
-                warn!("Invalid conversation_id in fetch request");
-                return;
-            }
-        };
-
-        let reason = value.get("reason")
-            .and_then(|r| r.as_str())
-            .unwrap_or("unknown");
-
-        info!("Received fetch request for conversation {} (reason: {})", conversation_id, reason);
-        let _ = tx.send(UiEvent::FetchConversationMessages(conversation_id, reason.to_string()));
+        // UNIFICATO: Triggera sempre il fetch completo
+        let _ = tx.send(UiEvent::TriggerConversationFetch(conversation_id, reason.to_string()));
     }
 
     fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
@@ -388,11 +371,5 @@ impl WebSocketManager {
 
         debug!("User status change in {}: {}", conversation_id, status_msg);
         let _ = tx.send(UiEvent::Info(status_msg));
-    }
-
-    fn handle_conversation_update(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-        debug!("Conversation update received: {}",
-               value.to_string().chars().take(200).collect::<String>());
-        let _ = tx.send(UiEvent::Info("Conversazione aggiornata".into()));
     }
 }

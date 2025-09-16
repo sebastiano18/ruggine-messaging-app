@@ -93,3 +93,8 @@ pub fn get_app_stats(state: &AppState) -> (usize, usize, usize) {
 
     (conversation_count, cached_conversation_count, total_cached_messages)
 }
+
+pub fn deduplicate_messages(messages: &mut Vec<MessageDto>) {
+    let mut seen_ids = std::collections::HashSet::new();
+    messages.retain(|msg| seen_ids.insert(msg.id));
+}

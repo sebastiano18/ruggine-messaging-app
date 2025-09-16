@@ -116,3 +116,64 @@ pub async fn add_member(
     ConversationService::add_member(&st.pool, conversation_id, req.member_id, user.id).await?;
     Ok(StatusCode::OK)
 }
+
+// Aggiungi queste strutture al tuo conversation_controller.rs
+
+#[derive(Serialize)]
+pub struct ConversationWithMessages {
+    pub conversation: ConversationOut,
+    pub messages: Vec<MessageOut>,
+}
+
+#[derive(Serialize)]
+pub struct MessageOut {
+    pub id: Uuid,
+    pub author_id: Uuid,
+    pub author_username: String,
+    pub conversation_id: Uuid,
+    pub content: String,
+    pub created_at: i64,
+}
+
+// CORREGGI il metodo get_conversation_with_messages nel tuo conversation_controller.rs
+
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn get_conversation_with_messages(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Result<Json<ConversationWithMessages>> {
+    // 1. Ottieni la conversazione (include controllo autorizzazione)
+    let conversation_data = ConversationService::get_conversation(&st.pool, conversation_id, user.id).await?;
+
+    let conversation = match conversation_data {
+        Some((id, kind, title, owner_id, created_at)) => ConversationOut {
+            id,
+            kind,
+            title,
+            owner_id,
+            created_at,
+        },
+        None => return Err(crate::error::AppError::NotFound),
+    };
+
+    // 2. CORRETTO: Usa il metodo 'list' che esiste nel MessageService
+    let messages_data = crate::services::message_service::MessageService::list(&st.pool, conversation_id, 50).await?;
+
+    let messages: Vec<MessageOut> = messages_data
+        .into_iter()
+        .map(|(id, author_id, author_username, content, created_at)| MessageOut {
+            id,
+            author_id,
+            author_username,
+            conversation_id, // Usa il conversation_id dal parametro
+            content,
+            created_at,
+        })
+        .collect();
+
+    Ok(Json(ConversationWithMessages {
+        conversation,
+        messages,
+    }))
+}
