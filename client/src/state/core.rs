@@ -3,6 +3,7 @@ use crate::models::*;
 use std::collections::HashMap;
 use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;
+use tracing::{debug, warn, error};
 
 use super::data_loader::DataLoader;
 
@@ -135,6 +136,10 @@ impl AppState {
             // Controlla se questa conversazione è uno stub DM appena creato
             let target_username = self.dm_stubs.get(&cid).cloned();
 
+            if target_username.is_some() {
+                debug!("Sending message for DM stub {} with target: {:?}", cid, target_username);
+            }
+
             self.send_via_websocket(Outgoing::ChatMessage {
                 cid,
                 content,
@@ -146,14 +151,28 @@ impl AppState {
     // === DM stub management ===
 
     pub fn add_dm_stub(&mut self, conversation_id: Uuid, target_username: String) {
+        debug!("Adding DM stub: {} -> {}", conversation_id, target_username);
+
+        // Verifica duplicati prima di aggiungere
+        if self.dm_stubs.contains_key(&conversation_id) {
+            warn!("DM stub already exists for conversation {}", conversation_id);
+            return;
+        }
+
         self.dm_stubs.insert(conversation_id, target_username);
+        debug!("DM stub added successfully. Total stubs: {}", self.dm_stubs.len());
     }
 
     pub fn remove_dm_stub(&mut self, conversation_id: Uuid) {
-        self.dm_stubs.remove(&conversation_id);
+        if let Some(target) = self.dm_stubs.remove(&conversation_id) {
+            debug!("Removed DM stub: {} -> {}", conversation_id, target);
+        } else {
+            debug!("Attempted to remove non-existent DM stub: {}", conversation_id);
+        }
     }
 
     pub fn is_dm_stub(&self, conversation_id: Uuid) -> bool {
         self.dm_stubs.contains_key(&conversation_id)
     }
+    
 }

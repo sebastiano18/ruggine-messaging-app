@@ -158,6 +158,10 @@ pub enum UiEvent {
     FetchConversationMessages(Uuid, String),
     FetchedMessages(Uuid, Vec<MessageDto>),
 
+    // NEW: Single conversation fetch events
+    FetchSingleConversation(Uuid),
+    SingleConversationFetched(ConversationDto),
+
     // NEW: Conversation management events
     ConversationAdded(Uuid, String), // conversation_id, reason
     ConversationListUpdated,

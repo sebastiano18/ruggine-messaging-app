@@ -18,6 +18,74 @@ impl ConversationRepo {
         Ok(row.map(|r| r.get("kind")))
     }
 
+    /// NUOVO: Ottiene una singola conversazione con dettagli completi
+    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at)
+    pub async fn get_single_conversation(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<(Uuid, String, String, Uuid, i64)>> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                c.id,
+                c.kind,
+                CASE
+                    WHEN c.kind = 'group' THEN c.title
+                    WHEN c.kind = 'dm' THEN (
+                        -- Per DM, mostra l'altro utente
+                        COALESCE(
+                            (SELECT u.username
+                             FROM participants p2
+                             JOIN users u ON p2.user_id = u.id
+                             WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                             LIMIT 1),
+                            (SELECT u.username
+                             FROM messages m
+                             JOIN users u ON m.author_id = u.id
+                             WHERE m.conversation_id = c.id AND m.author_id != ?
+                             ORDER BY m.created_at DESC
+                             LIMIT 1)
+                        )
+                    )
+                    ELSE 'Unknown'
+                END AS display_title,
+                c.owner_id,
+                c.created_at
+            FROM conversations c
+            LEFT JOIN participants p ON c.id = p.conversation_id AND p.user_id = ?
+            WHERE c.id = ?
+              AND (p.user_id = ? OR (c.kind = 'dm' AND EXISTS(
+                    SELECT 1 FROM messages m
+                    WHERE m.conversation_id = c.id AND m.author_id = ?
+              )))
+            "#,
+        )
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
+            .bind(conversation_id.to_string())
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(row.map(|r| {
+            let id_str: String = r.get("id");
+            let kind: String = r.get("kind");
+            let display_title: Option<String> = r.get("display_title");
+            let owner_id_str: String = r.get("owner_id");
+            let created_at: i64 = r.get("created_at");
+            (
+                Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
+                kind,
+                display_title.unwrap_or_else(|| "Unknown".to_string()),
+                Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
+                created_at,
+            )
+        }))
+    }
+
     /// Crea un nuovo gruppo e restituisce l'ID della conversazione (UUID).
     /// IMPORTANTE: Solo il creatore viene aggiunto come partecipante
     pub async fn create_group(pool: &SqlitePool, title: &str, owner_id: Uuid) -> Result<Uuid> {
@@ -28,11 +96,11 @@ impl ConversationRepo {
             "INSERT INTO conversations(id, kind, title, owner_id, created_at)
              VALUES(?, 'group', ?, ?, strftime('%s','now'))",
         )
-        .bind(conversation_id.to_string())
-        .bind(title)
-        .bind(owner_id.to_string())
-        .execute(pool)
-        .await?;
+            .bind(conversation_id.to_string())
+            .bind(title)
+            .bind(owner_id.to_string())
+            .execute(pool)
+            .await?;
 
         // Aggiungi solo il creatore come partecipante con ruolo 'owner'
         // Gli altri membri si aggiungeranno tramite lazy registration quando inviano messaggi
@@ -40,10 +108,10 @@ impl ConversationRepo {
             "INSERT INTO participants(conversation_id, user_id, role)
              VALUES(?, ?, 'owner')",
         )
-        .bind(conversation_id.to_string())
-        .bind(owner_id.to_string())
-        .execute(pool)
-        .await?;
+            .bind(conversation_id.to_string())
+            .bind(owner_id.to_string())
+            .execute(pool)
+            .await?;
 
         Ok(conversation_id)
     }
@@ -64,13 +132,10 @@ impl ConversationRepo {
             "INSERT INTO conversations(id, kind, title, owner_id, created_at)
              VALUES(?, 'dm', NULL, ?, strftime('%s','now'))",
         )
-        .bind(conversation_id.to_string())
-        .bind(user1_id.to_string())
-        .execute(pool)
-        .await?;
-
-        // RIMOSSO: Non aggiungere automaticamente partecipanti
-        // Questo permetterà la lazy registration quando inviano il primo messaggio
+            .bind(conversation_id.to_string())
+            .bind(user1_id.to_string())
+            .execute(pool)
+            .await?;
 
         tracing::info!(
             "Created empty DM conversation {} for users {} and {} (no auto-participants)",
@@ -105,10 +170,10 @@ impl ConversationRepo {
             LIMIT 1
             "#,
         )
-        .bind(user1_id.to_string())
-        .bind(user2_id.to_string())
-        .fetch_optional(pool)
-        .await?;
+            .bind(user1_id.to_string())
+            .bind(user2_id.to_string())
+            .fetch_optional(pool)
+            .await?;
 
         if let Some(conv_id_str) = participant_based {
             return Ok(Some(
@@ -133,10 +198,10 @@ impl ConversationRepo {
             LIMIT 1
             "#,
         )
-        .bind(user1_id.to_string())
-        .bind(user2_id.to_string())
-        .fetch_optional(pool)
-        .await?;
+            .bind(user1_id.to_string())
+            .bind(user2_id.to_string())
+            .fetch_optional(pool)
+            .await?;
 
         Ok(message_based
             .map(|conv_id_str| Uuid::parse_str(&conv_id_str).expect("DB must store valid UUIDs")))
@@ -157,10 +222,10 @@ impl ConversationRepo {
             "INSERT OR IGNORE INTO participants(conversation_id, user_id, role)
              VALUES(?, ?, 'member')",
         )
-        .bind(conversation_id.to_string())
-        .bind(user_id.to_string())
-        .execute(pool)
-        .await?;
+            .bind(conversation_id.to_string())
+            .bind(user_id.to_string())
+            .execute(pool)
+            .await?;
         Ok(())
     }
 

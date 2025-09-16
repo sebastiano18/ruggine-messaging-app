@@ -7,6 +7,7 @@ pub mod data_handler;
 pub mod fetch_handler;
 pub mod helpers;
 
+use crate::app::events::conversation_handler::ConversationHandler;
 use crate::models::UiEvent;
 
 pub struct EventDispatcher;
@@ -37,7 +38,11 @@ impl EventDispatcher {
             | UiEvent::DmStubCreated(..)
             | UiEvent::ConversationAdded(..)
             | UiEvent::ConversationListUpdated => {
-                conversation_handler::ConversationHandler::handle(state, event);
+                ConversationHandler::handle(state, event);
+            }
+            UiEvent::FetchSingleConversation(_) |
+            UiEvent::SingleConversationFetched(_) => {
+                ConversationHandler::handle(state, event);
             }
 
             // Message events

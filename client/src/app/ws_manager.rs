@@ -1,4 +1,4 @@
-// ws_manager.rs - Updated for new events with new_conversation_available handler
+// ws_manager.rs - Updated with targeted conversation fetch
 
 use crate::state::AppState;
 use serde_json::Value;
@@ -200,7 +200,7 @@ impl WebSocketManager {
             "fetch_conversation_messages" => {
                 Self::handle_fetch_request(tx, &parsed_value);
             }
-            // NUOVO: Handle new conversation available event
+            // MODIFICATO: Handle new conversation con fetch mirata
             "new_conversation_available" => {
                 Self::handle_new_conversation_available(tx, &parsed_value);
             }
@@ -233,7 +233,7 @@ impl WebSocketManager {
         }
     }
 
-    // NUOVO: Handle new conversation available event
+    // MODIFICATO: Handle new conversation con fetch mirata invece di refresh completo
     fn handle_new_conversation_available(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
         let conversation_id = match Self::parse_conversation_id(value) {
             Some(id) => id,
@@ -254,8 +254,8 @@ impl WebSocketManager {
         info!("Received new_conversation_available for conversation {} (kind: {}, creator: {:?})",
               conversation_id, kind, creator_id);
 
-        // Triggera il refresh delle conversazioni per vedere la nuova chat
-        let _ = tx.send(UiEvent::ConversationListUpdated);
+        // NUOVO: Triggera fetch mirata invece di refresh completo
+        let _ = tx.send(UiEvent::FetchSingleConversation(conversation_id));
 
         // Invia notifica di nuova conversazione
         let _ = tx.send(UiEvent::Info(format!("Nuova {} disponibile!",
@@ -277,9 +277,9 @@ impl WebSocketManager {
 
         info!("Received conversation_added event for conversation {} (reason: {})", conversation_id, reason);
 
-        // Trigger conversation list refresh
+        // MODIFICATO: Usa fetch mirata anche per conversation_added
+        let _ = tx.send(UiEvent::FetchSingleConversation(conversation_id));
         let _ = tx.send(UiEvent::ConversationAdded(conversation_id, reason.to_string()));
-        let _ = tx.send(UiEvent::ConversationListUpdated);
     }
 
     fn handle_fetch_request(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

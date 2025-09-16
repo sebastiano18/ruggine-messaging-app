@@ -60,20 +60,15 @@ pub async fn create_dm(
     Ok(Json(CreatedId { id }))
 }
 
-// Ottieni le mie conversazioni
+// Ottieni le mie conversazioni - RIMOSSI TUTTI I PRINTLN
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn mine(
     user: AuthUser,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<ConversationOut>>> {
-    println!("Getting conversations for user: {}", user.id);
-
     let rows = ConversationService::mine(&st.pool, user.id).await?;
 
-    println!("Found {} conversations", rows.len());
-
     let conversations = rows.into_iter().map(|(id, kind, title, owner_id, created_at)| {
-        println!("Processing conversation: id={}, kind={}, title={}", id, kind, title);
         ConversationOut {
             id,
             kind,
@@ -84,6 +79,30 @@ pub async fn mine(
     }).collect();
 
     Ok(Json(conversations))
+}
+
+// NUOVO: Ottieni singola conversazione
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn get_conversation(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Result<Json<ConversationOut>> {
+    // Ottieni la conversazione (include già controllo autorizzazione)
+    let conversation_data = ConversationService::get_conversation(&st.pool, conversation_id, user.id).await?;
+
+    match conversation_data {
+        Some((id, kind, title, owner_id, created_at)) => {
+            Ok(Json(ConversationOut {
+                id,
+                kind,
+                title,
+                owner_id,
+                created_at,
+            }))
+        }
+        None => Err(crate::error::AppError::NotFound),
+    }
 }
 
 // Aggiungi membro a un gruppo

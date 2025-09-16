@@ -1,6 +1,7 @@
 // events/data_handler.rs - Gestione caricamento dati
+// events/data_handler.rs - Gestione caricamento dati
 use crate::models::{UiEvent, ConversationDto, MessageDto, Page};
-use tracing::{info, warn, debug};
+use tracing::{info, warn, debug, error};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -39,46 +40,73 @@ impl DataHandler {
         server_conversations: Vec<ConversationDto>,
     ) {
         let old_count = state.conversations.as_ref().map(|c| c.len()).unwrap_or(0);
-        let server_count = server_conversations.len(); // Salva prima del move
+        let server_count = server_conversations.len();
 
-        // STRATEGIA SEMPLICE: Server vince sempre, aggiungi solo DM stub attivi
-        let mut final_conversations = server_conversations;
+        info!("Processing {} conversations from server (was {})", server_count, old_count);
 
-        // Prima raccogli le conversazioni locali da preservare
-        let stubs_to_preserve: Vec<ConversationDto> = if let Some(ref local_conversations) = state.conversations {
-            local_conversations
-                .iter()
-                .filter(|local_conv| {
-                    state.dm_stubs.contains_key(&local_conv.id) &&
-                        !final_conversations.iter().any(|c| c.id == local_conv.id)
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // DEDUPLICAZIONE ROBUSTA: Usa HashMap per evitare duplicati
+        let mut conversations_map: std::collections::HashMap<Uuid, ConversationDto> =
+            std::collections::HashMap::new();
 
-        // Aggiungi gli stub preservati
-        for stub in stubs_to_preserve {
-            info!("Preserving active DM stub: {} ({})", stub.id, stub.title);
-            final_conversations.push(stub);
+        // 1. Aggiungi tutte le conversazioni dal server (priorità alta)
+        for conv in server_conversations {
+            debug!("Adding server conversation: {} - {}", conv.id, conv.title);
+            conversations_map.insert(conv.id, conv);
         }
 
-        // Ordina per data di creazione
+        // 2. Preserva SOLO gli stub DM attivi che non sono già nel server
+        if let Some(ref local_conversations) = state.conversations {
+            for local_conv in local_conversations {
+                // Preserva solo se:
+                // a) È uno stub DM attivo
+                // b) NON esiste già nel server
+                if state.dm_stubs.contains_key(&local_conv.id) &&
+                    !conversations_map.contains_key(&local_conv.id) {
+                    info!("Preserving active DM stub: {} ({})", local_conv.id, local_conv.title);
+                    conversations_map.insert(local_conv.id, local_conv.clone());
+                }
+            }
+        }
+
+        // 3. Converti HashMap in Vec ordinato
+        let mut final_conversations: Vec<ConversationDto> = conversations_map.into_values().collect();
         final_conversations.sort_by_key(|c| c.created_at);
 
         let new_count = final_conversations.len();
-        let preserved_count = new_count - server_count; // Usa server_count invece di server_conversations.len()
+        let preserved_count = new_count - server_count;
 
-        // Aggiorna lo stato
+        // 4. VERIFICA DUPLICATI prima di assegnare
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut duplicates_found = Vec::new();
+
+        for conv in &final_conversations {
+            if !seen_ids.insert(conv.id) {
+                duplicates_found.push(conv.id);
+            }
+        }
+
+        if !duplicates_found.is_empty() {
+            error!("DUPLICATES DETECTED before assignment: {:?}", duplicates_found);
+            // Deduplicazione forzata
+            let mut deduped = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for conv in final_conversations {
+                if seen.insert(conv.id) {
+                    deduped.push(conv);
+                }
+            }
+            final_conversations = deduped;
+        }
+
+        // 5. Aggiorna lo stato
         state.conversations = Some(final_conversations.clone());
 
         info!("Updated conversations: {} (was {}) - {} from server, {} stubs preserved",
-              new_count, old_count, server_count, preserved_count);
+              final_conversations.len(), old_count, server_count, preserved_count);
 
-        crate::app::events::helpers::add_system_message(state, format!("{} conversazioni disponibili", new_count));
+        crate::app::events::helpers::add_system_message(state, format!("{} conversazioni disponibili", final_conversations.len()));
 
-        // Verifica se la conversazione corrente esiste ancora
+        // 6. Verifica se la conversazione corrente esiste ancora
         if let Some(current_cid) = state.cid {
             if !final_conversations.iter().any(|c| c.id == current_cid) {
                 warn!("Current conversation {} no longer exists, clearing selection", current_cid);
@@ -94,6 +122,32 @@ impl DataHandler {
         }
 
         crate::app::events::helpers::cleanup_old_conversations(state);
+
+        // 7. VERIFICA FINALE duplicati
+        Self::debug_check_duplicates(state);
+    }
+
+    // Nuovo metodo helper per debug
+    fn debug_check_duplicates(state: &crate::state::core::AppState) {
+        if let Some(ref conversations) = state.conversations {
+            let mut seen_ids = std::collections::HashSet::new();
+            let mut duplicates = Vec::new();
+
+            for conv in conversations {
+                if !seen_ids.insert(conv.id) {
+                    duplicates.push(format!("{} ({})", conv.id, conv.title));
+                }
+            }
+
+            if !duplicates.is_empty() {
+                error!("POST-ASSIGNMENT DUPLICATES DETECTED: {:?}", duplicates);
+                let _ = state.ui_tx.send(UiEvent::Error(
+                    format!("Rilevati duplicati conversazioni: {}", duplicates.len())
+                ));
+            } else {
+                debug!("No duplicates found in final conversation list");
+            }
+        }
     }
 
     fn handle_messages_refreshed(state: &mut crate::state::core::AppState, mut list: Vec<MessageDto>) {
@@ -115,7 +169,7 @@ impl DataHandler {
         state: &mut crate::state::core::AppState,
         conversation: ConversationDto,
     ) {
-        // Controlla se esiste già
+        // Controlla se esiste già 
         let already_exists = state.conversations
             .as_ref()
             .map(|convs| convs.iter().any(|c| c.id == conversation.id))

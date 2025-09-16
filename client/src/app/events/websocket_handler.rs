@@ -1,6 +1,6 @@
 // events/websocket_handler.rs - Gestione WebSocket
 use crate::models::{UiEvent, WsStatus, MessageDto, ConversationDto};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 use uuid::Uuid;
 
 pub struct WebSocketHandler;
@@ -47,6 +47,33 @@ impl WebSocketHandler {
             message_conversation_id
         );
 
+        // CONTROLLO DUPLICATI PREVENTIVO
+        if let Some(ref conversations) = state.conversations {
+            let count = conversations.iter().filter(|c| c.id == message_conversation_id).count();
+            if count > 1 {
+                error!("DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
+                       message_conversation_id, count);
+
+                // Rimuovi i duplicati immediatamente
+                let mut deduped_conversations = Vec::new();
+                let mut seen_ids = std::collections::HashSet::new();
+
+                for conv in conversations {
+                    if seen_ids.insert(conv.id) {
+                        deduped_conversations.push(conv.clone());
+                    } else {
+                        warn!("Removing duplicate conversation: {} ({})", conv.id, conv.title);
+                    }
+                }
+
+                state.conversations = Some(deduped_conversations);
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    "Rimossi duplicati conversazioni".into()
+                );
+            }
+        }
+
         // GESTIONE DM STUB: Solo conversione, mai creazione
         if state.dm_stubs.contains_key(&message_conversation_id) {
             info!("Converting DM stub {} to real conversation", message_conversation_id);
@@ -65,19 +92,33 @@ impl WebSocketHandler {
                 created_at: msg.created_at,
             };
 
+            // CONVERSIONE SICURA: rimuovi stub e aggiungi conversazione reale
             if let Some(ref mut conversations) = state.conversations {
+                // Rimuovi qualsiasi versione esistente dello stub
+                let old_len = conversations.len();
+                conversations.retain(|c| c.id != message_conversation_id);
+                let removed = old_len - conversations.len();
+
+                if removed > 0 {
+                    info!("Removed {} stub instances for conversation {}", removed, message_conversation_id);
+                }
+
+                // Aggiungi conversazione reale
                 conversations.push(real_conversation);
+                info!("Converted DM stub to real conversation: {}", message_conversation_id);
             } else {
                 state.conversations = Some(vec![real_conversation]);
             }
 
-            crate::app::events::helpers::add_system_message(state, format!("Chat con {} ora attiva!",
-                                                                           if msg.author_id == state.user_id.unwrap_or(Uuid::nil()) {
-                                                                               "te stesso"
-                                                                           } else {
-                                                                               &msg.author_username
-                                                                           }
-            ));
+            crate::app::events::helpers::add_system_message(state,
+                                                            format!("Chat con {} ora attiva!",
+                                                                    if msg.author_id == state.user_id.unwrap_or(Uuid::nil()) {
+                                                                        "te stesso"
+                                                                    } else {
+                                                                        &msg.author_username
+                                                                    }
+                                                            )
+            );
         }
 
         // Verifica esistenza conversazione
@@ -87,19 +128,23 @@ impl WebSocketHandler {
             .map(|convs| convs.iter().any(|c| c.id == message_conversation_id))
             .unwrap_or(false);
 
-        // CRITICO: MAI creare conversazioni lato client
+        // THROTTLED REFRESH: evita refresh multipli ravvicinati
         if !conversation_exists {
-            info!("Message for unknown conversation {} - only caching message and triggering refresh", 
+            info!("Message for unknown conversation {} - checking refresh status",
                   message_conversation_id);
 
-            // Solo messaggio informativo - NO creazione conversazione
             crate::app::events::helpers::add_system_message(
                 state,
-                format!("Nuovo messaggio da {} - aggiornando lista conversazioni...", msg.author_username)
+                format!("Nuovo messaggio da {} - aggiornando...", msg.author_username)
             );
 
-            // Triggera refresh per ottenere conversazione dal server
-            let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+            // Usa un flag per evitare refresh multipli - sarà gestito nel main loop
+            if !state.request_conversations_refresh {
+                state.request_conversations_refresh = true;
+                info!("Scheduled conversation refresh for unknown conversation {}", message_conversation_id);
+            } else {
+                debug!("Conversation refresh already pending, skipping duplicate request");
+            }
         }
 
         // SEMPRE aggiorna cache messaggi (indipendentemente dall'esistenza della conversazione)
