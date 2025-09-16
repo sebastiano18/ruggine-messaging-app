@@ -1,6 +1,6 @@
 // events/websocket_handler.rs - Gestione WebSocket
-use crate::models::{UiEvent, WsStatus, MessageDto, ConversationDto};
-use tracing::{debug, info, warn, error};
+use crate::models::{ConversationDto, MessageDto, UiEvent, WsStatus};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 pub struct WebSocketHandler;
@@ -19,12 +19,18 @@ impl WebSocketHandler {
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
-                crate::app::events::helpers::add_system_message(state, "WebSocket disconnesso".into());
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    "WebSocket disconnesso".into(),
+                );
             }
             UiEvent::WsError(error) => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
-                crate::app::events::helpers::add_system_message(state, format!("WebSocket errore: {}", error));
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    format!("WebSocket errore: {}", error),
+                );
             }
             UiEvent::WsIncoming(msg) => {
                 Self::handle_incoming_message(state, msg);
@@ -32,6 +38,8 @@ impl WebSocketHandler {
             _ => unreachable!("Invalid websocket event"),
         }
     }
+
+    // In websocket_handler.rs - Modifica del metodo handle_incoming_message
 
     fn handle_incoming_message(state: &mut crate::state::core::AppState, msg: MessageDto) {
         let message_conversation_id = msg.conversation_id;
@@ -49,10 +57,15 @@ impl WebSocketHandler {
 
         // CONTROLLO DUPLICATI PREVENTIVO
         if let Some(ref conversations) = state.conversations {
-            let count = conversations.iter().filter(|c| c.id == message_conversation_id).count();
+            let count = conversations
+                .iter()
+                .filter(|c| c.id == message_conversation_id)
+                .count();
             if count > 1 {
-                error!("DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
-                       message_conversation_id, count);
+                error!(
+                    "DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
+                    message_conversation_id, count
+                );
 
                 // Rimuovi i duplicati immediatamente
                 let mut deduped_conversations = Vec::new();
@@ -62,21 +75,27 @@ impl WebSocketHandler {
                     if seen_ids.insert(conv.id) {
                         deduped_conversations.push(conv.clone());
                     } else {
-                        warn!("Removing duplicate conversation: {} ({})", conv.id, conv.title);
+                        warn!(
+                            "Removing duplicate conversation: {} ({})",
+                            conv.id, conv.title
+                        );
                     }
                 }
 
                 state.conversations = Some(deduped_conversations);
                 crate::app::events::helpers::add_system_message(
                     state,
-                    "Rimossi duplicati conversazioni".into()
+                    "Rimossi duplicati conversazioni".into(),
                 );
             }
         }
 
         // GESTIONE DM STUB: Solo conversione, mai creazione
         if state.dm_stubs.contains_key(&message_conversation_id) {
-            info!("Converting DM stub {} to real conversation", message_conversation_id);
+            info!(
+                "Converting DM stub {} to real conversation",
+                message_conversation_id
+            );
 
             let target_username = state.dm_stubs.remove(&message_conversation_id).unwrap();
 
@@ -100,24 +119,32 @@ impl WebSocketHandler {
                 let removed = old_len - conversations.len();
 
                 if removed > 0 {
-                    info!("Removed {} stub instances for conversation {}", removed, message_conversation_id);
+                    info!(
+                        "Removed {} stub instances for conversation {}",
+                        removed, message_conversation_id
+                    );
                 }
 
                 // Aggiungi conversazione reale
                 conversations.push(real_conversation);
-                info!("Converted DM stub to real conversation: {}", message_conversation_id);
+                info!(
+                    "Converted DM stub to real conversation: {}",
+                    message_conversation_id
+                );
             } else {
                 state.conversations = Some(vec![real_conversation]);
             }
 
-            crate::app::events::helpers::add_system_message(state,
-                                                            format!("Chat con {} ora attiva!",
-                                                                    if msg.author_id == state.user_id.unwrap_or(Uuid::nil()) {
-                                                                        "te stesso"
-                                                                    } else {
-                                                                        &msg.author_username
-                                                                    }
-                                                            )
+            crate::app::events::helpers::add_system_message(
+                state,
+                format!(
+                    "Chat con {} ora attiva!",
+                    if msg.author_id == state.user_id.unwrap_or(Uuid::nil()) {
+                        "te stesso"
+                    } else {
+                        &msg.author_username
+                    }
+                ),
             );
         }
 
@@ -128,23 +155,28 @@ impl WebSocketHandler {
             .map(|convs| convs.iter().any(|c| c.id == message_conversation_id))
             .unwrap_or(false);
 
-        // THROTTLED REFRESH: evita refresh multipli ravvicinati
+        // MODIFICA PRINCIPALE: Fetch singola conversazione invece di refresh globale
         if !conversation_exists {
-            info!("Message for unknown conversation {} - checking refresh status",
-                  message_conversation_id);
+            info!(
+                "Message for unknown conversation {} - fetching single conversation",
+                message_conversation_id
+            );
 
             crate::app::events::helpers::add_system_message(
                 state,
-                format!("Nuovo messaggio da {} - aggiornando...", msg.author_username)
+                format!(
+                    "Nuovo messaggio da {} - caricando conversazione...",
+                    msg.author_username
+                ),
             );
 
-            // Usa un flag per evitare refresh multipli - sarà gestito nel main loop
-            if !state.request_conversations_refresh {
-                state.request_conversations_refresh = true;
-                info!("Scheduled conversation refresh for unknown conversation {}", message_conversation_id);
-            } else {
-                debug!("Conversation refresh already pending, skipping duplicate request");
-            }
+            // CAMBIO: Usa FetchSingleConversation invece di request_conversations_refresh
+            let _ = state
+                .ui_tx
+                .send(UiEvent::FetchSingleConversation(message_conversation_id));
+
+            // Rimuovi o commenta questa riga:
+            // state.request_conversations_refresh = true;
         }
 
         // SEMPRE aggiorna cache messaggi (indipendentemente dall'esistenza della conversazione)
@@ -164,13 +196,19 @@ impl WebSocketHandler {
         }
     }
 
-    fn update_message_cache_improved(state: &mut crate::state::core::AppState, msg: &MessageDto) -> bool {
+    fn update_message_cache_improved(
+        state: &mut crate::state::core::AppState,
+        msg: &MessageDto,
+    ) -> bool {
         let conversation_cache = state
             .conversation_messages
             .entry(msg.conversation_id)
             .or_insert_with(Vec::new);
 
-        if conversation_cache.iter().any(|existing| existing.id == msg.id) {
+        if conversation_cache
+            .iter()
+            .any(|existing| existing.id == msg.id)
+        {
             return false;
         }
 
