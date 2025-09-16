@@ -11,12 +11,12 @@ pub struct GroupReq<'a> {
 
 #[derive(Serialize)]
 pub struct DmReq {
-    pub user_username: String, // UUID dell'altro utente
+    pub user_username: String,
 }
 
 #[derive(Deserialize)]
 pub struct CreatedId {
-    pub id: Uuid, // UUID della conversazione o risorsa creata
+    pub id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -64,7 +64,7 @@ pub async fn create_dm(base: &str, token: &str, user_username: String) -> Result
     Ok(r.id)
 }
 
-// Ottieni le mie conversazioni
+// Ottieni le mie conversazioni (refresh completo)
 pub async fn get_conversations(base: &str, token: &str) -> Result<Vec<ConversationDto>> {
     let r = Client::new()
         .get(format!("{base}/api/conversations"))
@@ -73,6 +73,19 @@ pub async fn get_conversations(base: &str, token: &str) -> Result<Vec<Conversati
         .await?
         .error_for_status()?
         .json::<Vec<ConversationDto>>()
+        .await?;
+    Ok(r)
+}
+
+// NUOVO: Ottieni singola conversazione (fetch mirata)
+pub async fn get_single_conversation(base: &str, token: &str, conversation_id: Uuid) -> Result<ConversationDto> {
+    let r = Client::new()
+        .get(format!("{base}/api/conversations/{conversation_id}"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ConversationDto>()
         .await?;
     Ok(r)
 }

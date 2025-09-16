@@ -1,5 +1,5 @@
 // events/conversation_handler.rs - Gestione conversazioni
-use crate::models::{UiEvent, Page, MessageDto};
+use crate::models::{UiEvent, Page, MessageDto, ConversationDto};
 use tracing::{debug, info, error, warn};
 use uuid::Uuid;
 
@@ -22,6 +22,12 @@ impl ConversationHandler {
             }
             UiEvent::ConversationListUpdated => {
                 Self::handle_conversation_list_updated(state);
+            }
+            UiEvent::FetchSingleConversation(conversation_id) => {
+                Self::handle_fetch_single_conversation(state, conversation_id);
+            }
+            UiEvent::SingleConversationFetched(conversation) => {
+                Self::handle_single_conversation_fetched(state, conversation);
             }
             _ => unreachable!("Invalid conversation event"),
         }
@@ -148,5 +154,70 @@ impl ConversationHandler {
         } else {
             warn!("Cannot refresh conversations: no token available");
         }
+    }
+
+    fn handle_fetch_single_conversation(state: &mut crate::state::core::AppState, conversation_id: Uuid) {
+        if let Some(ref token) = state.token {
+            let base = state.base.clone();
+            let token = token.clone();
+            let tx = state.ui_tx.clone();
+
+            info!("Fetching single conversation: {}", conversation_id);
+
+            state.rt.spawn(async move {
+                match crate::api::conversation::get_single_conversation(&base, &token, conversation_id).await {
+                    Ok(conversation) => {
+                        debug!("Successfully fetched conversation: {} ({})", conversation.id, conversation.title);
+                        let _ = tx.send(UiEvent::SingleConversationFetched(conversation));
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch single conversation {}: {}", conversation_id, e);
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Errore caricamento conversazione {}: {}",
+                            conversation_id, e
+                        )));
+                    }
+                }
+            });
+        } else {
+            warn!("Cannot fetch conversation: no token available");
+        }
+    }
+
+    fn handle_single_conversation_fetched(state: &mut crate::state::core::AppState, conversation: ConversationDto) {
+        info!("Processing fetched conversation: {} ({})", conversation.id, conversation.title);
+
+        // Initialize conversation messages cache if needed
+        state.conversation_messages.entry(conversation.id).or_insert_with(Vec::new);
+
+        // Add or update conversation in the list
+        if let Some(ref mut conversations) = state.conversations {
+            // Check if conversation already exists
+            if let Some(existing_pos) = conversations.iter().position(|c| c.id == conversation.id) {
+                // Update existing conversation
+                debug!("Updating existing conversation: {}", conversation.id);
+                conversations[existing_pos] = conversation.clone();
+            } else {
+                // Add new conversation
+                debug!("Adding new conversation: {}", conversation.id);
+                conversations.push(conversation.clone());
+
+                // Sort conversations by created_at (most recent first)
+                conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            }
+        } else {
+            // Create new conversation list
+            state.conversations = Some(vec![conversation.clone()]);
+        }
+
+        crate::app::events::helpers::add_system_message(
+            state,
+            format!("Conversazione {} aggiornata", conversation.title)
+        );
+
+        // Clean up old conversation caches
+        crate::app::events::helpers::cleanup_old_conversations(state);
+
+        debug!("Single conversation fetch completed for: {}", conversation.id);
     }
 }

@@ -20,6 +20,15 @@ impl ConversationService {
         ConversationRepo::by_user(pool, user_id).await
     }
 
+    // NUOVO: Ottieni singola conversazione
+    pub async fn get_conversation(
+        pool: &sqlx::SqlitePool,
+        conversation_id: Uuid,
+        user_id: Uuid
+    ) -> Result<Option<(Uuid, String, String, Uuid, i64)>> {
+        ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await
+    }
+
     // Aggiungi membro (solo per gruppi e solo se sei owner)
     pub async fn add_member(
         pool: &sqlx::SqlitePool,
