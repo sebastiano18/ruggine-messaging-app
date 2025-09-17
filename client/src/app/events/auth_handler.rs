@@ -1,8 +1,7 @@
-// events/auth_handler.rs - Gestione autenticazione
+// events/auth_handler.rs - Solo rimozione preload_all_data
 use crate::models::{UiEvent, LoginState, Page, WsStatus, MessageDto};
 use tracing::info;
 use uuid::Uuid;
-
 
 pub struct AuthHandler;
 
@@ -35,7 +34,9 @@ impl AuthHandler {
         state.page = Page::Conversations;
 
         info!("User {} logged in successfully", user_id);
-        state.preload_all_data(token);
+
+        // RIMOSSO: state.preload_all_data(token);
+        // Ora i dati vengono caricati tramite eventi quando necessario
     }
 
     fn handle_logout(state: &mut crate::state::core::AppState) {

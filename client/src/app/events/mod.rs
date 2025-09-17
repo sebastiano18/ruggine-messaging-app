@@ -8,6 +8,7 @@ pub mod websocket_handler;
 pub mod data_handler;
 pub mod message_handler;
 pub mod helpers;
+mod auth_handler;
 
 use conversation_handler::ConversationHandler;
 use websocket_handler::WebSocketHandler;
@@ -31,10 +32,7 @@ impl EventDispatcher {
                 state.user_id = Some(*user_id);
                 state.login_state = crate::models::LoginState::LoggedIn;
                 state.page = crate::models::Page::Conversations;
-
-                // Avvia precaricamento dati
-                state.preload_all_data(token.clone());
-
+                
                 helpers::add_system_message(state, "Login effettuato con successo!".into());
             }
             UiEvent::LoggedOut => {
