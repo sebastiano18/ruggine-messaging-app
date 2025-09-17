@@ -113,9 +113,7 @@ impl AppState {
         }
     }
 
-    pub fn preload_all_data(&mut self, token: String) {
-        DataLoader::preload_all_data(self, token);
-    }
+    // RIMOSSO: preload_all_data
 
     pub fn load_single_conversation_messages(&self, cid: Uuid) {
         DataLoader::load_single_conversation_messages(self, cid);
@@ -174,5 +172,5 @@ impl AppState {
     pub fn is_dm_stub(&self, conversation_id: Uuid) -> bool {
         self.dm_stubs.contains_key(&conversation_id)
     }
-    
+
 }
