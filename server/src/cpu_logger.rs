@@ -1,17 +1,41 @@
+use sysinfo::{System, Process}; // SystemExt e ProcessExt sono direttamente sotto sysinfo
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::time::Duration;
-use sysinfo::{System};
-use tracing::info;
-
+use chrono::Local;
+use tokio;
+use sysinfo::Pid;
 
 pub fn spawn_cpu_logger() {
     tokio::spawn(async move {
         let mut sys = System::new_all();
-        let pid = sysinfo::get_current_pid().unwrap();
+        let pid: Pid = sysinfo::get_current_pid().unwrap();
+
         loop {
-            sys.refresh_process(pid);
-            if let Some(p) = sys.process(pid) {
-                info!(target: "cpu", usage = %p.cpu_usage(), "server_cpu_usage_pct");
+            // Aggiorna tutti i dati
+            sys.refresh_all();
+
+            if let Some(proc) = sys.process(pid) {
+                let cpu_percent = proc.cpu_usage() / sys.cpus().len() as f32; // normalizza su 1 core
+                let memory_kb = proc.memory();
+
+                // Scrive sul file di log
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("server_cpu.log")
+                    .unwrap();
+
+                writeln!(
+                    file,
+                    "[{}] CPU: {:.2}% | Memoria: {} KB",
+                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    cpu_percent,
+                    memory_kb
+                ).unwrap();
             }
+
+            // Aspetta 2 minuti prima della prossima scrittura
             tokio::time::sleep(Duration::from_secs(120)).await;
         }
     });
