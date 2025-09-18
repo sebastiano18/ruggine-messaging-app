@@ -7,7 +7,7 @@ pub struct DataLoader;
 
 impl DataLoader {
     /// Avvia il caricamento completo di tutti i dati dell'utente dopo il login
-    pub fn preload_all_data(state: &mut super::core::AppState, token: String) {
+    /* pub fn preload_all_data(state: &mut super::core::AppState, token: String) {
         state.is_loading = true;
 
         let base = state.base.clone();
@@ -16,7 +16,7 @@ impl DataLoader {
         state.rt.spawn(async move {
             Self::execute_full_preload(base, token, tx).await;
         });
-    }
+    }*/
 
     /// Carica i messaggi di una singola conversazione (DEPRECATO - usa TriggerConversationFetch)
     pub fn load_single_conversation_messages(state: &super::core::AppState, cid: Uuid) {
@@ -26,7 +26,20 @@ impl DataLoader {
             let tx = state.ui_tx.clone();
 
             state.rt.spawn(async move {
-                Self::execute_single_conversation_load(base, token, cid, tx).await;
+                match crate::api::conversation::get_conversation_with_messages(&base, &token, cid).await {
+                    Ok(conv_with_msgs) => {
+                        info!("Loaded {} messages for conversation {}", 
+                              conv_with_msgs.messages.len(), cid);
+                        let _ = tx.send(UiEvent::RefreshedMsgs(conv_with_msgs.messages));
+                    }
+                    Err(e) => {
+                        error!("Failed to load messages: {}", e);
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Errore caricamento messaggi: {}",
+                            e
+                        )));
+                    }
+                }
             });
         }
     }

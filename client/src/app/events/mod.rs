@@ -9,8 +9,8 @@ mod auth_handler;
 
 use crate::api::ws::WsControl;
 use crate::models::*;
-use crate::state::AppState;
 use crate::state::data_loader::DataLoader;
+use crate::state::AppState;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -40,14 +40,15 @@ impl EventDispatcher {
                 state.token = Some(token.clone());
                 state.user_id = Some(user_id);
                 state.last_sequence_received = last_sequence;
+                state.last_sequence_confirmed = last_sequence;
                 state.login_state = LoginState::LoggedIn;
                 state.page = Page::Conversations;
 
                 // Reset sequence stats on new login
                 state.sequence_stats = Default::default();
 
-                // Avvia il precaricamento dei dati
-                DataLoader::preload_all_data(state, token.clone());
+                // RIMOSSO: DataLoader::preload_all_data(state, token.clone());
+
 
                 // Richiedi connessione WebSocket
                 state.request_ws_reconnect = true;
@@ -75,6 +76,7 @@ impl EventDispatcher {
 
                 // Reset sequence system
                 state.last_sequence_received = 0;
+                state.last_sequence_confirmed = 0;
                 state.sequence_stats = Default::default();
             }
 
@@ -125,7 +127,10 @@ impl EventDispatcher {
                 // richiedi un refresh delle conversazioni
                 if let Some(ref conversations) = state.conversations {
                     if !conversations.iter().any(|c| c.id == msg.conversation_id) {
-                        debug!("Message for unknown conversation {}, requesting refresh", msg.conversation_id);
+                        debug!(
+                            "Message for unknown conversation {}, requesting refresh",
+                            msg.conversation_id
+                        );
                         state.request_conversations_refresh = true;
                     }
                 }
@@ -169,17 +174,14 @@ impl EventDispatcher {
                 state.cid = Some(stub_id);
                 state.page = Page::Chat;
 
-                // 3. NON aggiungiamo lo stub alla lista conversazioni visibile
-                // Verrà aggiunto quando si invia il primo messaggio (in chat.rs)
-
-                // 4. Inizializza la lista messaggi vuota nella cache
+                // 3. Inizializza la lista messaggi vuota nella cache
                 state.messages.clear();
                 state.conversation_messages.insert(stub_id, Vec::new());
 
-                // 5. Imposta il titolo per la UI (solo per visualizzazione nel chat header)
+                // 4. Imposta il titolo per la UI
                 state.conv_title = target_username.clone();
 
-                // 6. Aggiungi un messaggio di sistema informativo
+                // 5. Aggiungi un messaggio di sistema informativo
                 let system_msg = MessageDto {
                     id: Uuid::new_v4(),
                     author_id: Uuid::nil(),
@@ -193,11 +195,15 @@ impl EventDispatcher {
                 };
 
                 state.messages.push(system_msg.clone());
-                state.conversation_messages
+                state
+                    .conversation_messages
                     .get_mut(&stub_id)
                     .map(|msgs| msgs.push(system_msg));
 
-                debug!("DM stub initialized for {} (not visible in sidebar)", target_username);
+                debug!(
+                    "DM stub initialized for {} (not visible in sidebar)",
+                    target_username
+                );
             }
 
             // ===== DATA LOADING EVENTS =====
@@ -207,9 +213,10 @@ impl EventDispatcher {
                 // Rimuovi stub che ora hanno conversazioni reali sul server
                 let mut stubs_to_remove = Vec::new();
                 for (stub_id, target_username) in &state.dm_stubs {
-                    if conversations.iter().any(|c| {
-                        c.kind == "dm" && c.title == *target_username
-                    }) {
+                    if conversations
+                        .iter()
+                        .any(|c| c.kind == "dm" && c.title == *target_username)
+                    {
                         stubs_to_remove.push(*stub_id);
                     }
                 }
@@ -315,11 +322,15 @@ impl EventDispatcher {
                     let tx = state.ui_tx.clone();
 
                     state.rt.spawn(async move {
-                        match crate::api::conversation::get_conversation_with_messages(&base, &token, cid).await {
+                        match crate::api::conversation::get_conversation_with_messages(
+                            &base, &token, cid,
+                        )
+                        .await
+                        {
                             Ok(conv_with_msgs) => {
                                 let _ = tx.send(UiEvent::ConversationCompleteFetched(
                                     conv_with_msgs.conversation,
-                                    conv_with_msgs.messages
+                                    conv_with_msgs.messages,
                                 ));
                             }
                             Err(e) => {
@@ -352,7 +363,9 @@ impl EventDispatcher {
                 }
 
                 // Aggiorna messaggi
-                state.conversation_messages.insert(conv.id, messages.clone());
+                state
+                    .conversation_messages
+                    .insert(conv.id, messages.clone());
 
                 if state.cid == Some(conv.id) {
                     state.messages = messages;
@@ -399,16 +412,17 @@ impl EventDispatcher {
                         state.sequence_stats.events_recovered += recovered as u32;
 
                         // Calcola media dimensione gap
-                        let gap_size = server_sequence - state.last_sequence_received;
+                        let gap_size = server_sequence - state.last_sequence_confirmed;
                         let total_gap_size = state.sequence_stats.average_gap_size
                             * state.sequence_stats.gaps_detected as f64;
-                        state.sequence_stats.average_gap_size =
-                            (total_gap_size + gap_size as f64) / state.sequence_stats.gaps_detected as f64;
+                        state.sequence_stats.average_gap_size = (total_gap_size + gap_size as f64)
+                            / state.sequence_stats.gaps_detected as f64;
+
+                        info!("Gap detected and recovering {} events", recovered);
                     }
                 }
 
-                state.update_sequence(server_sequence);
-                state.is_recovering_sequence = false;
+                state.is_recovering_sequence = gap_detected;
             }
 
             UiEvent::UserNotification {
@@ -423,35 +437,60 @@ impl EventDispatcher {
                     sequence, event_type, recovery
                 );
 
+                // CONTROLLO DUPLICATI: Se l'evento ha una sequenza già confermata, ignoralo
+                if sequence > 0 && sequence <= state.last_sequence_confirmed {
+                    debug!(
+                        "Ignoring duplicate event with sequence {} (already confirmed up to {})",
+                        sequence, state.last_sequence_confirmed
+                    );
+                    return;
+                }
+
+                // Aggiorna la sequenza
                 state.update_sequence(sequence);
+
+                // Se è un evento di recovery, incrementa il contatore
+                if recovery {
+                    state.sequence_stats.events_recovered += 1;
+                    info!(
+                        "Processing recovery event: seq {} type {}",
+                        sequence, event_type
+                    );
+                }
 
                 // Process based on event type
                 match event_type.as_str() {
                     "new_message" => {
                         if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
-                            // Aggiungi messaggio solo se non esiste già
+                            // Controlla duplicati basandosi sull'ID del messaggio
                             if state.cid == Some(msg.conversation_id) {
                                 if !state.messages.iter().any(|m| m.id == msg.id) {
                                     state.messages.push(msg.clone());
+                                    debug!("Added new message to UI");
+                                } else {
+                                    debug!("Ignoring duplicate message {}", msg.id);
                                 }
                             }
 
-                            state
+                            // Aggiorna cache con controllo duplicati
+                            let messages = state
                                 .conversation_messages
                                 .entry(msg.conversation_id)
-                                .or_insert_with(Vec::new)
-                                .push(msg);
+                                .or_insert_with(Vec::new);
+
+                            if !messages.iter().any(|m| m.id == msg.id) {
+                                messages.push(msg);
+                                debug!("Added message to cache");
+                            }
                         }
                     }
                     "conversation_created" => {
                         if let Some(cid) = conversation_id {
-                            // Invece di solo richiedere refresh, facciamo fetch completo con messaggi
                             info!("New conversation created: {}, fetching with messages", cid);
 
-                            // Usa TriggerConversationFetch per ottenere conversazione + messaggi
                             let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
                                 cid,
-                                "new_conversation_created".to_string()
+                                "new_conversation_created".to_string(),
                             ));
 
                             // Se è una DM che abbiamo creato noi (stub), ora è stata confermata

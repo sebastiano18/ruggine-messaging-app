@@ -1,4 +1,4 @@
-// events/auth_handler.rs - Fixed version with proper sequence initialization
+// events/auth_handler.rs
 use crate::models::{UiEvent, LoginState, Page, WsStatus, MessageDto};
 use tracing::info;
 use uuid::Uuid;
@@ -16,7 +16,6 @@ impl AuthHandler {
                 state.login_state = LoginState::Registering;
                 crate::app::events::helpers::add_system_message(state, "Registrando utente...".into());
             }
-            // FIXED: Handle all 3 parameters from the Logged event
             UiEvent::Logged(token, user_id, initial_sequence) => {
                 Self::handle_login_success(state, token, user_id, initial_sequence);
             }
@@ -27,7 +26,6 @@ impl AuthHandler {
         }
     }
 
-    // FIXED: Added initial_sequence parameter and proper initialization
     fn handle_login_success(
         state: &mut crate::state::core::AppState,
         token: String,
@@ -39,9 +37,10 @@ impl AuthHandler {
         state.login_state = LoginState::LoggedIn;
         state.page = Page::Conversations;
 
-        // FIXED: Initialize sequence system with server-provided sequence
+        // Inizializza il sistema di sequenze con la sequenza fornita dal server
         state.last_sequence_received = initial_sequence;
-        state.sequence_stats = Default::default(); // Reset stats for new session
+        state.last_sequence_confirmed = initial_sequence;  // IMPORTANTE: entrambi allo stesso valore iniziale
+        state.sequence_stats = Default::default();
 
         let success_msg = if initial_sequence > 0 {
             format!("Login effettuato con successo! Sequenza iniziale: #{}", initial_sequence)
@@ -90,8 +89,9 @@ impl AuthHandler {
         state.is_loading = false;
         state.dm_stubs.clear();
 
-        // FIXED: Complete sequence system reset on logout
+        // Reset del sistema di sequenze
         state.last_sequence_received = 0;
+        state.last_sequence_confirmed = 0;  // Reset anche questo
         state.last_ping_time = std::time::Instant::now();
         state.missed_pings = 0;
         state.is_recovering_sequence = false;

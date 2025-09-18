@@ -137,23 +137,41 @@ impl ConversationHandler {
             }
         }
 
+        // Controlla se abbiamo già i messaggi in cache
         if let Some(cached_messages) = state.conversation_messages.get(&cid) {
             state.messages = cached_messages.clone();
             debug!("Loaded {} messages from cache for conversation {}", cached_messages.len(), cid);
-        } else if state.is_initial_load_complete {
-            debug!("Loading messages from network for conversation {}", cid);
-            state.load_single_conversation_messages(cid);
+        } else {
+            // Nessuna cache, carica i messaggi ora
+            debug!("No cached messages, loading from server for conversation {}", cid);
             state.messages = vec![];
 
-            if let Some(ref conversations) = state.conversations {
-                if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-                    let welcome_msg = MessageDto::system_message(format!("Benvenuto in {}!", conv.title));
-                    state.messages.push(welcome_msg);
-                }
-            }
-        } else {
-            state.messages = vec![];
+            // Aggiungi messaggio di caricamento
             crate::app::events::helpers::add_system_message(state, "Caricamento messaggi...".into());
+
+            // Carica i messaggi per questa specifica conversazione
+            if let Some(ref token) = state.token {
+                let base = state.base.clone();
+                let token = token.clone();
+                let tx = state.ui_tx.clone();
+
+                state.rt.spawn(async move {
+                    match crate::api::conversation::get_conversation_with_messages(&base, &token, cid).await {
+                        Ok(conv_with_msgs) => {
+                            debug!("Loaded {} messages for conversation {}",
+                               conv_with_msgs.messages.len(), cid);
+                            let _ = tx.send(UiEvent::RefreshedMsgs(conv_with_msgs.messages));
+                        }
+                        Err(e) => {
+                            error!("Failed to load messages for conversation {}: {}", cid, e);
+                            let _ = tx.send(UiEvent::Error(format!(
+                                "Errore caricamento messaggi: {}",
+                                e
+                            )));
+                        }
+                    }
+                });
+            }
         }
     }
 
