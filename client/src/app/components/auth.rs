@@ -1,5 +1,5 @@
 use crate::api;
-use crate::models::{LoginState, UiEvent}; // Make sure LoginResp is accessible through api::auth
+use crate::models::{LoginState, UiEvent};
 use crate::state::AppState;
 use crate::style::apply_azure_theme;
 use eframe::egui::{self, TextEdit};
@@ -85,7 +85,9 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                         }
                         Err(e) => {
                             tracing::error!("Login failed: {}", e);
-                            let _ = tx.send(UiEvent::Error(format!("Login failed: {}", e)));
+                            let _ = tx.send(UiEvent::Info(format!("Login fallito: {}", e)));
+                            // Reset lo stato usando LoggedOut che già resetta tutto
+                            let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
                 });
@@ -125,15 +127,19 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                                 }
                                 Err(e) => {
                                     tracing::error!("Login after registration failed: {}", e);
-                                    let _ = tx.send(UiEvent::Error(
-                                        format!("Login failed after registration: {}", e)
+                                    let _ = tx.send(UiEvent::Info(
+                                        format!("Login dopo registrazione fallito: {}", e)
                                     ));
+                                    // Reset lo stato
+                                    let _ = tx.send(UiEvent::LoggedOut);
                                 }
                             }
                         }
                         Err(e) => {
                             tracing::error!("Registration failed: {}", e);
-                            let _ = tx.send(UiEvent::Error(format!("Registration failed: {}", e)));
+                            let _ = tx.send(UiEvent::Info(format!("Registrazione fallita: {}", e)));
+                            // Reset lo stato usando LoggedOut
+                            let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
                 });
