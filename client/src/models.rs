@@ -14,6 +14,7 @@ pub struct LoginResp {
     pub token: String,
     pub user_id: Uuid,
     pub username: String,
+    pub last_sequence: u64,  // NUOVO: Sequence iniziale dal server
 }
 
 #[derive(Deserialize)]
@@ -113,6 +114,8 @@ pub enum Outgoing {
     },
     InviteUser { cid: Uuid, username: String },
     Typing { cid: Uuid, is_typing: bool },
+    Ping { last_sequence: u64 },
+    SequenceAck { sequence: u64 },  // NUOVO: Per confermare ricezione eventi
 }
 
 // === EVENTI UI UNIFICATI ===
@@ -123,7 +126,7 @@ pub enum UiEvent {
     Error(String),
     LoginStarted,
     RegisterStarted,
-    Logged(String, Uuid),
+    Logged(String, Uuid, u64),  // MODIFICATO: Aggiunto sequence iniziale
     LoggedOut,
 
     // WebSocket events
@@ -152,12 +155,30 @@ pub enum UiEvent {
     // General events
     InviteCreated(String),
 
-    // NUOVO: Sistema unificato di fetch conversazione
-    TriggerConversationFetch(Uuid, String), // conversation_id, reason
+    // Sistema unificato di fetch conversazione
+    TriggerConversationFetch(Uuid, String),
     ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
 
     // Conversation management events
     ConversationListUpdated,
+
+    // Sistema di sequenze
+    SequenceReceived(u64),
+    SendPing,
+    PongReceived {
+        server_sequence: u64,
+        gap_detected: bool,
+        events_recovered: Option<usize>
+    },
+
+    // NUOVO: Eventi utente sequenziati dal server
+    UserNotification {
+        sequence: u64,
+        event_type: String,
+        event_data: serde_json::Value,
+        conversation_id: Option<Uuid>,
+        recovery: bool,
+    },
 }
 
 #[derive(Deserialize)]

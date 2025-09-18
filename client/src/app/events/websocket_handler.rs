@@ -13,22 +13,37 @@ impl WebSocketHandler {
             }
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
-                crate::app::events::helpers::add_system_message(state, "WebSocket connesso".into());
+
+                // Reset sequence system per nuova connessione
+                state.missed_pings = 0;
+                state.is_recovering_sequence = false;
+                state.last_ping_time = std::time::Instant::now();
+
+                crate::app::events::helpers::add_system_message(state, "WebSocket connesso - sincronizzazione attiva".into());
+                info!("WebSocket connected, sequence system active at sequence {}", state.last_sequence_received);
             }
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
+
+                // Mantieni sequence per riconnessione
+                state.reset_sequence_on_disconnect();
+
                 crate::app::events::helpers::add_system_message(
                     state,
-                    "WebSocket disconnesso".into(),
+                    "WebSocket disconnesso - riconnessione automatica in corso...".into(),
                 );
+
+                info!("WebSocket disconnected, preserving sequence: {}", state.last_sequence_received);
             }
             UiEvent::WsError(error) => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
+
+                error!("WebSocket error: {}", error);
                 crate::app::events::helpers::add_system_message(
                     state,
-                    format!("WebSocket errore: {}", error),
+                    format!("Errore WebSocket: {}", error),
                 );
             }
             UiEvent::WsIncoming(msg) => {
@@ -42,6 +57,7 @@ impl WebSocketHandler {
         let message_conversation_id = msg.conversation_id;
 
         if !crate::app::events::helpers::validate_incoming_message(&msg) {
+            warn!("Invalid incoming message rejected: {}", msg.id);
             return;
         }
 
@@ -51,6 +67,9 @@ impl WebSocketHandler {
             msg.author_username,
             message_conversation_id
         );
+
+        // Aggiorna statistiche di ricezione
+        state.sequence_stats.total_events_received += 1;
 
         // 1. CONTROLLO DUPLICATI PREVENTIVO
         if let Some(ref conversations) = state.conversations {

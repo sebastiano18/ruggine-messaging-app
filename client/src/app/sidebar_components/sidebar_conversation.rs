@@ -26,7 +26,7 @@ impl ConversationsSidebar {
             return;
         }
 
-        // Auto-refresh se necessario
+        // Auto-refresh se richiesto esplicitamente
         self.auto_refresh_if_needed(state);
 
         let token = state.token.clone().unwrap();
@@ -36,16 +36,15 @@ impl ConversationsSidebar {
         ui.separator();
         ui.add_space(6.0);
 
-        // Sezione ricerca e avvio DM veloce
+        // Sezione ricerca
         self.show_search_section(ui, state, &token);
         ui.add_space(8.0);
 
-        // Lista conversazioni filtrate
+        // Lista conversazioni
         self.show_filtered_conversations(ui, state);
     }
 
     fn auto_refresh_if_needed(&self, state: &mut AppState) {
-        // Versione semplificata senza pending conversations
         if state.request_conversations_refresh {
             let token = match &state.token {
                 Some(t) => t.clone(),
@@ -64,7 +63,7 @@ impl ConversationsSidebar {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .small_button("🔄")
-                    .on_hover_text("Ricarica conversazioni")
+                    .on_hover_text("Carica conversazioni")
                     .clicked()
                 {
                     self.refresh_conversations(state, token);
@@ -74,7 +73,7 @@ impl ConversationsSidebar {
 
                 if ui
                     .small_button("➕")
-                    .on_hover_text("Gestione gruppi avanzata")
+                    .on_hover_text("Gestione gruppi")
                     .clicked()
                 {
                     state.page = Page::GroupManagement;
@@ -93,7 +92,6 @@ impl ConversationsSidebar {
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
             .rounding(egui::Rounding::same(8.0))
             .show(ui, |ui| {
-                // Ricerca conversazioni
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("🔍")
@@ -102,14 +100,10 @@ impl ConversationsSidebar {
                     );
                     ui.add_space(6.0);
 
-                    let search_response = TextEdit::singleline(&mut self.search_query)
+                    TextEdit::singleline(&mut self.search_query)
                         .hint_text("Cerca nelle conversazioni...")
                         .desired_width(ui.available_width())
                         .show(ui);
-
-                    if search_response.response.changed() {
-                        // Il filtro viene applicato automaticamente
-                    }
                 });
             });
     }
@@ -120,9 +114,11 @@ impl ConversationsSidebar {
             .show(ui, |ui| {
                 match &state.conversations {
                     None => {
-                        self.show_loading_state(ui);
+                        // Mostra lo stato vuoto quando non ci sono conversazioni caricate
+                        self.show_empty_state(ui, state);
                     }
                     Some(conversations) if conversations.is_empty() => {
+                        // Mostra lo stato vuoto quando l'array è vuoto
                         self.show_empty_state(ui, state);
                     }
                     Some(conversations) => {
@@ -264,30 +260,37 @@ impl ConversationsSidebar {
                     "Nessun messaggio".to_string()
                 }
             }
-            None => "Caricamento...".to_string(),
+            None => "Clicca per aprire".to_string(),
         };
 
         ui.label(RichText::new(preview_text).size(12.0).color(color));
     }
 
-    fn show_loading_state(&self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.spinner();
-            ui.add_space(8.0);
-            ui.label(RichText::new("Caricamento conversazioni...").color(egui::Color32::GRAY));
-        });
-    }
-
     fn show_empty_state(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
-            ui.label(RichText::new("🔭").size(32.0));
+            ui.label(RichText::new("📭").size(32.0));
             ui.add_space(8.0);
             ui.label(RichText::new("Nessuna conversazione").color(egui::Color32::GRAY));
             ui.add_space(12.0);
 
-            if ui.button("Vai alla Gestione Gruppi").clicked() {
+            ui.label(
+                RichText::new("Clicca 🔄 per caricare le conversazioni")
+                    .size(12.0)
+                    .color(egui::Color32::GRAY),
+            );
+
+            ui.add_space(8.0);
+
+            ui.label(
+                RichText::new("oppure")
+                    .size(11.0)
+                    .color(egui::Color32::GRAY),
+            );
+
+            ui.add_space(8.0);
+
+            if ui.button("Crea una nuova conversazione").clicked() {
                 state.page = Page::GroupManagement;
             }
         });
@@ -326,12 +329,13 @@ impl ConversationsSidebar {
             match crate::api::conversation::get_conversations(&base, &token2).await {
                 Ok(conversations) => {
                     let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-                    let _ = tx.send(UiEvent::Info("Conversazioni aggiornate".into()));
                 }
                 Err(e) => {
                     let _ = tx.send(UiEvent::Error(format!(
-                        "Errore nel caricamento delle conversazioni: {e}"
+                        "Errore nel caricamento: {e}"
                     )));
+                    // Invia array vuoto per mostrare lo stato vuoto
+                    let _ = tx.send(UiEvent::ConversationsLoaded(vec![]));
                 }
             }
         });

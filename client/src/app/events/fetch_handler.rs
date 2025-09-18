@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub struct FetchHandler;
 
 impl FetchHandler {
-    pub fn handle(state: &mut crate::state::core::AppState, event: UiEvent) {
+    /*pub fn handle(state: &mut crate::state::core::AppState, event: UiEvent) {
         match event {
             UiEvent::FetchConversationMessages(conversation_id, reason) => {
                 Self::handle_fetch_request(state, conversation_id, reason);
@@ -129,4 +129,6 @@ impl FetchHandler {
             msg.author_username
         );
     }
+    
+     */
 }

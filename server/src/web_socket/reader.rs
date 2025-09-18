@@ -111,13 +111,59 @@ pub fn spawn_reader(
                     match message_type {
                         "ping" => {
                             debug!("Ping received from user {}", user_id);
-                            let pong_response = json!({
-                                "type": "pong",
-                                "timestamp": chrono::Utc::now().timestamp()
-                            });
-                            if let Ok(txt) = serde_json::to_string(&pong_response) {
-                                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+
+                            // Estrai sequence se presente
+                            let client_last_sequence = value
+                                .get("last_sequence")
+                                .and_then(|s| s.as_u64())
+                                .unwrap_or(0);
+
+                            if client_last_sequence > 0 {
+                                // Ping con sequence - verifica gap e recupera
+                                match state
+                                    .handle_ping_with_sequence(
+                                        user_id,
+                                        client_last_sequence,
+                                        &out_tx,
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        debug!(
+                                            "Successfully handled ping with sequence {} for user {}",
+                                            client_last_sequence, user_id
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to handle ping sequence for user {}: {}",
+                                            user_id, e
+                                        );
+                                        // Invia risposta di errore
+                                        let error_response = json!({
+                                            "type": "error",
+                                            "message": "Sequence handling failed",
+                                            "error_code": "SEQUENCE_ERROR",
+                                            "details": e.to_string()
+                                        });
+                                        if let Ok(txt) = serde_json::to_string(&error_response) {
+                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Ping legacy senza sequence - pong semplice
+                                let pong_response = json!({
+                                    "type": "pong",
+                                    "timestamp": chrono::Utc::now().timestamp(),
+                                    "legacy": true
+                                });
+
+                                if let Ok(txt) = serde_json::to_string(&pong_response) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
                             }
+
                             last_heartbeat = Instant::now();
                             continue;
                         }
@@ -135,6 +181,15 @@ pub fn spawn_reader(
                             });
                             if let Ok(txt) = serde_json::to_string(&heartbeat_ack) {
                                 let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                            }
+                            last_heartbeat = Instant::now();
+                            continue;
+                        }
+                        "sequence_ack" => {
+                            // Acknowledgment di un evento sequenziato ricevuto dal client
+                            if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
+                                debug!("Sequence ack received from user {} for sequence {}", user_id, seq);
+                                // Per ora non facciamo niente, ma potremmo tracciare delivery
                             }
                             last_heartbeat = Instant::now();
                             continue;
@@ -206,15 +261,15 @@ pub fn spawn_reader(
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                            if msg.contains("database") || msg.contains("sql") =>
-                                        {
-                                            error!(
+                                        if msg.contains("database") || msg.contains("sql") =>
+                                            {
+                                                error!(
                                                 "Database-related internal error for user {}, closing connection",
                                                 user_id
                                             );
-                                            let _ = stop_tx.send(true);
-                                            break;
-                                        }
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            }
                                         crate::error::AppError::Unauthorized => {
                                             warn!(
                                                 "Unauthorized action by user {}, closing connection",

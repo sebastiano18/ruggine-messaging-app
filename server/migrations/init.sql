@@ -46,3 +46,26 @@ CREATE TABLE invites
 
 CREATE INDEX idx_msgs_conv_ts ON messages (conversation_id, created_at);
 
+CREATE TABLE user_events (
+                             id INTEGER PRIMARY KEY AUTOINCREMENT,
+                             user_id TEXT NOT NULL,
+                             sequence_num INTEGER NOT NULL,
+                             event_type TEXT NOT NULL,
+                             event_data TEXT NOT NULL,
+                             conversation_id TEXT NULL,
+                             created_at INTEGER NOT NULL,
+
+                             UNIQUE(user_id, sequence_num)
+);
+
+-- Indexes for performance
+CREATE INDEX idx_user_events_seq ON user_events(user_id, sequence_num);
+
+
+-- Table to track current sequence per user
+CREATE TABLE user_sequences (
+                                user_id TEXT PRIMARY KEY,
+                                current_sequence INTEGER NOT NULL DEFAULT 0,
+                                last_ping_sequence INTEGER DEFAULT 0,
+                                last_ping_at INTEGER DEFAULT 0
+);

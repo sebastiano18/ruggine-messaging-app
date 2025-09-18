@@ -2,6 +2,7 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
+use crate::models::LoginResp;
 
 #[derive(Serialize)]
 pub struct RegisterReq<'a> {
@@ -13,13 +14,6 @@ pub struct RegisterReq<'a> {
 pub struct LoginReq<'a> {
     pub username: &'a str,
     pub password: &'a str,
-}
-
-#[derive(Deserialize)]
-pub struct LoginResp {
-    pub token: String,
-    pub user_id: Uuid, // UUID come String
-    pub username: String,
 }
 
 pub async fn register(base: &str, u: &str, p: &str) -> Result<()> {

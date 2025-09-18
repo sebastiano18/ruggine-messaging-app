@@ -1,8 +1,8 @@
-use eframe::egui::{self, TextEdit};
-use crate::models::{LoginState, UiEvent};
 use crate::api;
+use crate::models::{LoginState, UiEvent};
 use crate::state::AppState;
 use crate::style::apply_azure_theme;
+use eframe::egui::{self, TextEdit};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     apply_azure_theme(ui);
@@ -14,8 +14,14 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     if let Some(tok) = s.token.as_ref() {
         ui.label(format!("Loggato come: {}", s.username));
         if let Some(user_id) = s.user_id {
-            ui.label(format!("User ID: {}", user_id)); // Uuid implementa Display
+            ui.label(format!("User ID: {}", user_id));
         }
+
+        // Mostra sequence corrente
+        if s.last_sequence_received > 0 {
+            ui.label(format!("Sequenza: #{}", s.last_sequence_received));
+        }
+
         ui.add_space(8.0);
 
         if ui.button("Logout").clicked() {
@@ -45,7 +51,10 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.add_space(8.0);
 
     // Disabilita i pulsanti se stiamo facendo login/registrazione
-    let is_busy = matches!(s.login_state, LoginState::LoggingIn | LoginState::Registering);
+    let is_busy = matches!(
+        s.login_state,
+        LoginState::LoggingIn | LoginState::Registering
+    );
 
     ui.horizontal(|ui| {
         // Pulsante di Login
@@ -59,19 +68,26 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                 let _ = tx.send(UiEvent::LoginStarted);
 
                 s.rt.spawn(async move {
-                    println!("DEBUG: Iniziando login per utente: {}", u);
+                    tracing::debug!("Starting login for user: {}", u);
                     match api::auth::login(&base, &u, &p).await {
                         Ok(login_resp) => {
-                            println!(
-                                "DEBUG: Login risposta - token: {}, user_id: {}, username: {}",
-                                login_resp.token, login_resp.user_id, login_resp.username
+                            tracing::info!(
+                                "Login successful - token: {}, user_id: {}, username: {}, last_sequence: {}",
+                                login_resp.token, login_resp.user_id, login_resp.username, login_resp.last_sequence
                             );
-                            // user_id è Uuid
-                            let _ = tx.send(UiEvent::Logged(login_resp.token, login_resp.user_id));
+
+                            // Send all 3 parameters
+                            let _ = tx.send(UiEvent::Logged(
+                                login_resp.token,
+                                login_resp.user_id,
+                                login_resp.last_sequence
+                            ));
                         }
                         Err(e) => {
-                            println!("DEBUG: Errore login: {}", e);
-                            let _ = tx.send(UiEvent::Error(format!("login failed: {e}")));
+                            tracing::error!("Login failed: {}", e);
+                            let _ = tx.send(UiEvent::Info(format!("Login fallito: {}", e)));
+                            // Reset lo stato usando LoggedOut che già resetta tutto
+                            let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
                 });
@@ -89,34 +105,41 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                 let _ = tx.send(UiEvent::RegisterStarted);
 
                 s.rt.spawn(async move {
-                    println!("DEBUG: Iniziando registrazione per utente: {}", u);
+                    tracing::debug!("Starting registration for user: {}", u);
                     match api::auth::register(&base, &u, &p).await {
                         Ok(_) => {
                             let _ = tx.send(UiEvent::Info(
-                                "Registrazione completata, effettuando login...".into()
+                                "Registration completed, logging in...".into()
                             ));
                             match api::auth::login(&base, &u, &p).await {
                                 Ok(login_resp) => {
-                                    println!(
-                                        "DEBUG: Post-registrazione login - token: {}, user_id: {}",
-                                        login_resp.token, login_resp.user_id
+                                    tracing::info!(
+                                        "Post-registration login successful - token: {}, user_id: {}, last_sequence: {}",
+                                        login_resp.token, login_resp.user_id, login_resp.last_sequence
                                     );
+
+                                    // Send all 3 parameters for registration + login
                                     let _ = tx.send(UiEvent::Logged(
                                         login_resp.token,
-                                        login_resp.user_id, // Uuid
+                                        login_resp.user_id,
+                                        login_resp.last_sequence
                                     ));
                                 }
                                 Err(e) => {
-                                    println!("DEBUG: Errore login post-registrazione: {}", e);
-                                    let _ = tx.send(UiEvent::Error(
-                                        format!("login failed after registration: {e}")
+                                    tracing::error!("Login after registration failed: {}", e);
+                                    let _ = tx.send(UiEvent::Info(
+                                        format!("Login dopo registrazione fallito: {}", e)
                                     ));
+                                    // Reset lo stato
+                                    let _ = tx.send(UiEvent::LoggedOut);
                                 }
                             }
                         }
                         Err(e) => {
-                            println!("DEBUG: Errore registrazione: {}", e);
-                            let _ = tx.send(UiEvent::Error(format!("register failed: {e}")));
+                            tracing::error!("Registration failed: {}", e);
+                            let _ = tx.send(UiEvent::Info(format!("Registrazione fallita: {}", e)));
+                            // Reset lo stato usando LoggedOut
+                            let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
                 });
