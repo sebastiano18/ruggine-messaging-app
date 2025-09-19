@@ -17,9 +17,13 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             ui.label(format!("User ID: {}", user_id));
         }
 
-        // Mostra sequence corrente
-        if s.last_sequence_received > 0 {
-            ui.label(format!("Sequenza: #{}", s.last_sequence_received));
+        // Mostra sequenze dual
+        if s.user_sequence_confirmed > 0 {
+            ui.label(format!("Sequenza utente: #{}", s.user_sequence_confirmed));
+        }
+
+        if !s.conversation_sequences.is_empty() {
+            ui.label(format!("Conversazioni tracciate: {}", s.conversation_sequences.len()));
         }
 
         ui.add_space(8.0);
@@ -50,14 +54,12 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.add(TextEdit::singleline(&mut s.password).password(true));
     ui.add_space(8.0);
 
-    // Disabilita i pulsanti se stiamo facendo login/registrazione
     let is_busy = matches!(
         s.login_state,
         LoginState::LoggingIn | LoginState::Registering
     );
 
     ui.horizontal(|ui| {
-        // Pulsante di Login
         ui.add_enabled_ui(!is_busy, |ui| {
             if ui.button("Login").clicked() {
                 let base = s.base.clone();
@@ -76,7 +78,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                                 login_resp.token, login_resp.user_id, login_resp.username, login_resp.last_sequence
                             );
 
-                            // Send all 3 parameters
                             let _ = tx.send(UiEvent::Logged(
                                 login_resp.token,
                                 login_resp.user_id,
@@ -86,7 +87,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                         Err(e) => {
                             tracing::error!("Login failed: {}", e);
                             let _ = tx.send(UiEvent::Info(format!("Login fallito: {}", e)));
-                            // Reset lo stato usando LoggedOut che già resetta tutto
                             let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
@@ -94,7 +94,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
             }
         });
 
-        // Pulsante di Registrazione
         ui.add_enabled_ui(!is_busy, |ui| {
             if ui.button("Register").clicked() {
                 let base = s.base.clone();
@@ -118,7 +117,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                                         login_resp.token, login_resp.user_id, login_resp.last_sequence
                                     );
 
-                                    // Send all 3 parameters for registration + login
                                     let _ = tx.send(UiEvent::Logged(
                                         login_resp.token,
                                         login_resp.user_id,
@@ -130,7 +128,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                                     let _ = tx.send(UiEvent::Info(
                                         format!("Login dopo registrazione fallito: {}", e)
                                     ));
-                                    // Reset lo stato
                                     let _ = tx.send(UiEvent::LoggedOut);
                                 }
                             }
@@ -138,7 +135,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
                         Err(e) => {
                             tracing::error!("Registration failed: {}", e);
                             let _ = tx.send(UiEvent::Info(format!("Registrazione fallita: {}", e)));
-                            // Reset lo stato usando LoggedOut
                             let _ = tx.send(UiEvent::LoggedOut);
                         }
                     }
@@ -147,7 +143,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         });
     });
 
-    // Mostra stato corrente
     match s.login_state {
         LoginState::LoggingIn => {
             ui.add_space(8.0);

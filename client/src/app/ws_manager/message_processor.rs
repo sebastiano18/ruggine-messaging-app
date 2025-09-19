@@ -43,13 +43,11 @@ impl MessageProcessor {
 
                         match ws_ctrl.outgoing_tx.send(json_msg) {
                             Ok(_) => {
-                                // Aggiorna statistiche tramite reference counting
-                                // Note: in un refactor più completo, potresti passare connection_manager qui
                                 rate_limiter.increment_sent();
                             }
                             Err(e) => {
                                 error!("Failed to send WebSocket message: {}", e);
-                                let _ = state.ui_tx.send(UiEvent::WsDisconnected);
+                                let _ = state.ui_tx.send(UiEvent::Error("Connessione WebSocket persa".into()));
                                 break;
                             }
                         }
@@ -61,7 +59,6 @@ impl MessageProcessor {
                 }
             } else {
                 warn!("Attempted to send message but WebSocket not connected");
-                // Re-queue il messaggio per quando ci riconnettiamo
                 let _ = state.ui_to_net_tx.try_send(outgoing);
                 break;
             }
@@ -119,21 +116,66 @@ impl MessageProcessor {
                 })
             }
 
-            Outgoing::Ping { last_sequence } => {
-                serde_json::json!({
+            Outgoing::EnhancedPing { user_sequence, conversation_sequence, active_conversation_id } => {
+                // SEMPRE invia type: "ping"
+                let mut json_obj = serde_json::json!({
                     "type": "ping",
-                    "last_sequence": last_sequence,
-                    "timestamp": chrono::Utc::now().timestamp(),
-                    "client_id": "ruggine_client"
+                    "timestamp": chrono::Utc::now().timestamp()
+                });
+
+                // Aggiungi user_sequence SOLO se presente
+                if let Some(user_seq) = user_sequence {
+                    json_obj["user_sequence"] = serde_json::json!(user_seq);
+                }
+
+                // Aggiungi conversation_sequence SOLO se presente e c'è una conversazione attiva
+                if let Some(conv_seq) = conversation_sequence {
+                    json_obj["conversation_sequence"] = serde_json::json!(conv_seq);
+                }
+
+                // Aggiungi active_conversation_id SOLO se presente
+                if let Some(conv_id) = active_conversation_id {
+                    json_obj["active_conversation_id"] = serde_json::json!(conv_id.to_string());
+                }
+
+                debug!("Formatted enhanced ping: user_seq={:?}, conv_seq={:?}, active_conv={:?}",
+                       user_sequence, conversation_sequence, active_conversation_id);
+
+                json_obj
+            }
+
+            Outgoing::RequestUserResume { from_sequence, limit } => {
+                serde_json::json!({
+                    "type": "request_user_resume",
+                    "from_sequence": from_sequence,
+                    "limit": limit
                 })
             }
 
-            Outgoing::SequenceAck { sequence } => {
+            Outgoing::RequestMessagesResume { conversation_id, from_sequence, limit } => {
                 serde_json::json!({
-                    "type": "sequence_ack",
-                    "sequence": sequence,
-                    "timestamp": chrono::Utc::now().timestamp()
+                    "type": "request_messages_resume",
+                    "conversation_id": conversation_id,
+                    "from_sequence": from_sequence,
+                    "limit": limit
                 })
+            }
+
+            Outgoing::SequenceAck { user_sequence, conversation_sequences } => {
+                let mut json_obj = serde_json::json!({
+                    "type": "sequence_ack",
+                    "timestamp": chrono::Utc::now().timestamp()
+                });
+
+                if let Some(user_seq) = user_sequence {
+                    json_obj["user_sequence"] = serde_json::json!(user_seq);
+                }
+
+                if let Some(conv_seqs) = conversation_sequences {
+                    json_obj["conversation_sequences"] = serde_json::json!(conv_seqs);
+                }
+
+                json_obj
             }
         };
 

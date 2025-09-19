@@ -1,11 +1,10 @@
+mod auth_handler;
 mod conversation_handler;
 mod data_handler;
 mod fetch_handler;
 mod helpers;
 mod message_handler;
 mod websocket_handler;
-
-mod auth_handler;
 
 use crate::api::ws::WsControl;
 use crate::models::*;
@@ -33,36 +32,33 @@ impl EventDispatcher {
 
             UiEvent::Logged(token, user_id, last_sequence) => {
                 info!(
-                    "User logged in successfully - user_id: {}, initial sequence: {}",
+                    "User logged in - user_id: {}, initial sequence: {}",
                     user_id, last_sequence
                 );
 
                 state.token = Some(token.clone());
                 state.user_id = Some(user_id);
-                state.last_sequence_received = last_sequence;
-                state.last_sequence_confirmed = last_sequence;
+
+                // Initialize dual sequence system
+                state.user_sequence_confirmed = last_sequence;
+                state.user_sequence_received = last_sequence;
+                state.conversation_sequences.clear();
+                state.conversation_sequences_confirmed.clear();
+
                 state.login_state = LoginState::LoggedIn;
                 state.page = Page::Conversations;
-
-                // Reset sequence stats on new login
                 state.sequence_stats = Default::default();
-
-                // RIMOSSO: DataLoader::preload_all_data(state, token.clone());
-
-
-                // Richiedi connessione WebSocket
                 state.request_ws_reconnect = true;
             }
 
             UiEvent::LoggedOut => {
                 info!("User logged out");
 
-                // Shutdown WebSocket se attivo
                 if let Some(ctrl) = state.ws_ctrl.take() {
                     let _ = ctrl.shutdown.send(());
                 }
 
-                // Reset dello stato
+                // Reset all state
                 state.token = None;
                 state.user_id = None;
                 state.page = Page::Auth;
@@ -74,9 +70,11 @@ impl EventDispatcher {
                 state.ws_status = WsStatus::Disconnected;
                 state.dm_stubs.clear();
 
-                // Reset sequence system
-                state.last_sequence_received = 0;
-                state.last_sequence_confirmed = 0;
+                // Reset dual sequence system
+                state.user_sequence_confirmed = 0;
+                state.user_sequence_received = 0;
+                state.conversation_sequences.clear();
+                state.conversation_sequences_confirmed.clear();
                 state.sequence_stats = Default::default();
             }
 
@@ -84,7 +82,7 @@ impl EventDispatcher {
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
                 state.reset_sequence_system();
-                info!("WebSocket connected, sequence system reset");
+                info!("WebSocket connected, sequence system active");
             }
 
             UiEvent::WsDisconnected => {
@@ -104,27 +102,33 @@ impl EventDispatcher {
 
             UiEvent::WsIncoming(msg) => {
                 debug!(
-                    "Incoming WebSocket message for conversation {}: {}",
-                    msg.conversation_id,
-                    msg.content.chars().take(50).collect::<String>()
+                    "Incoming message for conversation {} (seq: {:?})",
+                    msg.conversation_id, msg.sequence_num
                 );
 
-                // Se il messaggio è per la conversazione corrente, aggiungilo
+                // Update conversation sequence if present
+                if let Some(seq) = msg.sequence_num {
+                    state.update_conversation_sequence(msg.conversation_id, seq);
+                }
+
+                // Add to current conversation if active
                 if state.cid == Some(msg.conversation_id) {
                     if !state.messages.iter().any(|m| m.id == msg.id) {
                         state.messages.push(msg.clone());
                     }
                 }
 
-                // Aggiorna cache messaggi
-                state
+                // Update cache
+                let cache = state
                     .conversation_messages
                     .entry(msg.conversation_id)
-                    .or_insert_with(Vec::new)
-                    .push(msg.clone());
+                    .or_insert_with(Vec::new);
 
-                // Se arriva un messaggio per una conversazione che non conosciamo,
-                // richiedi un refresh delle conversazioni
+                if !cache.iter().any(|m| m.id == msg.id) {
+                    cache.push(msg.clone());
+                }
+
+                // Request refresh if unknown conversation
                 if let Some(ref conversations) = state.conversations {
                     if !conversations.iter().any(|c| c.id == msg.conversation_id) {
                         debug!(
@@ -136,20 +140,219 @@ impl EventDispatcher {
                 }
             }
 
+            // ===== ENHANCED PONG EVENT =====
+            UiEvent::EnhancedPongReceived {
+                current_user_sequence,
+                conversation_sequences,
+                gaps_detected,
+                user_events_gap,
+                message_gap,
+            } => {
+                debug!(
+                    "Enhanced pong - server_user_seq: {}, gaps_detected: {}",
+                    current_user_sequence, gaps_detected
+                );
+
+                state.sequence_stats.pong_count += 1;
+                state.missed_pings = 0;
+
+                // IMPORTANTE: Il pong serve SOLO per decidere se fare resume
+                // NON aggiorniamo MAI le sequence locali dal pong!
+
+                // Conta i gap prima di consumare le Option
+                let gap_count = (if user_events_gap.as_ref().map_or(false, |g| g.detected) {
+                    1
+                } else {
+                    0
+                }) + (if message_gap.as_ref().map_or(false, |g| g.detected) {
+                    1
+                } else {
+                    0
+                });
+
+                // Check for user events gap (il server ha già fatto il confronto)
+                if let Some(gap) = user_events_gap {
+                    if gap.detected {
+                        warn!("User events gap detected by server: {} events missing (client_seq: {}, server_seq: {})",
+                              gap.gap_size, gap.client_seq, gap.server_seq);
+                        state.sequence_stats.gaps_detected += 1;
+
+                        // Request resume for user events dalla sequence del client
+                        state.request_user_events_resume(gap.client_seq);
+                    }
+                }
+
+                // Check for message gap nella conversazione corrente
+                if let Some(gap) = message_gap {
+                    if gap.detected {
+                        if let Some(cid) = state.cid {
+                            warn!("Messages gap detected by server for {}: {} messages missing (client_seq: {}, server_seq: {})",
+                                  cid, gap.gap_size, gap.client_seq, gap.server_seq);
+
+                            // Request resume for messages dalla sequence del client
+                            state.request_messages_resume(cid, gap.client_seq);
+                        }
+                    }
+                }
+
+                // Opzionale: logging per debug (senza modificare nulla)
+                if let Some(conv_seqs) = conversation_sequences {
+                    for (conv_id_str, server_seq) in conv_seqs {
+                        if let Ok(conv_id) = Uuid::parse_str(&conv_id_str) {
+                            let local_seq = state
+                                .conversation_sequences
+                                .get(&conv_id)
+                                .copied()
+                                .unwrap_or(0);
+
+                            if server_seq != local_seq {
+                                debug!(
+                                    "Sequence mismatch detected for conversation {}: server={}, local={} (gap: {})",
+                                    conv_id, server_seq, local_seq,
+                                    if server_seq > local_seq { server_seq - local_seq } else { 0 }
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if gaps_detected && gap_count > 0 {
+                    info!("Pong reported {} gap(s), resume requests sent", gap_count);
+                }
+            }
+
+            // ===== RESUME EVENTS =====
+            UiEvent::UserEventsResume { events } => {
+                info!("Processing {} resumed user events", events.len());
+
+                state.is_recovering_user_events = false;
+                state.pending_resume_requests = state.pending_resume_requests.saturating_sub(1);
+                state.sequence_stats.events_recovered += events.len() as u32;
+
+                for event in events {
+                    // Update sequence tracking
+                    state.update_user_sequence(event.sequence);
+
+                    // Process event based on type
+                    let _ = state.ui_tx.send(UiEvent::UserNotification {
+                        sequence: event.sequence,
+                        event_type: event.event_type,
+                        event_data: event.event_data,
+                        conversation_id: event.conversation_id,
+                        recovery: true,
+                    });
+                }
+            }
+
+            UiEvent::MessagesResume {
+                conversation_id,
+                messages,
+            } => {
+                info!(
+                    "Processing {} resumed messages for {}",
+                    messages.len(),
+                    conversation_id
+                );
+
+                state.is_recovering_messages.insert(conversation_id, false);
+                state.pending_resume_requests = state.pending_resume_requests.saturating_sub(1);
+
+                // Trova la sequence massima nei messaggi resumed
+                let max_resumed_seq = messages
+                    .iter()
+                    .filter_map(|m| m.sequence_num)
+                    .max()
+                    .unwrap_or(0);
+
+                // Add messages to cache
+                {
+                    let cache = state
+                        .conversation_messages
+                        .entry(conversation_id)
+                        .or_insert_with(Vec::new);
+
+                    for msg in &messages {
+                        if !cache.iter().any(|m| m.id == msg.id) {
+                            cache.push(msg.clone());
+                        }
+                    }
+
+                    // Sort messages by sequence first, then timestamp
+                    cache.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
+                    });
+                }
+
+                // Aggiorna la sequence solo se è maggiore di quella attuale
+                let current_seq = state
+                    .conversation_sequences
+                    .get(&conversation_id)
+                    .copied()
+                    .unwrap_or(0);
+
+                if max_resumed_seq > current_seq {
+                    state
+                        .conversation_sequences
+                        .insert(conversation_id, max_resumed_seq);
+                    state
+                        .conversation_sequences_confirmed
+                        .insert(conversation_id, max_resumed_seq);
+                    debug!(
+                        "Updated conversation {} sequence to {} after resume",
+                        conversation_id, max_resumed_seq
+                    );
+                }
+
+                // Update UI if current conversation
+                if state.cid == Some(conversation_id) {
+                    if let Some(cache) = state.conversation_messages.get(&conversation_id) {
+                        state.messages = cache.clone();
+                    }
+                }
+            }
+
             // ===== CONVERSATION EVENTS =====
             UiEvent::Opened(cid) => {
                 info!("Opening conversation: {}", cid);
                 state.cid = Some(cid);
                 state.page = Page::Chat;
 
-                // Carica messaggi dalla cache o fetch se necessario
+                // Controlla se abbiamo messaggi cached
                 if let Some(cached) = state.conversation_messages.get(&cid) {
                     state.messages = cached.clone();
-                    debug!("Loaded {} cached messages", state.messages.len());
-                } else {
-                    state.messages.clear();
 
-                    // Solo se non è uno stub, carica i messaggi
+                    if !cached.is_empty() {
+                        // Prova a estrarre le sequence dai messaggi cached
+                        let max_seq = cached.iter().filter_map(|m| m.sequence_num).max();
+
+                        if let Some(seq) = max_seq {
+                            // Abbiamo sequence valide - usa quella
+                            state.conversation_sequences.insert(cid, seq);
+                            state.conversation_sequences_confirmed.insert(cid, seq);
+
+                            debug!(
+                                "Initialized conversation {} with sequence {} from cached messages",
+                                cid, seq
+                            );
+                        } else {
+                            // Messaggi cached senza sequence - triggera fetch per ottenere sequence
+                            debug!(
+                                "Conversation {} has cached messages without sequences - fetching",
+                                cid
+                            );
+                            state.load_single_conversation_messages(cid);
+                            // NON settare sequence - aspetta la fetch
+                        }
+                    } else {
+                        // Cache vuota - carica messaggi
+                        if !state.is_dm_stub(cid) {
+                            state.load_single_conversation_messages(cid);
+                        }
+                    }
+                } else {
+                    // Nessuna cache - carica messaggi
+                    state.messages.clear();
                     if !state.is_dm_stub(cid) {
                         state.load_single_conversation_messages(cid);
                     }
@@ -167,50 +370,29 @@ impl EventDispatcher {
             UiEvent::DmStubCreated(stub_id, target_username) => {
                 info!("Creating DM stub: {} -> {}", stub_id, target_username);
 
-                // 1. Aggiungi lo stub al tracking
                 state.add_dm_stub(stub_id, target_username.clone());
-
-                // 2. Imposta questo stub come conversazione corrente
                 state.cid = Some(stub_id);
                 state.page = Page::Chat;
-
-                // 3. Inizializza la lista messaggi vuota nella cache
                 state.messages.clear();
                 state.conversation_messages.insert(stub_id, Vec::new());
-
-                // 4. Imposta il titolo per la UI
                 state.conv_title = target_username.clone();
 
-                // 5. Aggiungi un messaggio di sistema informativo
-                let system_msg = MessageDto {
-                    id: Uuid::new_v4(),
-                    author_id: Uuid::nil(),
-                    conversation_id: stub_id,
-                    author_username: "system".to_string(),
-                    content: format!(
-                        "Chat con {} pronta. Invia il primo messaggio per iniziare!",
-                        target_username
-                    ),
-                    created_at: chrono::Utc::now().timestamp(),
-                };
-
+                let system_msg = MessageDto::system_message(format!(
+                    "Chat con {} pronta. Invia il primo messaggio per iniziare!",
+                    target_username
+                ));
                 state.messages.push(system_msg.clone());
                 state
                     .conversation_messages
                     .get_mut(&stub_id)
                     .map(|msgs| msgs.push(system_msg));
-
-                debug!(
-                    "DM stub initialized for {} (not visible in sidebar)",
-                    target_username
-                );
             }
 
             // ===== DATA LOADING EVENTS =====
             UiEvent::ConversationsLoaded(conversations) => {
                 info!("Loaded {} conversations", conversations.len());
 
-                // Rimuovi stub che ora hanno conversazioni reali sul server
+                // Remove obsolete stubs
                 let mut stubs_to_remove = Vec::new();
                 for (stub_id, target_username) in &state.dm_stubs {
                     if conversations
@@ -223,7 +405,6 @@ impl EventDispatcher {
 
                 for stub_id in stubs_to_remove {
                     state.remove_dm_stub(stub_id);
-                    debug!("Removed obsolete DM stub: {}", stub_id);
                 }
 
                 state.conversations = Some(conversations);
@@ -239,21 +420,52 @@ impl EventDispatcher {
 
                 state.conversation_messages = all_messages;
 
-                // Se abbiamo una conversazione aperta, aggiorna i messaggi
+                // Aggiorna le sequence per tutte le conversazioni caricate
+                for (conv_id, messages) in &state.conversation_messages {
+                    if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
+                        state.conversation_sequences.insert(*conv_id, max_seq);
+                        state
+                            .conversation_sequences_confirmed
+                            .insert(*conv_id, max_seq);
+                        debug!(
+                            "Updated sequence for conversation {}: {} (from {} messages)",
+                            conv_id,
+                            max_seq,
+                            messages.len()
+                        );
+                    }
+                }
+
+                // Se c'è una conversazione attiva, aggiorna i messaggi UI
                 if let Some(cid) = state.cid {
                     if let Some(messages) = state.conversation_messages.get(&cid) {
                         state.messages = messages.clone();
                     }
                 }
+
+                debug!(
+                    "Sequence tracking initialized for {} conversations",
+                    state.conversation_sequences.len()
+                );
             }
 
             UiEvent::RefreshedMsgs(messages) => {
                 debug!("Refreshed {} messages", messages.len());
                 state.messages = messages.clone();
 
-                // Aggiorna anche la cache
                 if let Some(cid) = state.cid {
-                    state.conversation_messages.insert(cid, messages);
+                    // Aggiorna la cache
+                    state.conversation_messages.insert(cid, messages.clone());
+
+                    // Aggiorna le sequence per questa conversazione
+                    if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
+                        state.conversation_sequences.insert(cid, max_seq);
+                        state.conversation_sequences_confirmed.insert(cid, max_seq);
+                        debug!(
+                            "Updated sequence for conversation {} to {} after refresh",
+                            cid, max_seq
+                        );
+                    }
                 }
             }
 
@@ -285,7 +497,6 @@ impl EventDispatcher {
             UiEvent::MessageSendFailed(msg_id) => {
                 warn!("Message send failed: {}", msg_id);
 
-                // Rimuovi il messaggio ottimistico
                 if let Some(pos) = state.messages.iter().position(|m| m.id == msg_id) {
                     state.messages.remove(pos);
                 }
@@ -351,7 +562,6 @@ impl EventDispatcher {
                     messages.len()
                 );
 
-                // Aggiorna conversazione
                 if let Some(ref mut conversations) = state.conversations {
                     if let Some(pos) = conversations.iter().position(|c| c.id == conv.id) {
                         conversations[pos] = conv.clone();
@@ -362,7 +572,24 @@ impl EventDispatcher {
                     state.conversations = Some(vec![conv.clone()]);
                 }
 
-                // Aggiorna messaggi
+                // Extract sequences from messages and update tracking
+                let max_seq = messages
+                    .iter()
+                    .filter_map(|m| m.sequence_num)
+                    .max()
+                    .unwrap_or(0);
+
+                if max_seq > 0 {
+                    state.conversation_sequences.insert(conv.id, max_seq);
+                    state
+                        .conversation_sequences_confirmed
+                        .insert(conv.id, max_seq);
+                    debug!(
+                        "Updated conversation {} sequence to {} from fetched messages",
+                        conv.id, max_seq
+                    );
+                }
+
                 state
                     .conversation_messages
                     .insert(conv.id, messages.clone());
@@ -371,7 +598,6 @@ impl EventDispatcher {
                     state.messages = messages;
                 }
 
-                // Rimuovi stub se esisteva
                 state.remove_dm_stub(conv.id);
             }
 
@@ -380,51 +606,13 @@ impl EventDispatcher {
                 state.request_conversations_refresh = true;
             }
 
-            // ===== SEQUENCE SYSTEM EVENTS =====
-            UiEvent::SequenceReceived(seq) => {
-                debug!("Sequence received: {}", seq);
-                state.update_sequence(seq);
-            }
-
+            // ===== MANUAL PING =====
             UiEvent::SendPing => {
                 debug!("Manual ping requested");
-                state.send_ping();
+                state.send_enhanced_ping();
             }
 
-            UiEvent::PongReceived {
-                server_sequence,
-                gap_detected,
-                events_recovered,
-            } => {
-                debug!(
-                    "Pong received - server_seq: {}, gap: {}, recovered: {:?}",
-                    server_sequence, gap_detected, events_recovered
-                );
-
-                state.sequence_stats.pong_count += 1;
-                state.missed_pings = 0;
-
-                if gap_detected {
-                    state.sequence_stats.gaps_detected += 1;
-                    state.sequence_stats.last_gap_time = Some(std::time::Instant::now());
-
-                    if let Some(recovered) = events_recovered {
-                        state.sequence_stats.events_recovered += recovered as u32;
-
-                        // Calcola media dimensione gap
-                        let gap_size = server_sequence - state.last_sequence_confirmed;
-                        let total_gap_size = state.sequence_stats.average_gap_size
-                            * state.sequence_stats.gaps_detected as f64;
-                        state.sequence_stats.average_gap_size = (total_gap_size + gap_size as f64)
-                            / state.sequence_stats.gaps_detected as f64;
-
-                        info!("Gap detected and recovering {} events", recovered);
-                    }
-                }
-
-                state.is_recovering_sequence = gap_detected;
-            }
-
+            // ===== USER NOTIFICATIONS =====
             UiEvent::UserNotification {
                 sequence,
                 event_type,
@@ -437,19 +625,18 @@ impl EventDispatcher {
                     sequence, event_type, recovery
                 );
 
-                // CONTROLLO DUPLICATI: Se l'evento ha una sequenza già confermata, ignoralo
-                if sequence > 0 && sequence <= state.last_sequence_confirmed {
+                // Check for duplicate based on sequence
+                if sequence > 0 && sequence <= state.user_sequence_confirmed {
                     debug!(
                         "Ignoring duplicate event with sequence {} (already confirmed up to {})",
-                        sequence, state.last_sequence_confirmed
+                        sequence, state.user_sequence_confirmed
                     );
                     return;
                 }
 
-                // Aggiorna la sequenza
-                state.update_sequence(sequence);
+                // Update user sequence
+                state.update_user_sequence(sequence);
 
-                // Se è un evento di recovery, incrementa il contatore
                 if recovery {
                     state.sequence_stats.events_recovered += 1;
                     info!(
@@ -462,7 +649,7 @@ impl EventDispatcher {
                 match event_type.as_str() {
                     "new_message" => {
                         if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
-                            // Controlla duplicati basandosi sull'ID del messaggio
+                            // Check for duplicate message
                             if state.cid == Some(msg.conversation_id) {
                                 if !state.messages.iter().any(|m| m.id == msg.id) {
                                     state.messages.push(msg.clone());
@@ -472,7 +659,7 @@ impl EventDispatcher {
                                 }
                             }
 
-                            // Aggiorna cache con controllo duplicati
+                            // Update cache
                             let messages = state
                                 .conversation_messages
                                 .entry(msg.conversation_id)
@@ -493,7 +680,7 @@ impl EventDispatcher {
                                 "new_conversation_created".to_string(),
                             ));
 
-                            // Se è una DM che abbiamo creato noi (stub), ora è stata confermata
+                            // Remove stub if it exists
                             if state.dm_stubs.contains_key(&cid) {
                                 state.remove_dm_stub(cid);
                             }

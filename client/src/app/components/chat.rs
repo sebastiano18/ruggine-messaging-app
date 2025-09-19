@@ -352,6 +352,7 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
             author_username: s.username.clone(),
             content: content.clone(),
             created_at: chrono::Utc::now().timestamp(),
+            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità
         };
 
         s.messages.push(optimistic_msg.clone());
@@ -362,11 +363,9 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
     }
 
     // Usa WebSocket - PRIMA di rimuovere lo stub!
-    // send_chat_message_ws ha bisogno dello stub per includere target_username
     s.send_chat_message_ws(content);
 
     // DOPO l'invio, se era uno stub DM, convertilo in conversazione reale
-    // TODO: In futuro sostituire con sistema UUID temporaneo che riceve UUID reale dal server
     if s.dm_stubs.contains_key(&cid) {
         let target_username = s.dm_stubs.remove(&cid).unwrap();
 

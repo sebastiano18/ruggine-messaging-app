@@ -37,20 +37,31 @@ impl AuthHandler {
         state.login_state = LoginState::LoggedIn;
         state.page = Page::Conversations;
 
-        // Inizializza il sistema di sequenze con la sequenza fornita dal server
-        state.last_sequence_received = initial_sequence;
-        state.last_sequence_confirmed = initial_sequence;  // IMPORTANTE: entrambi allo stesso valore iniziale
+        // Inizializza il sistema DUAL sequences
+        state.user_sequence_confirmed = initial_sequence;
+        state.user_sequence_received = initial_sequence;
+
+        // Clear conversation sequences for fresh start
+        state.conversation_sequences.clear();
+        state.conversation_sequences_confirmed.clear();
+
+        // Reset recovery state
+        state.is_recovering_user_events = false;
+        state.is_recovering_messages.clear();
+        state.pending_resume_requests = 0;
+
+        // Reset stats
         state.sequence_stats = Default::default();
 
         let success_msg = if initial_sequence > 0 {
-            format!("Login effettuato con successo! Sequenza iniziale: #{}", initial_sequence)
+            format!("Login effettuato con successo! Sequenza utente iniziale: #{}", initial_sequence)
         } else {
             "Login effettuato con successo".into()
         };
 
         crate::app::events::helpers::add_system_message(state, success_msg);
 
-        info!("User {} logged in successfully with initial sequence: {}", user_id, initial_sequence);
+        info!("User {} logged in successfully with initial user sequence: {}", user_id, initial_sequence);
     }
 
     fn handle_logout(state: &mut crate::state::core::AppState) {
@@ -89,12 +100,22 @@ impl AuthHandler {
         state.is_loading = false;
         state.dm_stubs.clear();
 
-        // Reset del sistema di sequenze
-        state.last_sequence_received = 0;
-        state.last_sequence_confirmed = 0;  // Reset anche questo
+        // Reset del sistema DUAL sequences
+        state.user_sequence_confirmed = 0;
+        state.user_sequence_received = 0;
+        state.conversation_sequences.clear();
+        state.conversation_sequences_confirmed.clear();
+
+        // Reset recovery state
+        state.is_recovering_user_events = false;
+        state.is_recovering_messages.clear();
+        state.pending_resume_requests = 0;
+
+        // Reset ping/pong
         state.last_ping_time = std::time::Instant::now();
         state.missed_pings = 0;
-        state.is_recovering_sequence = false;
+
+        // Reset stats
         state.sequence_stats = Default::default();
 
         crate::app::events::helpers::add_system_message(state, "Logout effettuato".into());

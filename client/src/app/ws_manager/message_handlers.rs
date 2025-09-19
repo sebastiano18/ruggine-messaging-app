@@ -1,96 +1,279 @@
-use crate::models::{MessageDto, UiEvent};
+use crate::models::{MessageDto, UiEvent, GapInfo, UserEventData};
 use serde_json::Value;
 use uuid::Uuid;
 use tracing::{debug, error, info, warn};
+use std::collections::HashMap;
 
 /// Handler principale per messaggi WebSocket in arrivo
 pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, msg: String) {
     debug!("Received WebSocket message: {}",
            msg.chars().take(200).collect::<String>());
 
-    // Validazione dimensione messaggio
     if msg.len() > 100_000 {
         error!("WebSocket message too large ({} bytes), ignoring", msg.len());
-        let _ = tx.send(UiEvent::Error("Messaggio WebSocket troppo grande".into()));
         return;
     }
 
-    // Parsing JSON
     let parsed_value: Value = match serde_json::from_str(&msg) {
         Ok(v) => v,
         Err(e) => {
-            error!("Failed to parse WebSocket JSON: {} - Message: {}", e,
-                   msg.chars().take(100).collect::<String>());
-            let _ = tx.send(UiEvent::Error(format!("Errore parsing JSON: {}", e)));
+            error!("Failed to parse WebSocket JSON: {}", e);
             return;
         }
     };
 
-    // Estrai tipo messaggio
     let msg_type = match parsed_value.get("type").and_then(|t| t.as_str()) {
         Some(t) => t,
         None => {
-            warn!("WebSocket message missing 'type' field: {}",
-                  parsed_value.to_string().chars().take(200).collect::<String>());
+            warn!("WebSocket message missing 'type' field");
             return;
         }
     };
 
-    // Gestione eventi sequenziati universale
-    if let Some(sequence) = parsed_value.get("sequence").and_then(|s| s.as_u64()) {
-        debug!("Received sequenced event: seq={}, type={}", sequence, msg_type);
-
-        // Invia sequence received event
-        let _ = tx.send(UiEvent::SequenceReceived(sequence));
-
-        // Check se è un evento recovery
-        let is_recovery = parsed_value.get("recovery").and_then(|r| r.as_bool()).unwrap_or(false);
-
-        // Per eventi sequenziati, usa il nuovo UserNotification event unificato
-        if msg_type != "pong" && msg_type != "heartbeat_ack" {
-            let conversation_id = parse_conversation_id(&parsed_value);
-
-            let _ = tx.send(UiEvent::UserNotification {
-                sequence,
-                event_type: msg_type.to_string(),
-                event_data: parsed_value.clone(),
-                conversation_id,
-                recovery: is_recovery,
-            });
-
-            // Per eventi recovery o user notifications, non processare oltre
-            if is_recovery || msg_type.starts_with("conversation_") {
-                return;
-            }
-        }
-    }
-
-    // Routing per tipo messaggio specifico
+    // Handle messages by type
     match msg_type {
         "chat_message" => handle_chat_message(tx, &parsed_value),
-        "pong" => handle_pong_message(tx, &parsed_value),
-        "user_channel_ready" | "server_heartbeat" | "heartbeat_ack" => {
-            debug!("Received control message: {}", msg_type);
-        }
-        "typing" => handle_typing_indicator(tx, &parsed_value),
+        "pong" => handle_simple_pong(tx, &parsed_value),  // AGGIUNTO: gestisci pong semplice
+        "pong_with_sequences" => handle_enhanced_pong(tx, &parsed_value),
+        "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value), // AGGIUNTO
+        "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value), // AGGIUNTO
+        "fetch_conversation_messages" => handle_fetch_conversation_messages(tx, &parsed_value), // AGGIUNTO: EVENT-BASED FETCH!
+        "user_events_resume" => handle_user_events_resume(tx, &parsed_value),
+        "messages_resume" => handle_messages_resume(tx, &parsed_value),
+        "user_resume_complete" => handle_resume_complete(tx, &parsed_value, "user"),
+        "messages_resume_complete" => handle_resume_complete(tx, &parsed_value, "messages"),
+        "conversation_created" => handle_conversation_created(tx, &parsed_value),
         "error" => handle_server_error(tx, &parsed_value),
-        "system" => handle_system_message(tx, &parsed_value),
-        "user_joined" | "user_left" => handle_user_status(tx, &parsed_value, msg_type),
         "message_ack" => handle_message_ack(tx, &parsed_value),
-        "sequence_reset" => handle_sequence_reset(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
-        "conversation_created" | "fetch_conversation_messages" | "debug" => {
-            handle_legacy_server_event(tx, &parsed_value, msg_type);
-        }
-        unknown => {
-            warn!("Unknown WebSocket message type '{}', ignoring", unknown);
-            debug!("Unknown message content: {}",
-                   parsed_value.to_string().chars().take(500).collect::<String>());
+        _ => {
+            debug!("Unhandled message type: {}", msg_type);
         }
     }
 }
 
-/// Handler per messaggi chat
+/// Handle simple pong (retrocompatibilità)
+fn handle_simple_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let current_user_sequence = value.get("current_user_sequence")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0);
+
+    let message = value.get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+
+    debug!("Simple pong received - user_seq: {}, message: {}", current_user_sequence, message);
+
+    // Converti in formato enhanced per uniformità
+    let _ = tx.send(UiEvent::EnhancedPongReceived {
+        current_user_sequence,
+        conversation_sequences: None,
+        gaps_detected: false,
+        user_events_gap: None,
+        message_gap: None,
+    });
+}
+
+/// Handle server heartbeat
+fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let user_id = value.get("user_id")
+        .and_then(|u| u.as_str())
+        .unwrap_or("unknown");
+
+    let timestamp = value.get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+
+    debug!("Server heartbeat received - user: {}, timestamp: {}", user_id, timestamp);
+
+    // Potresti voler inviare un evento per resettare timeout, etc
+    // Per ora solo log
+}
+
+/// Handle user channel ready notification
+fn handle_user_channel_ready(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let user_id = value.get("user_id")
+        .and_then(|u| u.as_str())
+        .unwrap_or("unknown");
+
+    info!("User channel ready notification received for user {}", user_id);
+}
+
+/// Handle fetch conversation messages event (EVENT-BASED FETCH!)
+fn handle_fetch_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let conversation_id = match parse_conversation_id(value) {
+        Some(id) => id,
+        None => {
+            warn!("Invalid conversation_id in fetch_conversation_messages event");
+            return;
+        }
+    };
+
+    let message_count = value.get("message_count")
+        .and_then(|c| c.as_i64())
+        .unwrap_or(0);
+
+    let current_sequence = value.get("current_sequence")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+
+    let reason = value.get("reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or("unknown");
+
+    info!("Fetch event for conversation {} ({} messages, seq: {}, reason: {})",
+          conversation_id, message_count, current_sequence, reason);
+
+    // Trigger fetch della conversazione via event system
+    let _ = tx.send(UiEvent::TriggerConversationFetch(
+        conversation_id,
+        format!("fetch_event_{}", reason)
+    ));
+}
+
+/// Handle enhanced pong with sequences
+fn handle_enhanced_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let current_user_sequence = value.get("current_user_sequence")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0);
+
+    let conversation_sequences = value.get("conversation_sequences")
+        .and_then(|s| s.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|seq| (k.clone(), seq)))
+                .collect::<HashMap<String, u64>>()
+        });
+
+    let gaps_detected = value.get("gaps_detected")
+        .and_then(|g| g.as_bool())
+        .unwrap_or(false);
+
+    let user_events_gap = value.get("user_events_gap")
+        .and_then(|gap| parse_gap_info(gap));
+
+    let message_gap = value.get("message_gap")
+        .and_then(|gap| parse_gap_info(gap));
+
+    debug!("Enhanced pong - user_seq: {}, gaps: {}", current_user_sequence, gaps_detected);
+
+    let _ = tx.send(UiEvent::EnhancedPongReceived {
+        current_user_sequence,
+        conversation_sequences,
+        gaps_detected,
+        user_events_gap,
+        message_gap,
+    });
+}
+
+fn parse_gap_info(value: &Value) -> Option<GapInfo> {
+    let detected = value.get("detected")?.as_bool()?;
+    let client_seq = value.get("client_seq")?.as_u64()?;
+    let server_seq = value.get("server_seq")?.as_u64()?;
+    let gap_size = value.get("gap_size")?.as_u64()?;
+
+    Some(GapInfo {
+        detected,
+        client_seq,
+        server_seq,
+        gap_size,
+    })
+}
+
+/// Handle user events resume
+fn handle_user_events_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let events = value.get("events")
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|event| {
+                    let sequence = event.get("sequence")?.as_u64()?;
+                    let event_type = event.get("event_type")?.as_str()?.to_string();
+                    let created_at = event.get("created_at")?.as_i64()?;
+                    let conversation_id = event.get("conversation_id")
+                        .and_then(|c| c.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok());
+
+                    Some(UserEventData {
+                        sequence,
+                        event_type,
+                        event_data: event.get("event_data").unwrap_or(&Value::Null).clone(),
+                        conversation_id,
+                        created_at,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let count = value.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+    info!("Received user events resume with {} events", count);
+
+    let _ = tx.send(UiEvent::UserEventsResume { events });
+}
+
+/// Handle messages resume
+fn handle_messages_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let conversation_id = match value.get("conversation_id")
+        .and_then(|c| c.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok()) {
+        Some(id) => id,
+        None => {
+            warn!("Messages resume missing valid conversation_id");
+            return;
+        }
+    };
+
+    let messages = value.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|msg| {
+                    let id = parse_uuid_field(msg, "id")?;
+                    let author_id = parse_uuid_field(msg, "author_id")?;
+                    let author_username = msg.get("author_username")?.as_str()?.to_string();
+                    let content = msg.get("content")?.as_str()?.to_string();
+                    let created_at = msg.get("created_at")?.as_i64()?;
+                    let sequence_num = msg.get("sequence_num").and_then(|s| s.as_u64());
+
+                    Some(MessageDto {
+                        id,
+                        author_id,
+                        author_username,
+                        conversation_id,
+                        content,
+                        created_at,
+                        sequence_num,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let count = value.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+    info!("Received messages resume for {} with {} messages", conversation_id, count);
+
+    let _ = tx.send(UiEvent::MessagesResume { conversation_id, messages });
+}
+
+/// Handle resume complete notifications
+fn handle_resume_complete(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value, resume_type: &str) {
+    let from_sequence = value.get("from_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+    let current_sequence = value.get("current_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+    let count = value.get("events_count")
+        .or_else(|| value.get("messages_count"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0);
+
+    debug!("{} resume complete - from: {}, current: {}, count: {}", 
+           resume_type, from_sequence, current_sequence, count);
+
+    if count == 0 {
+        let _ = tx.send(UiEvent::Info(format!("No {} to resume", resume_type)));
+    }
+}
+
+/// Handle chat messages with sequence
 fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let id = match parse_uuid_field(value, "id") {
         Some(id) => id,
@@ -126,7 +309,6 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
 
     let author_username = value.get("author_username")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
         .unwrap_or("unknown")
         .to_string();
 
@@ -134,12 +316,7 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-    let content = if content.len() > 50000 {
-        warn!("Message content too long ({} chars), truncating", content.len());
-        content.chars().take(50000).collect()
-    } else {
-        content
-    };
+    let sequence_num = value.get("sequence_num").and_then(|s| s.as_u64());
 
     let dto = MessageDto {
         id,
@@ -148,74 +325,39 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         conversation_id,
         content,
         created_at,
+        sequence_num,
     };
 
-    debug!("Parsed message: {} chars from {} in {}",
-           dto.content.len(), dto.author_username, dto.conversation_id);
+    debug!("Received chat message with sequence {:?}", sequence_num);
 
     let _ = tx.send(UiEvent::WsIncoming(dto));
 }
 
-/// Handler per messaggi pong
-fn handle_pong_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let server_sequence = value.get("server_sequence")
-        .and_then(|s| s.as_u64())
-        .unwrap_or(0);
-
-    let gap_detected = value.get("gap_detected")
-        .and_then(|g| g.as_bool())
-        .unwrap_or(false);
-
-    let events_recovered = if gap_detected {
-        value.get("events_recovered").and_then(|e| e.as_u64()).map(|e| e as usize)
-    } else {
-        None
+/// Handle conversation created events
+fn handle_conversation_created(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let conversation_id = match parse_conversation_id(value) {
+        Some(id) => id,
+        None => {
+            warn!("Invalid conversation_id in conversation_created event");
+            return;
+        }
     };
 
-    debug!("Pong received: server_seq={}, gap={}, recovered={:?}",
-          server_sequence, gap_detected, events_recovered);
+    let sequence = value.get("sequence").and_then(|s| s.as_u64());
 
-    let _ = tx.send(UiEvent::PongReceived {
-        server_sequence,
-        gap_detected,
-        events_recovered,
-    });
-}
-
-/// Handler per eventi legacy del server senza sequence
-fn handle_legacy_server_event(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value, event_type: &str) {
-    match event_type {
-        "fetch_conversation_messages" => {
-            if let Some(conversation_id) = parse_conversation_id(value) {
-                let reason = value.get("reason")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("server_request");
-
-                info!("Received fetch request for conversation {} (reason: {})", conversation_id, reason);
-                let _ = tx.send(UiEvent::TriggerConversationFetch(conversation_id, reason.to_string()));
-            }
-        }
-        "conversation_created" => {
-            if let Some(conversation_id) = parse_conversation_id(value) {
-                info!("Received legacy conversation_created for {}", conversation_id);
-                let _ = tx.send(UiEvent::ConversationCreated(conversation_id));
-            }
-        }
-        "debug" => {
-            let debug_msg = value.get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("Debug message from server");
-            debug!("Server debug message: {}", debug_msg);
-        }
-        _ => {
-            warn!("Unknown legacy server event: {}", event_type);
-        }
+    if let Some(seq) = sequence {
+        // This is a sequenced user event
+        let _ = tx.send(UiEvent::UserNotification {
+            sequence: seq,
+            event_type: "conversation_created".to_string(),
+            event_data: value.clone(),
+            conversation_id: Some(conversation_id),
+            recovery: false,
+        });
+    } else {
+        // Legacy non-sequenced event
+        let _ = tx.send(UiEvent::ConversationCreated(conversation_id));
     }
-}
-
-fn handle_typing_indicator(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    debug!("Received typing indicator: {}",
-           value.to_string().chars().take(100).collect::<String>());
 }
 
 fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
@@ -229,64 +371,12 @@ fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
 
     error!("Server error: {} (code: {})", error_msg, error_code);
 
-    let user_msg = match error_code {
-        "RATE_LIMIT" => "Troppi messaggi inviati, rallenta",
-        "FORBIDDEN" => "Operazione non autorizzata",
-        "NOT_FOUND" => "Conversazione non trovata",
-        "SEQUENCE_ERROR" => "Errore di sincronizzazione",
-        _ => error_msg
-    };
-
-    let _ = tx.send(UiEvent::Error(format!("Errore: {}", user_msg)));
-}
-
-fn handle_system_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let system_msg = value.get("message")
-        .and_then(|m| m.as_str())
-        .unwrap_or("Messaggio di sistema");
-
-    info!("System message: {}", system_msg);
-    let _ = tx.send(UiEvent::Info(format!("Sistema: {}", system_msg)));
-}
-
-fn handle_user_status(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value, status_type: &str) {
-    let username = value.get("username")
-        .and_then(|u| u.as_str())
-        .unwrap_or("unknown");
-
-    let status_msg = match status_type {
-        "user_joined" => format!("{} si è unito", username),
-        "user_left" => format!("{} ha lasciato la chat", username),
-        _ => format!("Stato utente cambiato: {}", username)
-    };
-
-    debug!("User status change: {}", status_msg);
-    let _ = tx.send(UiEvent::Info(status_msg));
+    let _ = tx.send(UiEvent::Error(format!("Errore server: {}", error_msg)));
 }
 
 fn handle_message_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     if let Some(client_msg_id) = value.get("client_msg_id") {
         debug!("Message acknowledged by server: {:?}", client_msg_id);
-    }
-}
-
-fn handle_sequence_reset(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let reason = value.get("reason")
-        .and_then(|r| r.as_str())
-        .unwrap_or("unknown");
-
-    let new_sequence = value.get("new_sequence")
-        .and_then(|s| s.as_u64())
-        .unwrap_or(0);
-
-    warn!("Server requested sequence reset: reason={}, new_seq={}", reason, new_sequence);
-
-    let _ = tx.send(UiEvent::Error(format!(
-        "Sincronizzazione resettata dal server: {}", reason
-    )));
-
-    if new_sequence > 0 {
-        let _ = tx.send(UiEvent::SequenceReceived(new_sequence));
     }
 }
 
@@ -296,7 +386,7 @@ fn handle_server_warning(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value
         .unwrap_or("Warning dal server");
 
     warn!("Server warning: {}", warning_msg);
-    let _ = tx.send(UiEvent::Info(format!("Warning: {}", warning_msg)));
+    let _ = tx.send(UiEvent::Info(format!("Attenzione: {}", warning_msg)));
 }
 
 // Utility functions
