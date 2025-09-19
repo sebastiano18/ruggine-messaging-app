@@ -210,6 +210,10 @@ impl ConversationsSidebar {
                 .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
         }
 
+        // Mostra il bottone elimina SOLO se l'utente corrente è l'owner (for groups-only)
+        let show_delete_button = state.user_id.map_or(false, |uid| uid == conv.owner_id);
+        let mut delete_clicked = false;
+
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
                 let (icon, icon_color) = match conv.kind.as_str() {
@@ -232,9 +236,128 @@ impl ConversationsSidebar {
                     ui.add_space(2.0);
                     self.show_message_preview(ui, state, conv, preview_color);
                 });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    
+                    if conv.kind == "group" {
+                        // Destra: bottone elimina (solo se owner del gruppo)
+                        if show_delete_button {
+                            // Bottone elimina (destra)
+                            let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
+                                .small()
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    if response.hovered() {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(180, 120, 70)
+                                    },
+                                ))
+                                .rounding(egui::Rounding::same(4.0));
+
+                            let del_resp = ui
+                                .add(delete_button)
+                                .on_hover_text("Elimina conversazione");
+
+                            if del_resp.clicked() {
+                                delete_clicked = true;
+                            }
+
+                            // opzionale: un piccolo margine a sinistra del bottone
+                            ui.add_space(8.0);
+                        }
+                    }
+                    else{
+                        // Bottone elimina (destra)
+                        let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
+                            .small()
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                if response.hovered() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(180, 120, 70)
+                                },
+                            ))
+                            .rounding(egui::Rounding::same(4.0));
+
+                        let del_resp = ui
+                            .add(delete_button)
+                            .on_hover_text("Elimina conversazione");
+
+                        if del_resp.clicked() {
+                            delete_clicked = true;
+                        }
+
+                        // opzionale: un piccolo margine a sinistra del bottone
+                        ui.add_space(8.0);
+                    }
+                });
             });
         });
 
+        // Gestione click "Elimina"
+        if delete_clicked {
+            let cid = conv.id;
+
+            // Caso A: DM locale/stub (se la tua AppState lo supporta)
+            if state.is_dm_stub(cid) {
+                state.remove_dm_stub(cid);
+                if let Some(ref mut list) = state.conversations {
+                    list.retain(|c| c.id != cid);
+                }
+                state.conversation_messages.remove(&cid);
+
+                if state.cid == Some(cid) {
+                    state.cid = None;
+                    state.conv_title.clear();
+                    state.messages.clear();
+                    state.page = Page::Conversations;
+                }
+
+                let _ = state.ui_tx.send(UiEvent::Info("Chat privata rimossa (locale)".into()));
+            } else {
+                // Caso B: conversazione reale — chiama API DELETE e poi refresh lista
+                if let Some(token) = state.token.clone() {
+                    let base = state.base.clone();
+                    let tx = state.ui_tx.clone();
+
+                    state.rt.spawn(async move {
+                        let res =
+                            crate::api::conversation::delete_conversation(&base, &token, cid).await;
+                        match res {
+                            Ok(()) => {
+                                // Piccola attesa per coerenza UI
+                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                                match crate::api::conversation::get_conversations(&base, &token).await {
+                                    Ok(conversations) => {
+                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                                        let _ = tx.send(UiEvent::Info("Conversazione eliminata".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Eliminata, ma errore nel refresh: {e}"
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UiEvent::Error(format!("Errore eliminazione: {e}")));
+                            }
+                        }
+                    });
+                } else {
+                    let _ = state.ui_tx.send(UiEvent::Error("Non autenticato".into()));
+                }
+            }
+
+            // Non aprire la chat se si è cliccato "Elimina"
+            return;
+        }
+         // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
         if response.clicked() {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;

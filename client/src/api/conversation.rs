@@ -142,3 +142,13 @@ pub async fn join_by_token(base: &str, token: &str, invite_token: &str) -> Resul
         .await?;
     Ok(r.id)
 }
+
+pub async fn delete_conversation(base: &str, token: &str, conversation_id: Uuid) -> Result<()> {
+    Client::new()
+        .delete(format!("{base}/api/conversations/{conversation_id}"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}

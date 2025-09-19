@@ -177,3 +177,13 @@ pub async fn get_conversation_with_messages(
         messages,
     }))
 }
+
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn delete_conversation(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Result<StatusCode> {
+    ConversationService::delete_conversation(&st.pool, conversation_id, user.id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

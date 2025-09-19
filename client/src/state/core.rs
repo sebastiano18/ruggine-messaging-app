@@ -439,6 +439,18 @@ impl AppState {
 
     pub fn add_dm_stub(&mut self, conversation_id: Uuid, target_username: String) {
         debug!("Adding DM stub: {} -> {}", conversation_id, target_username);
+
+        // Verifica duplicati prima di aggiungere
+        if self.dm_stubs.contains_key(&conversation_id) {
+            warn!("DM stub already exists for conversation {}", conversation_id);
+            return;
+        }
+        println!("aaaaaaaa{:?}", self.conversations);
+        if let Some(convs) = &mut self.conversations {
+    // remove the first record (index 0)
+    convs.remove(0);
+}
+        println!("eeeeeeee{:?}", self.conversations);
         self.dm_stubs.insert(conversation_id, target_username);
     }
 

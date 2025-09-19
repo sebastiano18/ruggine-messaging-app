@@ -176,6 +176,9 @@ pub enum UiEvent {
     Opened(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
+    //DeleteConversation(Uuid),
+    ConversationDeleted(Uuid),
+    //RequestConversationsRefresh,
 
     // Data loading events
     ConversationsLoaded(Vec<ConversationDto>),

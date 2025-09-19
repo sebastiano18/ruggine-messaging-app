@@ -31,6 +31,27 @@ impl DataHandler {
             UiEvent::SingleConversationLoaded(conversation) => {
                 Self::handle_single_conversation_loaded(state, conversation);
             }
+            UiEvent::ConversationDeleted(cid) => {
+                // Rimuovi dalla lista conversazioni
+                if let Some(ref mut list) = state.conversations {
+                    list.retain(|c| c.id != cid);
+                }
+                // Pulisci cache messaggi
+                state.conversation_messages.remove(&cid);
+
+                // Se era la conversazione corrente, resetta vista
+                if state.cid == Some(cid) {
+                    state.cid = None;
+                    state.conv_title.clear();
+                    state.messages.clear();
+                    state.page = Page::Conversations;
+                }
+
+                crate::app::events::helpers::add_system_message(
+                    state,
+                    format!("Conversazione {} eliminata", cid),
+                );
+            }
             _ => unreachable!("Invalid data event"),
         }
     }

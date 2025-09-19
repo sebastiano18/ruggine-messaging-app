@@ -359,6 +359,40 @@ impl EventDispatcher {
                 }
             }
 
+            UiEvent::ConversationDeleted(cid) => {
+                info!("Conversation deleted: {}", cid);
+
+                // Rimuovi dalla lista conversazioni
+                if let Some(ref mut conversations) = state.conversations {
+                    conversations.retain(|c| c.id != cid);
+                }
+
+                // Rimuovi cache messaggi
+                state.conversation_messages.remove(&cid);
+
+                // Pulisci tracking sequence e resume per questa conversazione
+                state.conversation_sequences.remove(&cid);
+                state.conversation_sequences_confirmed.remove(&cid);
+                state.is_recovering_messages.remove(&cid);
+
+                // Se era la conversazione corrente, chiudi la vista chat
+                if state.cid == Some(cid) {
+                    state.cid = None;
+                    state.messages.clear();
+                    state.page = Page::Conversations;
+                    // Se nel tuo AppState hai anche un titolo corrente:
+                    // state.conv_title.clear();
+                }
+
+                // Rimuovi eventuale stub DM locale
+                if state.is_dm_stub(cid) {
+                    state.remove_dm_stub(cid);
+                }
+
+                // Opzionale: richiedi un refresh lista (se necessario)
+                // state.request_conversations_refresh = true;
+            },
+
             UiEvent::ConversationCreated(cid) => {
                 info!("Conversation created: {}", cid);
                 state.cid = Some(cid);

@@ -323,4 +323,43 @@ impl ConversationRepo {
                 .await?;
         Ok(row.is_some())
     }
+
+    pub async fn delete_conversation(pool: &SqlitePool, conversation_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(conversation_id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    // Funzione helper
+    /// Per DM: consente accesso se l'utente è partecipante oppure ha scritto almeno un messaggio.
+    pub async fn user_has_dm_access(pool: &SqlitePool, conversation_id: Uuid, user_id: Uuid) -> Result<bool> {
+        let cid = conversation_id.to_string();
+        let uid = user_id.to_string();
+
+        // Partecipante?
+        let participant_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ? LIMIT 1",
+        )
+            .bind(&cid)
+            .bind(&uid)
+            .fetch_optional(pool)
+            .await?;
+
+        if participant_exists.is_some() {
+            return Ok(true);
+        }
+
+        // Ha scritto almeno un messaggio?
+        let author_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM messages WHERE conversation_id = ? AND author_id = ? LIMIT 1",
+        )
+            .bind(&cid)
+            .bind(&uid)
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(author_exists.is_some())
+    }
 }
