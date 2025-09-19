@@ -1,5 +1,3 @@
-// In models (1).rs (server)
-
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -29,13 +27,14 @@ pub struct Participant {
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
-pub(crate) struct Message {
-    pub(crate) id: Uuid,
-    pub(crate) author_id: Uuid,
-    pub(crate) conversation_id: Uuid,
-    pub(crate) author_username: String,
-    pub(crate) content: String,
-    pub(crate) created_at: i64
+pub struct Message {
+    pub id: Uuid,
+    pub author_id: Uuid,
+    pub conversation_id: Uuid,
+    pub author_username: String,
+    pub content: String,
+    pub created_at: i64,
+    pub sequence_num: Option<i64>, // AGGIUNTO: supporto sequence per messaggi
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]
@@ -45,7 +44,6 @@ pub struct Group {
     pub owner_id: Uuid,
     pub created_at: i64,
 }
-
 
 #[derive(FromRow, Debug, Clone, Serialize)]
 pub struct Invite {

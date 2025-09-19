@@ -14,19 +14,17 @@ impl WebSocketHandler {
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
 
-                // Reset sequence system per nuova connessione
-                state.missed_pings = 0;
-                state.is_recovering_sequence = false;
-                state.last_ping_time = std::time::Instant::now();
+                // Reset sequence system per nuova connessione (mantiene i valori)
+                state.reset_sequence_system();
 
                 crate::app::events::helpers::add_system_message(state, "WebSocket connesso - sincronizzazione attiva".into());
-                info!("WebSocket connected, sequence system active at sequence {}", state.last_sequence_received);
+                info!("WebSocket connected, dual sequence system active - user_seq: {}", state.user_sequence_confirmed);
             }
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
 
-                // Mantieni sequence per riconnessione
+                // Mantieni sequences per riconnessione
                 state.reset_sequence_on_disconnect();
 
                 crate::app::events::helpers::add_system_message(
@@ -34,7 +32,8 @@ impl WebSocketHandler {
                     "WebSocket disconnesso - riconnessione automatica in corso...".into(),
                 );
 
-                info!("WebSocket disconnected, preserving sequence: {}", state.last_sequence_received);
+                info!("WebSocket disconnected, preserving sequences - user: {}, conversations: {}", 
+                      state.user_sequence_confirmed, state.conversation_sequences.len());
             }
             UiEvent::WsError(error) => {
                 state.ws_status = WsStatus::Disconnected;
@@ -62,13 +61,43 @@ impl WebSocketHandler {
         }
 
         debug!(
-            "Processing incoming message: {} from {} in conversation {}",
+            "Processing incoming message: {} from {} in conversation {} (seq: {:?})",
             msg.content.chars().take(50).collect::<String>(),
             msg.author_username,
-            message_conversation_id
+            message_conversation_id,
+            msg.sequence_num
         );
 
-        // Aggiorna statistiche di ricezione
+        // IMPORTANTE: Aggiorna la sequence della conversazione se presente
+        if let Some(seq) = msg.sequence_num {
+            state.update_conversation_sequence(message_conversation_id, seq);
+
+            // Aggiorna anche la sequenza confermata se è consecutiva
+            let confirmed = state.conversation_sequences_confirmed
+                .get(&message_conversation_id)
+                .copied()
+                .unwrap_or(0);
+
+            if seq == confirmed + 1 {
+                state.conversation_sequences_confirmed.insert(message_conversation_id, seq);
+                debug!("Conversation {} sequence {} confirmed (continuous)", message_conversation_id, seq);
+            } else if seq > confirmed + 1 {
+                let gap = seq - confirmed - 1;
+                warn!("Gap detected in conversation {} messages: expected {}, got {} (missing {} messages)",
+                      message_conversation_id, confirmed + 1, seq, gap);
+
+                // Incrementa statistiche gap
+                state.sequence_stats.gaps_detected += 1;
+                state.sequence_stats.last_gap_time = Some(std::time::Instant::now());
+
+                // Aggiorna media gap size
+                let total_gaps = state.sequence_stats.gaps_detected as f64;
+                state.sequence_stats.average_gap_size =
+                    (state.sequence_stats.average_gap_size * (total_gaps - 1.0) + gap as f64) / total_gaps;
+            }
+        }
+
+        // Update stats
         state.sequence_stats.total_events_received += 1;
 
         // 1. CONTROLLO DUPLICATI PREVENTIVO
@@ -188,7 +217,7 @@ impl WebSocketHandler {
                 ));
         }
 
-        // 5. AGGIORNA CACHE MESSAGGI (sempre)
+        // 5. AGGIORNA CACHE MESSAGGI (sempre) - con gestione sequence
         if !Self::update_message_cache_improved(state, &msg) {
             debug!("Message already exists in cache, skipping: {}", msg.id);
             return;
@@ -214,6 +243,7 @@ impl WebSocketHandler {
             .entry(msg.conversation_id)
             .or_insert_with(Vec::new);
 
+        // Controlla duplicati
         if conversation_cache
             .iter()
             .any(|existing| existing.id == msg.id)
@@ -221,23 +251,43 @@ impl WebSocketHandler {
             return false;
         }
 
-        let insert_pos = conversation_cache
-            .binary_search_by(|existing| {
-                existing
-                    .created_at
-                    .cmp(&msg.created_at)
-                    .then_with(|| existing.id.cmp(&msg.id))
-            })
-            .unwrap_or_else(|pos| pos);
+        // Se il messaggio ha una sequence, usa quella per l'ordinamento
+        let insert_pos = if let Some(msg_seq) = msg.sequence_num {
+            // Ordina prima per sequence, poi per timestamp come fallback
+            conversation_cache
+                .binary_search_by(|existing| {
+                    match (existing.sequence_num, msg.sequence_num) {
+                        (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                        _ => existing.created_at.cmp(&msg.created_at)
+                            .then_with(|| existing.id.cmp(&msg.id))
+                    }
+                })
+                .unwrap_or_else(|pos| pos)
+        } else {
+            // Senza sequence, usa solo timestamp
+            conversation_cache
+                .binary_search_by(|existing| {
+                    existing.created_at.cmp(&msg.created_at)
+                        .then_with(|| existing.id.cmp(&msg.id))
+                })
+                .unwrap_or_else(|pos| pos)
+        };
 
         conversation_cache.insert(insert_pos, msg.clone());
 
         debug!(
-            "Message added to cache for conversation {}: {} chars from {}",
+            "Message added to cache for conversation {}: {} chars from {} (seq: {:?}, pos: {})",
             msg.conversation_id,
             msg.content.len(),
-            msg.author_username
+            msg.author_username,
+            msg.sequence_num,
+            insert_pos
         );
+
+        // Verifica integrità sequence nella cache
+        if msg.sequence_num.is_some() {
+            Self::verify_cache_sequence_integrity(state, msg.conversation_id);
+        }
 
         true
     }
@@ -248,22 +298,60 @@ impl WebSocketHandler {
             return;
         }
 
-        let ui_insert_pos = state
-            .messages
-            .binary_search_by(|existing| {
-                existing
-                    .created_at
-                    .cmp(&msg.created_at)
-                    .then_with(|| existing.id.cmp(&msg.id))
-            })
-            .unwrap_or_else(|pos| pos);
+        // Usa sequence per ordinamento se disponibile
+        let ui_insert_pos = if let Some(msg_seq) = msg.sequence_num {
+            state
+                .messages
+                .binary_search_by(|existing| {
+                    match (existing.sequence_num, msg.sequence_num) {
+                        (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                        _ => existing.created_at.cmp(&msg.created_at)
+                            .then_with(|| existing.id.cmp(&msg.id))
+                    }
+                })
+                .unwrap_or_else(|pos| pos)
+        } else {
+            state
+                .messages
+                .binary_search_by(|existing| {
+                    existing.created_at.cmp(&msg.created_at)
+                        .then_with(|| existing.id.cmp(&msg.id))
+                })
+                .unwrap_or_else(|pos| pos)
+        };
 
         state.messages.insert(ui_insert_pos, msg.clone());
 
         debug!(
-            "Message added to current conversation UI: {} characters from {}",
+            "Message added to current conversation UI: {} characters from {} (seq: {:?}, pos: {})",
             msg.content.len(),
-            msg.author_username
+            msg.author_username,
+            msg.sequence_num,
+            ui_insert_pos
         );
+    }
+
+    /// Verifica l'integrità delle sequence nella cache
+    fn verify_cache_sequence_integrity(state: &crate::state::core::AppState, conversation_id: Uuid) {
+        if let Some(messages) = state.conversation_messages.get(&conversation_id) {
+            let sequenced_messages: Vec<u64> = messages
+                .iter()
+                .filter_map(|m| m.sequence_num)
+                .collect();
+
+            if sequenced_messages.len() > 1 {
+                for window in sequenced_messages.windows(2) {
+                    if window[1] != window[0] + 1 && window[1] > window[0] + 1 {
+                        debug!(
+                            "Sequence gap in cache for conversation {}: {} -> {} (gap: {})",
+                            conversation_id,
+                            window[0],
+                            window[1],
+                            window[1] - window[0] - 1
+                        );
+                    }
+                }
+            }
+        }
     }
 }

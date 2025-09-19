@@ -25,7 +25,7 @@ impl App {
             ws_manager: WebSocketManager::new(),
             sidebar_manager: SidebarManager::new(),
             header_manager: HeaderManager::new(),
-            show_debug_info: cfg!(debug_assertions), // Debug mode per default in debug builds
+            show_debug_info: cfg!(debug_assertions),
             last_debug_toggle: std::time::Instant::now(),
         }
     }
@@ -33,56 +33,41 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1) CRITICO: Gestione ciclo di vita WebSocket PRIMA di tutto
-        // Questo include ping automatico, rate limiting, health check
         self.ws_manager.ensure_ws_lifecycle(&mut self.state);
-
-        // 2) Drena eventi UI (REST/WS) che aggiornano lo stato
         self.state.drain_events();
-
-        // 3) Controlli tastiera globali
         self.handle_global_shortcuts(ctx);
-
-        // 4) UI - Header sempre presente
         self.header_manager.show_header(ctx, &mut self.state);
 
-        // 5) Debug panel (se abilitato)
         if self.show_debug_info {
             self.show_debug_panel(ctx);
         }
 
-        // 6) Layout principale
         if self.state.token.is_none() {
             self.show_auth_layout(ctx);
         } else {
             self.show_main_layout(ctx);
         }
 
-        // 7) Pulizia periodica memoria
         self.periodic_cleanup();
-
-        // 8) Repaint continuo per UI reattiva
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         tracing::info!("App shutting down");
 
-        // Shutdown graceful WebSocket
         if let Some(ctrl) = self.state.ws_ctrl.take() {
             let _ = ctrl.shutdown.send(());
         }
 
-        // Log statistiche finali
         let debug_info = self.state.get_debug_info();
         tracing::info!("Final app state: {:?}", debug_info);
 
         let stats = self.ws_manager.get_connection_stats();
         tracing::info!("Final connection stats: {:?}", stats);
 
-        // Log sequence stats finali
-        tracing::info!("Final sequence stats - Last: {}, Pings: {}, Pongs: {}, Gaps: {}",
-                      self.state.last_sequence_received,
+        tracing::info!("Final sequence stats - User seq: {}, Conv seqs: {}, Pings: {}, Pongs: {}, Gaps: {}",
+                      self.state.user_sequence_confirmed,
+                      self.state.conversation_sequences.len(),
                       self.state.sequence_stats.ping_count,
                       self.state.sequence_stats.pong_count,
                       self.state.sequence_stats.gaps_detected);
@@ -90,9 +75,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// Gestisce shortcut globali
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
-        // Ctrl+D per toggle debug panel
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::D)) {
             if self.last_debug_toggle.elapsed() > std::time::Duration::from_millis(500) {
                 self.show_debug_info = !self.show_debug_info;
@@ -101,28 +84,24 @@ impl App {
             }
         }
 
-        // Ctrl+R per forzare riconnessione WebSocket
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
             self.state.request_ws_reconnect = true;
             tracing::info!("Manual WebSocket reconnection requested");
         }
 
-        // F5 per refresh conversazioni
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
             self.state.request_conversations_refresh = true;
             tracing::info!("Manual conversations refresh requested");
         }
     }
 
-    /// Panel debug con informazioni sistema sequenze COMPLETO
     fn show_debug_panel(&mut self, ctx: &egui::Context) {
         egui::Window::new("🔧 Debug Info")
-            .default_size([450.0, 400.0])
+            .default_size([450.0, 500.0])
             .resizable(true)
             .collapsible(true)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    // Informazioni generali
                     ui.strong("📌 Connection Status");
                     ui.separator();
 
@@ -134,34 +113,75 @@ impl App {
                     ui.label(format!("WebSocket: {}", ws_status_text));
                     ui.label(format!("Authenticated: {}", if self.state.is_authenticated() { "✅" } else { "❌" }));
 
-                    // Connection uptime
                     if let Some(uptime) = self.ws_manager.get_connection_stats().current_uptime() {
                         ui.label(format!("Uptime: {:?}", uptime));
                     }
 
                     ui.add_space(10.0);
 
-                    // Sistema sequenze - DETTAGLIATO
-                    ui.strong("🔄 Sequence System");
+                    // DUAL Sequence System
+                    ui.strong("🔄 Dual Sequence System");
                     ui.separator();
 
-                    ui.label(format!("Last Sequence: {}", self.state.last_sequence_received));
+                    ui.label(egui::RichText::new("User Events:").strong());
+                    ui.label(format!("  Confirmed: {}", self.state.user_sequence_confirmed));
+                    ui.label(format!("  Received: {}", self.state.user_sequence_received));
+                    let user_gap = if self.state.user_sequence_received > self.state.user_sequence_confirmed {
+                        self.state.user_sequence_received - self.state.user_sequence_confirmed
+                    } else {
+                        0
+                    };
+                    if user_gap > 0 {
+                        ui.colored_label(egui::Color32::YELLOW, format!("  Gap: {} events", user_gap));
+                    }
+
+                    ui.add_space(5.0);
+
+                    ui.label(egui::RichText::new("Active Conversation:").strong());
+                    if let Some(cid) = self.state.cid {
+                        ui.label(format!("  ID: {}", cid));
+                        let conv_seq = self.state.conversation_sequences.get(&cid).copied().unwrap_or(0);
+                        let conv_seq_conf = self.state.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+                        ui.label(format!("  Confirmed: {}", conv_seq_conf));
+                        ui.label(format!("  Received: {}", conv_seq));
+
+                        let conv_gap = if conv_seq > conv_seq_conf {
+                            conv_seq - conv_seq_conf
+                        } else {
+                            0
+                        };
+                        if conv_gap > 0 {
+                            ui.colored_label(egui::Color32::YELLOW, format!("  Gap: {} messages", conv_gap));
+                        }
+                    } else {
+                        ui.label("  None selected");
+                    }
+
+                    ui.label(format!("Total tracked conversations: {}", self.state.conversation_sequences.len()));
+
+                    ui.add_space(10.0);
+
+                    ui.strong("🔄 Recovery State");
+                    ui.separator();
+                    ui.label(format!("Recovering user events: {}", self.state.is_recovering_user_events));
+                    ui.label(format!("Recovering conversations: {}", self.state.is_recovering_messages.len()));
+                    ui.label(format!("Pending resume requests: {}", self.state.pending_resume_requests));
+
+                    ui.add_space(10.0);
+
+                    ui.strong("📡 Ping/Pong");
+                    ui.separator();
+
                     ui.label(format!("Sequence Health: {:.2}", self.state.get_sequence_health()));
                     ui.label(format!("Missed Pings: {}/{}", self.state.missed_pings, self.state.max_missed_pings));
 
                     let next_ping_secs = (self.state.ping_interval.as_secs() as f64 -
                         self.state.last_ping_time.elapsed().as_secs_f64()).max(0.0);
                     ui.label(format!("Next Ping: {:.1}s", next_ping_secs));
-
                     ui.label(format!("Ping Timeout: {:.0}s", self.state.ping_timeout.as_secs_f64()));
-
-                    if self.state.is_recovering_sequence {
-                        ui.colored_label(egui::Color32::YELLOW, "🔄 Recovering sequence...");
-                    }
 
                     ui.add_space(10.0);
 
-                    // Statistiche sequence - COMPLETE
                     ui.strong("📊 Sequence Statistics");
                     ui.separator();
 
@@ -188,7 +208,6 @@ impl App {
 
                     ui.add_space(10.0);
 
-                    // Cache info
                     ui.strong("💾 Cache Info");
                     ui.separator();
 
@@ -200,7 +219,6 @@ impl App {
 
                     ui.add_space(10.0);
 
-                    // Connection stats - DETTAGLIATE
                     ui.strong("📈 Connection Stats");
                     ui.separator();
 
@@ -222,13 +240,12 @@ impl App {
 
                     ui.add_space(15.0);
 
-                    // Controlli manuali - ESPANSI
                     ui.strong("🎮 Manual Controls");
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        if ui.button("📡 Force Ping").clicked() {
-                            self.state.send_ping();
+                        if ui.button("📡 Force Enhanced Ping").clicked() {
+                            self.state.send_enhanced_ping();
                         }
 
                         if ui.button("🔌 Reconnect").clicked() {
@@ -248,6 +265,20 @@ impl App {
                     });
 
                     ui.horizontal(|ui| {
+                        if ui.button("🔄 Request User Resume").clicked() {
+                            self.state.request_user_events_resume(self.state.user_sequence_confirmed);
+                        }
+
+                        if let Some(cid) = self.state.cid {
+                            if ui.button("🔄 Request Msg Resume").clicked() {
+                                let seq = self.state.conversation_sequences_confirmed
+                                    .get(&cid).copied().unwrap_or(0);
+                                self.state.request_messages_resume(cid, seq);
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
                         if ui.button("📊 Reset Seq Stats").clicked() {
                             self.state.sequence_stats = Default::default();
                             tracing::info!("Sequence statistics reset");
@@ -258,13 +289,15 @@ impl App {
                         }
                     });
 
-                    // Sequence reset button (dangerous)
                     ui.add_space(5.0);
                     ui.separator();
-                    if ui.button("⚠️ Reset Sequence (Dangerous)").clicked() {
-                        self.state.last_sequence_received = 0;
+                    if ui.button("⚠️ Reset ALL Sequences (Dangerous)").clicked() {
+                        self.state.user_sequence_confirmed = 0;
+                        self.state.user_sequence_received = 0;
+                        self.state.conversation_sequences.clear();
+                        self.state.conversation_sequences_confirmed.clear();
                         self.state.sequence_stats = Default::default();
-                        tracing::warn!("Manual sequence reset performed");
+                        tracing::warn!("Manual sequence reset performed - ALL sequences cleared");
                     }
                 });
             });
@@ -272,11 +305,9 @@ impl App {
 
     fn show_auth_layout(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Centra il pannello di login
             ui.vertical_centered(|ui| {
                 ui.add_space(100.0);
 
-                // Logo e titolo
                 ui.label(egui::RichText::new("🦀").size(64.0));
                 ui.add_space(16.0);
                 ui.heading(egui::RichText::new("Ruggine Chat").size(32.0));
@@ -287,7 +318,6 @@ impl App {
                     components::auth::panel(ui, &mut self.state);
                 });
 
-                // Status WebSocket nella schermata di login
                 ui.add_space(20.0);
                 match self.state.ws_status {
                     WsStatus::Connecting => {
@@ -301,8 +331,8 @@ impl App {
                     }
                     WsStatus::Connected => {
                         ui.colored_label(egui::Color32::GREEN, "🟢 Connesso");
-                        if self.state.last_sequence_received > 0 {
-                            ui.label(format!("Sequenza: #{}", self.state.last_sequence_received));
+                        if self.state.user_sequence_confirmed > 0 {
+                            ui.label(format!("Sequenza utente: #{}", self.state.user_sequence_confirmed));
                         }
                     }
                 }
@@ -311,7 +341,6 @@ impl App {
     }
 
     fn show_main_layout(&mut self, ctx: &egui::Context) {
-        // Layout WhatsApp: sidebar sinistra + contenuto principale
         egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(350.0)
@@ -330,12 +359,9 @@ impl App {
                     components::conversation_management::panel(ui, &mut self.state);
                 },
                 Page::Conversations => {
-                    // Se siamo nella pagina Conversations ma non abbiamo una chat selezionata
                     self.show_welcome_screen(ui);
                 },
                 Page::Auth => {
-                    // Questo non dovrebbe mai accadere se siamo nel main_layout
-                    // ma lo gestiamo per sicurezza
                     self.show_welcome_screen(ui);
                 }
             }
@@ -354,15 +380,13 @@ impl App {
 
             ui.add_space(20.0);
 
-            // Status connessione nella welcome screen - MIGLIORATO
             match self.state.ws_status {
                 WsStatus::Connected => {
                     ui.colored_label(egui::Color32::GREEN, "🟢 Sincronizzato");
-                    if self.state.last_sequence_received > 0 {
-                        ui.label(format!("Ultimo evento: #{}", self.state.last_sequence_received));
+                    if self.state.user_sequence_confirmed > 0 {
+                        ui.label(format!("Ultimo evento utente: #{}", self.state.user_sequence_confirmed));
                     }
 
-                    // Mostra salute sequenze
                     let health = self.state.get_sequence_health();
                     if health < 1.0 {
                         let health_color = if health > 0.8 { egui::Color32::YELLOW } else { egui::Color32::RED };
@@ -377,16 +401,15 @@ impl App {
                 }
                 WsStatus::Disconnected => {
                     ui.colored_label(egui::Color32::RED, "🔴 Disconnesso - riconnessione automatica...");
-                    if self.state.last_sequence_received > 0 {
+                    if self.state.user_sequence_confirmed > 0 {
                         ui.colored_label(egui::Color32::GRAY,
-                                         format!("Ultima sequenza nota: #{}", self.state.last_sequence_received));
+                                         format!("Ultima sequenza utente nota: #{}", self.state.user_sequence_confirmed));
                     }
                 }
             }
 
             ui.add_space(20.0);
 
-            // Logica conversazioni
             let has_conversations = self.state.conversations
                 .as_ref()
                 .map_or(false, |convs| !convs.is_empty());
@@ -406,7 +429,6 @@ impl App {
                 }
             }
 
-            // Stato di caricamento
             if self.state.is_loading && !self.state.is_initial_load_complete {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
@@ -415,7 +437,6 @@ impl App {
                 });
             }
 
-            // Shortcuts info
             ui.add_space(30.0);
             ui.separator();
             ui.add_space(10.0);
@@ -424,9 +445,7 @@ impl App {
         });
     }
 
-    /// Pulizia periodica per evitare memory leaks
     fn periodic_cleanup(&mut self) {
-        // Cleanup ogni 5 minuti
         static mut LAST_CLEANUP: Option<std::time::Instant> = None;
 
         let should_cleanup = unsafe {
@@ -440,7 +459,6 @@ impl App {
             unsafe { LAST_CLEANUP = Some(std::time::Instant::now()); }
             tracing::debug!("Periodic cleanup completed");
 
-            // Log statistiche durante cleanup
             let stats = self.state.get_debug_info();
             tracing::debug!("Cleanup stats: {} conversations, {} messages, {} stubs",
                            stats.get("conversations").unwrap_or(&"0".to_string()),

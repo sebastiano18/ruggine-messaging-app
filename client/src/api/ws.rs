@@ -36,7 +36,7 @@ pub async fn connect(base: &str, token: &str) -> Result<WsStream> {
     let mut req: Request<()> = ws_url.as_str().into_client_request()?;
     req.headers_mut().insert(
         header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", token.trim()))?, // CORREZIONE: trim del token
+        HeaderValue::from_str(&format!("Bearer {}", token.trim()))?,
     );
 
     let (ws, resp) = connect_async(req).await?;
@@ -53,7 +53,6 @@ pub async fn subscribe(ws: &mut WsStream) -> Result<()> {
 
     let subscribe_msg = Message::Text(r#"{"type":"subscribe"}"#.into());
 
-    // Timeout per il subscribe
     tokio::time::timeout(std::time::Duration::from_secs(10), ws.send(subscribe_msg)).await??;
 
     Ok(())
@@ -68,7 +67,8 @@ pub fn spawn_bidirectional_handler(
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
 
     tokio::spawn(async move {
-        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        // Ping WebSocket base ogni 60 secondi (solo per keepalive)
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(60));
         let mut last_pong = std::time::Instant::now();
         let mut consecutive_failures = 0u32;
         const MAX_FAILURES: u32 = 5;
@@ -84,12 +84,10 @@ pub fn spawn_bidirectional_handler(
                         reason: Cow::from("app_exit"),
                     };
 
-                    // Tentativo graceful close
                     if let Err(e) = ws.send(Message::Close(Some(close_frame))).await {
                         debug!("Failed to send close frame: {}", e);
                     }
 
-                    // Attendi conferma chiusura per massimo 1 secondo
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_millis(1000),
                         ws.next()
@@ -104,7 +102,6 @@ pub fn spawn_bidirectional_handler(
                     debug!("Sending message to server: {}",
                            msg.chars().take(100).collect::<String>());
 
-                    // CORREZIONE: Validazione dimensione messaggio
                     if msg.len() > 100_000 {
                         error!("Message too large ({} bytes), dropping", msg.len());
                         continue;
@@ -133,7 +130,6 @@ pub fn spawn_bidirectional_handler(
                             debug!("Received text message: {}",
                                    text.chars().take(100).collect::<String>());
 
-                            // CORREZIONE: Validazione dimensione messaggio ricevuto
                             if text.len() > 1_000_000 {
                                 error!("Received message too large ({} bytes), ignoring", text.len());
                                 continue;
@@ -171,7 +167,6 @@ pub fn spawn_bidirectional_handler(
                             error!("WebSocket receive error: {}", e);
                             consecutive_failures += 1;
 
-                            // CORREZIONE: Distingui errori fatali
                             let error_str = e.to_string().to_lowercase();
                             if error_str.contains("connection closed") ||
                                error_str.contains("broken pipe") {
@@ -185,13 +180,12 @@ pub fn spawn_bidirectional_handler(
                                 break;
                             }
 
-                            // Pausa breve prima del prossimo tentativo
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
                 }
 
-                // Ping periodico con controllo timeout migliorato
+                // Ping periodico SOLO per keepalive (ogni 60 secondi)
                 _ = ping_interval.tick() => {
                     let elapsed_since_pong = last_pong.elapsed();
 
@@ -200,30 +194,22 @@ pub fn spawn_bidirectional_handler(
                         break;
                     }
 
-                    debug!("Sending periodic ping (last pong: {:?} ago)", elapsed_since_pong);
+                    debug!("Sending WebSocket keepalive ping (last pong: {:?} ago)", elapsed_since_pong);
 
-                    // Invia ping WebSocket nativo
+                    // SOLO ping WebSocket nativo per keepalive
                     match ws.send(Message::Ping(vec![])).await {
-                        Ok(_) => debug!("WebSocket ping sent successfully"),
+                        Ok(_) => debug!("WebSocket keepalive ping sent"),
                         Err(e) => {
                             error!("Failed to send WebSocket ping: {}", e);
                             consecutive_failures += 1;
+                            if consecutive_failures >= MAX_FAILURES {
+                                error!("Too many ping failures ({}), closing connection", consecutive_failures);
+                                break;
+                            }
                         }
                     }
 
-                    // Invia anche ping JSON per compatibilità con il server
-                    match ws.send(Message::Text(r#"{"type":"ping"}"#.to_string())).await {
-                        Ok(_) => debug!("JSON ping sent successfully"),
-                        Err(e) => {
-                            error!("Failed to send JSON ping: {}", e);
-                            consecutive_failures += 1;
-                        }
-                    }
-
-                    if consecutive_failures >= MAX_FAILURES {
-                        error!("Too many ping failures ({}), closing connection", consecutive_failures);
-                        break;
-                    }
+                    // RIMOSSO il ping JSON - il sistema enhanced lo gestisce
                 }
             }
         }
@@ -253,7 +239,7 @@ pub fn spawn_simple_handler(
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     debug!("Simple WebSocket handler shutdown");
-                    let _ = ws.send(Message::Close(None)).await; // CORREZIONE: Graceful close
+                    let _ = ws.send(Message::Close(None)).await;
                     break;
                 }
 

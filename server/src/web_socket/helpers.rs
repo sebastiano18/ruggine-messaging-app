@@ -141,17 +141,43 @@ pub async fn handle_chat_message(
         }
     }
 
-    // Salvataggio del messaggio nel database
+    // IMPORTANTE: Ottieni la sequenza per il messaggio PRIMA di salvare
+    // Usiamo la transazione per evitare race condition
+    let message_sequence = {
+        let now = Utc::now().timestamp();
+
+        // Crea record se non esiste
+        sqlx::query("INSERT OR IGNORE INTO message_sequences (conversation_id, current_sequence, last_updated) VALUES (?, 0, ?)")
+            .bind(&conversation_id_str)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::from)?;
+
+        // Incrementa e ottieni nuovo valore
+        let row = sqlx::query("UPDATE message_sequences SET current_sequence = current_sequence + 1, last_updated = ? WHERE conversation_id = ? RETURNING current_sequence")
+            .bind(now)
+            .bind(&conversation_id_str)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::from)?;
+
+        let seq: i64 = row.try_get("current_sequence").map_err(AppError::from)?;
+        seq as u64
+    };
+
+    // Salvataggio del messaggio nel database CON SEQUENZA
     let id = Uuid::new_v4();
     let ts = Utc::now().timestamp();
     let id_str = id.to_string();
 
-    sqlx::query("INSERT INTO messages (id, conversation_id, author_id, content, created_at) VALUES (?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO messages (id, conversation_id, author_id, content, created_at, sequence_num) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&id_str)
         .bind(&conversation_id_str)
         .bind(&user_id_str)
         .bind(content)
         .bind(ts)
+        .bind(message_sequence as i64)
         .execute(&mut *tx)
         .await
         .map_err(AppError::from)?;
@@ -159,7 +185,7 @@ pub async fn handle_chat_message(
     // Commit della transazione prima delle notifiche
     tx.commit().await.map_err(AppError::from)?;
 
-    info!("Message {} saved to DB", id);
+    info!("Message {} saved to DB with sequence {}", id, message_sequence);
 
     // Gestione diversa per nuove conversazioni vs esistenti
     if is_new_conversation {
@@ -177,11 +203,12 @@ pub async fn handle_chat_message(
                 "author_id": user_id,
                 "author_username": username,
                 "content": content,
-                "created_at": ts
+                "created_at": ts,
+                "sequence": message_sequence
             }
         });
 
-        // CORRETTO: Invia evento sequenziato SOLO ai riceventi (non al creatore)
+        // Invia evento sequenziato SOLO ai riceventi (non al creatore)
         for &participant_id in &participant_ids {
             if participant_id != user_id {  // Escludi il creatore
                 match state.send_sequenced_event_to_user(
@@ -200,9 +227,30 @@ pub async fn handle_chat_message(
             }
         }
 
-        info!("Message {} stored in new conversation with sequence events", id);
+        // IMPORTANTE: Invia anche un broadcast normale per il creatore per vedere il suo messaggio
+        let message_event = json!({
+            "type": "chat_message",
+            "id": id,
+            "cid": conversation_id,
+            "author_id": user_id,
+            "author_username": username,
+            "content": content,
+            "created_at": ts,
+            "sequence": message_sequence
+        });
+
+        match broadcast_to_conversation(state, conversation_id, message_event).await {
+            Ok(delivered) => {
+                debug!("Message {} also broadcast to {} receivers", id, delivered);
+            }
+            Err(e) => {
+                debug!("Failed to broadcast new conversation message: {}", e);
+            }
+        }
+
+        info!("Message {} stored in new conversation with sequence {}", id, message_sequence);
     } else {
-        // Per conversazioni esistenti: broadcast normale
+        // Per conversazioni esistenti: broadcast normale CON SEQUENZA
         let event = json!({
             "type": "chat_message",
             "id": id,
@@ -210,18 +258,20 @@ pub async fn handle_chat_message(
             "author_id": user_id,
             "author_username": username,
             "content": content,
-            "created_at": ts
+            "created_at": ts,
+            "sequence": message_sequence  // AGGIUNGI LA SEQUENZA AL BROADCAST
         });
 
         match broadcast_to_conversation(state, conversation_id, event).await {
             Ok(delivered) if delivered > 0 => {
-                info!("Message {} delivered immediately to {} receivers", id, delivered);
+                info!("Message {} (seq={}) delivered immediately to {} receivers",
+                      id, message_sequence, delivered);
             }
             Ok(_) => {
-                info!("Message {} stored - no active receivers", id);
+                info!("Message {} (seq={}) stored - no active receivers", id, message_sequence);
             }
             Err(e) => {
-                warn!("Failed to broadcast message {}: {}", id, e);
+                warn!("Failed to broadcast message {} (seq={}): {}", id, message_sequence, e);
             }
         }
     }
@@ -330,8 +380,16 @@ pub async fn send_initial_fetch_events(
 ) -> Result<()> {
     let user_id_str = user_id.to_string();
 
-    // Ottieni tutte le conversazioni dell'utente con il conteggio messaggi
-    let rows = sqlx::query("SELECT DISTINCT p.conversation_id, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = p.conversation_id) as message_count FROM participants p WHERE p.user_id = ?")
+    // Ottieni tutte le conversazioni dell'utente con il conteggio messaggi e la sequenza corrente
+    let rows = sqlx::query(
+        "SELECT DISTINCT
+            p.conversation_id,
+            (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = p.conversation_id) as message_count,
+            COALESCE(ms.current_sequence, 0) as current_sequence
+         FROM participants p
+         LEFT JOIN message_sequences ms ON p.conversation_id = ms.conversation_id
+         WHERE p.user_id = ?"
+    )
         .bind(&user_id_str)
         .fetch_all(&state.pool)
         .await
@@ -346,6 +404,9 @@ pub async fn send_initial_fetch_events(
         let message_count: i64 = row.try_get("message_count")
             .map_err(|e| AppError::Internal(format!("Failed to get message_count: {}", e)))?;
 
+        let current_sequence: i64 = row.try_get("current_sequence")
+            .map_err(|e| AppError::Internal(format!("Failed to get current_sequence: {}", e)))?;
+
         // Invia fetch event solo se ci sono messaggi
         if message_count > 0 {
             if let Ok(conversation_id) = Uuid::parse_str(&conversation_id_str) {
@@ -353,6 +414,7 @@ pub async fn send_initial_fetch_events(
                     "type": "fetch_conversation_messages",
                     "conversation_id": conversation_id,
                     "message_count": message_count,
+                    "current_sequence": current_sequence,
                     "reason": "initial_connection",
                     "timestamp": Utc::now().timestamp()
                 });
@@ -363,8 +425,8 @@ pub async fn send_initial_fetch_events(
                         break;
                     } else {
                         total_sent += 1;
-                        debug!("Sent initial fetch event to user {} for conversation {} ({} messages)",
-                              user_id, conversation_id, message_count);
+                        debug!("Sent initial fetch event to user {} for conversation {} ({} messages, seq={})",
+                              user_id, conversation_id, message_count, current_sequence);
                     }
                 }
             }
@@ -383,6 +445,7 @@ pub struct MessageResponse {
     pub author_username: String,
     pub content: String,
     pub created_at: i64,
+    pub sequence: Option<i64>,  // Aggiunto campo sequence
 }
 
 /// Endpoint API per fetch messaggi conversazione
@@ -409,7 +472,14 @@ pub async fn get_conversation_messages_api(
 
     let limit = limit.unwrap_or(50).min(100);
 
-    let messages = sqlx::query("SELECT m.id, m.author_id, u.username as author_username, m.content, m.created_at FROM messages m JOIN users u ON m.author_id = u.id WHERE m.conversation_id = ? ORDER BY m.created_at ASC LIMIT ?")
+    let messages = sqlx::query(
+        "SELECT m.id, m.author_id, u.username as author_username, m.content, m.created_at, m.sequence_num
+         FROM messages m
+         JOIN users u ON m.author_id = u.id
+         WHERE m.conversation_id = ?
+         ORDER BY m.created_at ASC
+         LIMIT ?"
+    )
         .bind(&conversation_id_str)
         .bind(limit)
         .fetch_all(&state.pool)
@@ -424,6 +494,7 @@ pub async fn get_conversation_messages_api(
             author_username: row.try_get("author_username").map_err(AppError::from)?,
             content: row.try_get("content").map_err(AppError::from)?,
             created_at: row.try_get("created_at").map_err(AppError::from)?,
+            sequence: row.try_get("sequence_num").ok(),  // Includi sequence se presente
         };
         response.push(message);
     }

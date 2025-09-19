@@ -50,12 +50,13 @@ impl WebSocketManager {
             return;
         }
 
-        // Invia ping e aggiorna timestamp
-        state.send_ping();
+        // Invia enhanced ping
+        state.send_enhanced_ping();
         state.update_ping_time();
 
-        tracing::debug!("Ping cycle executed, sequence: {}, total pings: {}", 
-               state.last_sequence_received, state.sequence_stats.ping_count);
+        tracing::debug!("Enhanced ping sent - user_seq: {}, conv_seqs: {}", 
+               state.user_sequence_confirmed, 
+               state.conversation_sequences.len());
     }
 
     pub fn get_connection_stats(&self) -> &connection_manager::ConnectionStats {

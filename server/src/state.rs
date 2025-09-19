@@ -1,10 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{info, warn, error, debug};
 use uuid::Uuid;
+use serde::{Serialize, Deserialize};
 use serde_json::{Value, json};
 use sqlx::Row;
 use crate::error::{AppError, Result};
+use crate::web_socket::actor::OutboundMsg;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -14,6 +16,28 @@ pub struct AppState {
     pub channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
     // Canali per notifiche utente (nuove conversazioni, etc.)
     pub user_notification_channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
+}
+
+// === Strutture di supporto ===
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UserEvent {
+    pub sequence: u64,
+    pub event_type: String,
+    pub event_data: serde_json::Value,
+    pub conversation_id: Option<Uuid>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SequencedMessage {
+    pub id: Uuid,
+    pub conversation_id: Uuid,
+    pub author_id: Uuid,
+    pub author_username: String,
+    pub content: String,
+    pub created_at: i64,
+    pub sequence: u64,
 }
 
 impl AppState {
@@ -135,7 +159,7 @@ impl AppState {
         }
     }
 
-    // === Sistema di Sequenze per Eventi Utente ===
+    // === Sistema di Sequenze per User Events ===
 
     /// Ottieni prossimo numero di sequenza per un utente (atomico)
     pub async fn get_next_user_sequence(&self, user_id: Uuid) -> Result<u64> {
@@ -178,6 +202,55 @@ impl AppState {
 
         Ok(seq)
     }
+
+    // === Sistema di Sequenze per Messaggi ===
+
+    /// Ottieni prossimo numero di sequenza per una conversazione (atomico)
+    pub async fn get_next_message_sequence(&self, conversation_id: Uuid) -> Result<u64> {
+        let conv_id_str = conversation_id.to_string();
+        let now = chrono::Utc::now().timestamp();
+
+        // INSERT OR IGNORE per creare record se non esiste
+        sqlx::query("INSERT OR IGNORE INTO message_sequences (conversation_id, current_sequence, last_updated) VALUES (?, 0, ?)")
+            .bind(&conv_id_str)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        // UPDATE atomico + RETURNING per ottenere il nuovo valore
+        let row = sqlx::query("UPDATE message_sequences SET current_sequence = current_sequence + 1, last_updated = ? WHERE conversation_id = ? RETURNING current_sequence")
+            .bind(now)
+            .bind(&conv_id_str)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let new_seq: i64 = row.try_get("current_sequence").map_err(AppError::from)?;
+        Ok(new_seq as u64)
+    }
+
+    /// Ottieni numero di sequenza corrente per una conversazione (senza incrementare)
+    pub async fn get_current_message_sequence(&self, conversation_id: Uuid) -> Result<u64> {
+        let conv_id_str = conversation_id.to_string();
+
+        let row = sqlx::query("SELECT current_sequence FROM message_sequences WHERE conversation_id = ?")
+            .bind(&conv_id_str)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let seq = if let Some(row) = row {
+            let seq: i64 = row.try_get("current_sequence").map_err(AppError::from)?;
+            seq as u64
+        } else {
+            0
+        };
+
+        Ok(seq)
+    }
+
+    // === Storage e Recovery ===
 
     /// Salva evento nel database per recovery
     pub async fn store_user_event(
@@ -242,90 +315,370 @@ impl AppState {
         Ok(sequence)
     }
 
-    /// Gestisce ping con sequence - rileva gap e recupera eventi
+    // === Recovery Methods ===
+
+    /// Recupera user events mancanti dal database
+    pub async fn get_user_events_since(
+        &self,
+        user_id: Uuid,
+        since_sequence: u64,
+        limit: i64
+    ) -> Result<Vec<UserEvent>> {
+        let user_id_str = user_id.to_string();
+
+        let rows = sqlx::query(
+            "SELECT sequence_num, event_type, event_data, conversation_id, created_at 
+             FROM user_events 
+             WHERE user_id = ? AND sequence_num > ? 
+             ORDER BY sequence_num ASC 
+             LIMIT ?"
+        )
+            .bind(&user_id_str)
+            .bind(since_sequence as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let sequence: i64 = row.try_get("sequence_num").map_err(AppError::from)?;
+            let event_type: String = row.try_get("event_type").map_err(AppError::from)?;
+            let event_data_str: String = row.try_get("event_data").map_err(AppError::from)?;
+            let conversation_id_str: Option<String> = row.try_get("conversation_id").map_err(AppError::from)?;
+            let created_at: i64 = row.try_get("created_at").map_err(AppError::from)?;
+
+            let event_data: serde_json::Value = serde_json::from_str(&event_data_str)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+
+            let conversation_id = conversation_id_str
+                .and_then(|s| Uuid::parse_str(&s).ok());
+
+            events.push(UserEvent {
+                sequence: sequence as u64,
+                event_type,
+                event_data,
+                conversation_id,
+                created_at,
+            });
+        }
+
+        Ok(events)
+    }
+
+    /// Recupera messaggi mancanti per una conversazione
+    pub async fn get_messages_since_sequence(
+        &self,
+        conversation_id: Uuid,
+        since_sequence: u64,
+        limit: i64
+    ) -> Result<Vec<SequencedMessage>> {
+        let conv_id_str = conversation_id.to_string();
+
+        let rows = sqlx::query(
+            "SELECT m.id, m.author_id, u.username as author_username, 
+                    m.content, m.created_at, m.sequence_num 
+             FROM messages m 
+             JOIN users u ON m.author_id = u.id 
+             WHERE m.conversation_id = ? AND m.sequence_num > ? 
+             ORDER BY m.sequence_num ASC 
+             LIMIT ?"
+        )
+            .bind(&conv_id_str)
+            .bind(since_sequence as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let id_str: String = row.try_get("id").map_err(AppError::from)?;
+            let author_id_str: String = row.try_get("author_id").map_err(AppError::from)?;
+            let sequence: Option<i64> = row.try_get("sequence_num").map_err(AppError::from)?;
+
+            messages.push(SequencedMessage {
+                id: Uuid::parse_str(&id_str).map_err(|_| AppError::Internal("Invalid UUID".into()))?,
+                conversation_id,
+                author_id: Uuid::parse_str(&author_id_str).map_err(|_| AppError::Internal("Invalid UUID".into()))?,
+                author_username: row.try_get("author_username").map_err(AppError::from)?,
+                content: row.try_get("content").map_err(AppError::from)?,
+                created_at: row.try_get("created_at").map_err(AppError::from)?,
+                sequence: sequence.map(|s| s as u64).unwrap_or(0),
+            });
+        }
+
+        Ok(messages)
+    }
+
+    // === Enhanced Ping Handlers ===
+
+    /// Gestisce ping con sequence legacy (retrocompatibilità)
     pub async fn handle_ping_with_sequence(
         &self,
         user_id: Uuid,
         client_last_sequence: u64,
-        out_tx: &tokio::sync::mpsc::Sender<super::web_socket::actor::OutboundMsg>,
+        out_tx: &mpsc::Sender<OutboundMsg>,
     ) -> Result<()> {
+        // Usa il sistema enhanced ma solo con user sequence
+        self.handle_enhanced_ping(user_id, Some(client_last_sequence), None, None, out_tx).await
+    }
+
+    /// Gestisce ping avanzato con doppio tracking
+    // Sostituisci il metodo handle_enhanced_ping in state.rs con questa versione
+
+    /// Gestisce ping avanzato - SOLO DETECTION, NO AUTO-RESUME
+    pub async fn handle_enhanced_ping(
+        &self,
+        user_id: Uuid,
+        client_user_seq: Option<u64>,
+        client_conv_seq: Option<u64>,
+        active_conversation_id: Option<Uuid>,
+        out_tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        let mut response = json!({
+        "type": "pong_with_sequences",
+        "timestamp": chrono::Utc::now().timestamp(),
+    });
+
+        // 1. Includi sempre la sequenza corrente degli user events
+        let current_user_seq = self.get_current_user_sequence(user_id).await?;
+        response["current_user_sequence"] = json!(current_user_seq);
+
+        // 2. Se c'è una conversazione attiva, includi la sua sequenza corrente
+        if let Some(conv_id) = active_conversation_id {
+            let current_conv_seq = self.get_current_message_sequence(conv_id).await?;
+            response["conversation_sequences"] = json!({
+            conv_id.to_string(): current_conv_seq
+        });
+        }
+
+        // 3. Opzionale: includi informazioni sui gap rilevati (solo per info)
+        let mut gaps_detected = false;
+
+        if let Some(client_seq) = client_user_seq {
+            if client_seq < current_user_seq {
+                gaps_detected = true;
+                response["user_events_gap"] = json!({
+                "detected": true,
+                "client_seq": client_seq,
+                "server_seq": current_user_seq,
+                "gap_size": current_user_seq - client_seq
+            });
+                info!("User {} has gap in user events: client={}, server={}", 
+                  user_id, client_seq, current_user_seq);
+            }
+
+            // Aggiorna tracking del ping
+            self.update_user_ping_tracking(user_id, client_seq).await?;
+        }
+
+        if let Some(conv_id) = active_conversation_id {
+            if let Some(client_seq) = client_conv_seq {
+                let current_conv_seq = self.get_current_message_sequence(conv_id).await?;
+                if client_seq < current_conv_seq {
+                    gaps_detected = true;
+                    response["message_gap"] = json!({
+                    "detected": true,
+                    "conversation_id": conv_id,
+                    "client_seq": client_seq,
+                    "server_seq": current_conv_seq,
+                    "gap_size": current_conv_seq - client_seq
+                });
+                    info!("User {} has gap in conversation {}: client={}, server={}", 
+                      user_id, conv_id, client_seq, current_conv_seq);
+                }
+            }
+        }
+
+        // Aggiungi flag generale per indicare se ci sono gap
+        response["gaps_detected"] = json!(gaps_detected);
+
+        // 4. Invia SOLO la risposta pong (NO AUTO-RESUME)
+        if let Ok(txt) = serde_json::to_string(&response) {
+            out_tx.send(OutboundMsg::Text(txt)).await
+                .map_err(|e| AppError::Internal(format!("Failed to send pong: {}", e)))?;
+        }
+
+        debug!("Sent pong to user {} with sequences (gaps_detected={})", user_id, gaps_detected);
+
+        Ok(())
+    }
+
+    /// Gestisce richiesta esplicita di resume per user events
+    pub async fn handle_user_events_resume_request(
+        &self,
+        user_id: Uuid,
+        from_sequence: u64,
+        limit: i64,
+        out_tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        let events = self.get_user_events_since(user_id, from_sequence, limit).await?;
+
+        if !events.is_empty() {
+            self.send_user_events_resume(user_id, events, out_tx).await?;
+        } else {
+            let response = json!({
+            "type": "user_resume_complete",
+            "from_sequence": from_sequence,
+            "current_sequence": self.get_current_user_sequence(user_id).await?,
+            "events_count": 0
+        });
+
+            if let Ok(txt) = serde_json::to_string(&response) {
+                out_tx.send(OutboundMsg::Text(txt)).await
+                    .map_err(|e| AppError::Internal(format!("Failed to send resume complete: {}", e)))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Gestisce richiesta esplicita di resume per messaggi
+    pub async fn handle_messages_resume_request(
+        &self,
+        user_id: Uuid,
+        conversation_id: Uuid,
+        from_sequence: u64,
+        limit: i64,
+        out_tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        // Verifica autorizzazione
+        let user_id_str = user_id.to_string();
+        let conv_id_str = conversation_id.to_string();
+
+        let is_participant: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
+        )
+            .bind(&conv_id_str)
+            .bind(&user_id_str)
+            .fetch_one(&self.pool)
+            .await?;
+
+        if is_participant == 0 {
+            return Err(AppError::Forbidden);
+        }
+
+        let messages = self.get_messages_since_sequence(conversation_id, from_sequence, limit).await?;
+
+        if !messages.is_empty() {
+            self.send_messages_resume(user_id, conversation_id, messages, out_tx).await?;
+        } else {
+            let response = json!({
+            "type": "messages_resume_complete",
+            "conversation_id": conversation_id,
+            "from_sequence": from_sequence,
+            "current_sequence": self.get_current_message_sequence(conversation_id).await?,
+            "messages_count": 0
+        });
+
+            if let Ok(txt) = serde_json::to_string(&response) {
+                out_tx.send(OutboundMsg::Text(txt)).await
+                    .map_err(|e| AppError::Internal(format!("Failed to send resume complete: {}", e)))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // === Resume Senders ===
+
+    /// Invia resume di user events mancanti
+    pub async fn send_user_events_resume(
+        &self,
+        user_id: Uuid,
+        events: Vec<UserEvent>,
+        out_tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        let resume_msg = json!({
+            "type": "user_events_resume",
+            "events": events.iter().map(|e| {
+                let mut event = e.event_data.clone();
+                event["sequence"] = json!(e.sequence);
+                event["event_type"] = json!(&e.event_type);
+                event["created_at"] = json!(e.created_at);
+                if let Some(conv_id) = e.conversation_id {
+                    event["conversation_id"] = json!(conv_id);
+                }
+                event
+            }).collect::<Vec<_>>(),
+            "count": events.len(),
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        if let Ok(txt) = serde_json::to_string(&resume_msg) {
+            out_tx.send(OutboundMsg::Text(txt)).await
+                .map_err(|e| AppError::Internal(format!("Failed to send user events resume: {}", e)))?;
+        }
+
+        info!("Sent {} user events in resume to user {}", events.len(), user_id);
+        Ok(())
+    }
+
+    /// Invia resume di messaggi mancanti
+    pub async fn send_messages_resume(
+        &self,
+        user_id: Uuid,
+        conversation_id: Uuid,
+        messages: Vec<SequencedMessage>,
+        out_tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        let resume_msg = json!({
+            "type": "messages_resume",
+            "conversation_id": conversation_id,
+            "messages": messages.iter().map(|m| json!({
+                "id": m.id,
+                "author_id": m.author_id,
+                "author_username": &m.author_username,
+                "content": &m.content,
+                "created_at": m.created_at,
+                "sequence": m.sequence
+            })).collect::<Vec<_>>(),
+            "count": messages.len(),
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        if let Ok(txt) = serde_json::to_string(&resume_msg) {
+            out_tx.send(OutboundMsg::Text(txt)).await
+                .map_err(|e| AppError::Internal(format!("Failed to send messages resume: {}", e)))?;
+        }
+
+        info!("Sent {} messages in resume for conversation {} to user {}", 
+              messages.len(), conversation_id, user_id);
+        Ok(())
+    }
+
+    // === Helper Methods ===
+
+    /// Aggiorna tracking del ping utente
+    async fn update_user_ping_tracking(&self, user_id: Uuid, client_sequence: u64) -> Result<()> {
         let user_id_str = user_id.to_string();
         let now = chrono::Utc::now().timestamp();
 
-        // Aggiorna tracking ping
-        sqlx::query("INSERT OR REPLACE INTO user_sequences (user_id, current_sequence, last_ping_sequence, last_ping_at) VALUES (?, COALESCE((SELECT current_sequence FROM user_sequences WHERE user_id = ?), 0), ?, ?)")
-            .bind(&user_id_str)
-            .bind(&user_id_str)
-            .bind(client_last_sequence as i64)
+        sqlx::query(
+            "UPDATE user_sequences 
+             SET last_ping_sequence = ?, last_ping_at = ? 
+             WHERE user_id = ?"
+        )
+            .bind(client_sequence as i64)
             .bind(now)
+            .bind(&user_id_str)
             .execute(&self.pool)
             .await
             .map_err(AppError::from)?;
 
-        // Ottieni sequence corrente del server
-        let server_sequence = self.get_current_user_sequence(user_id).await?;
-
-        let pong_response = if client_last_sequence < server_sequence {
-            // Gap rilevato! Recupera eventi mancanti
-            let gap_size = server_sequence - client_last_sequence;
-            warn!("Gap detected for user {}: client={}, server={}, gap={}",
-                  user_id, client_last_sequence, server_sequence, gap_size);
-
-            // Ottieni eventi mancanti dal database
-            let missed_events = sqlx::query("SELECT sequence_num, event_type, event_data FROM user_events WHERE user_id = ? AND sequence_num > ? AND sequence_num <= ? ORDER BY sequence_num")
+        // Marca eventi come delivered se il client è aggiornato
+        if client_sequence >= self.get_current_user_sequence(user_id).await? {
+            sqlx::query(
+                "UPDATE user_events 
+                 SET delivered = TRUE 
+                 WHERE user_id = ? AND sequence_num <= ? AND delivered = FALSE"
+            )
                 .bind(&user_id_str)
-                .bind(client_last_sequence as i64)
-                .bind(server_sequence as i64)
-                .fetch_all(&self.pool)
+                .bind(client_sequence as i64)
+                .execute(&self.pool)
                 .await
                 .map_err(AppError::from)?;
-
-            // Invia ogni evento mancante
-            for event in &missed_events {
-                let sequence_num: i64 = event.try_get("sequence_num").map_err(AppError::from)?;
-                let event_data_str: String = event.try_get("event_data").map_err(AppError::from)?;
-
-                if let Ok(mut event_data) = serde_json::from_str::<Value>(&event_data_str) {
-                    event_data["sequence"] = json!(sequence_num);
-                    event_data["recovery"] = json!(true);
-
-                    if let Ok(recovery_txt) = serde_json::to_string(&event_data) {
-                        let msg = super::web_socket::actor::OutboundMsg::Text(recovery_txt);
-                        if out_tx.send(msg).await.is_err() {
-                            warn!("Failed to send recovery event to user {}", user_id);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            info!("Recovered {} missed events for user {}", missed_events.len(), user_id);
-
-            // Pong con info gap
-            json!({
-                "type": "pong",
-                "server_sequence": server_sequence,
-                "your_sequence": client_last_sequence,
-                "gap_detected": true,
-                "gap_size": gap_size,
-                "events_recovered": missed_events.len(),
-                "timestamp": now
-            })
-        } else {
-            // Nessun gap - pong normale
-            json!({
-                "type": "pong",
-                "server_sequence": server_sequence,
-                "your_sequence": client_last_sequence,
-                "gap_detected": false,
-                "timestamp": now
-            })
-        };
-
-        // Invia risposta pong
-        if let Ok(pong_txt) = serde_json::to_string(&pong_response) {
-            let msg = super::web_socket::actor::OutboundMsg::Text(pong_txt);
-            let _ = out_tx.send(msg).await;
         }
 
         Ok(())
