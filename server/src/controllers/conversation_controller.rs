@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use axum::http::StatusCode;
 use uuid::Uuid;
 use crate::services::user_service::UserService;
+use serde_json::json;
 
 #[derive(Deserialize)]
 pub struct CreateGroupReq {
@@ -184,6 +185,42 @@ pub async fn delete_conversation(
     State(st): State<AppState>,
     Path(conversation_id): Path<Uuid>,
 ) -> Result<StatusCode> {
+    
+    let participant_ids =
+        ConversationService::list_participant_ids(&st.pool, conversation_id).await?;
+
+    // Cancella la conversazione
     ConversationService::delete_conversation(&st.pool, conversation_id, user.id).await?;
+
+    let event_payload = json!({
+        "type": "conversation_deleted",
+        "conversation_id": conversation_id,
+        "by": user.id,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
+
+    for pid in participant_ids {
+        if pid == user.id {
+            continue; // è inutile
+        }
+
+        if let Err(e) = st
+            .send_sequenced_event_to_user(
+                pid,
+                "conversation_deleted",
+                event_payload.clone(),
+                Some(conversation_id),
+            )
+            .await
+        {
+            tracing::warn!(
+                "Failed to send conversation_deleted to user {} for conversation {}: {}",
+                pid,
+                conversation_id,
+                e
+            );
+        }
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }

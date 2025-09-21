@@ -1,6 +1,7 @@
 use crate::error::Result;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
+use crate::error::AppError;
 
 #[derive(Debug, Clone)]
 pub struct ConversationRepo;
@@ -361,5 +362,34 @@ impl ConversationRepo {
             .await?;
 
         Ok(author_exists.is_some())
+    }
+
+    /// Restituisce la lista degli user_id (Uuid) dei partecipanti alla conversazione.
+    /// Nel DB gli UUID sono salvati come TEXT, quindi si fa parse da String -> Uuid.
+    pub async fn list_participant_ids(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        conversation_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
+        let conv_id_str = conversation_id.to_string();
+
+        let id_strs: Vec<String> = sqlx::query_scalar(
+            "SELECT user_id FROM participants WHERE conversation_id = ?"
+        )
+            .bind(&conv_id_str)
+            .fetch_all(pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let mut ids = Vec::with_capacity(id_strs.len());
+        for s in id_strs {
+            match Uuid::parse_str(&s) {
+                Ok(u) => ids.push(u),
+                Err(_) => {
+                    tracing::warn!("Invalid UUID string in participants.user_id: {}", s);
+                }
+            }
+        }
+
+        Ok(ids)
     }
 }

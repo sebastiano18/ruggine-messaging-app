@@ -93,4 +93,11 @@ impl ConversationService {
         ConversationRepo::delete_conversation(pool, conversation_id).await?;
         Ok(())
     }
+
+    pub async fn list_participant_ids(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        conversation_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
+        ConversationRepo::list_participant_ids(pool, conversation_id).await
+    }
 }

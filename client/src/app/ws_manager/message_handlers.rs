@@ -43,6 +43,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "user_resume_complete" => handle_resume_complete(tx, &parsed_value, "user"),
         "messages_resume_complete" => handle_resume_complete(tx, &parsed_value, "messages"),
         "conversation_created" => handle_conversation_created(tx, &parsed_value),
+        "conversation_deleted" => handle_conversation_deleted(tx, &parsed_value),
         "error" => handle_server_error(tx, &parsed_value),
         "message_ack" => handle_message_ack(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
@@ -401,4 +402,25 @@ fn parse_conversation_id(value: &Value) -> Option<Uuid> {
         .or_else(|| value.get("cid"))
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+fn handle_conversation_deleted(
+    tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    value: &Value,
+) {
+    let cid_opt = value
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    match cid_opt {
+        Some(conversation_id) => {
+            debug!("Handling conversation_deleted for {}", conversation_id);
+
+            let _ = tx.send(UiEvent::ConversationDeleted(conversation_id));
+        }
+        None => {
+            warn!("conversation_deleted without valid conversation_id: {:?}", value);
+        }
+    }
 }

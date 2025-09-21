@@ -258,18 +258,16 @@ impl ConversationsSidebar {
 
                             let del_resp = ui
                                 .add(delete_button)
-                                .on_hover_text("Elimina conversazione");
+                                .on_hover_text("Elimina gruppo");
 
                             if del_resp.clicked() {
                                 delete_clicked = true;
                             }
 
-                            // opzionale: un piccolo margine a sinistra del bottone
                             ui.add_space(8.0);
                         }
                     }
                     else{
-                        // Bottone elimina (destra)
                         let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
                             .small()
                             .fill(egui::Color32::TRANSPARENT)
@@ -291,7 +289,6 @@ impl ConversationsSidebar {
                             delete_clicked = true;
                         }
 
-                        // opzionale: un piccolo margine a sinistra del bottone
                         ui.add_space(8.0);
                     }
                 });
@@ -302,7 +299,7 @@ impl ConversationsSidebar {
         if delete_clicked {
             let cid = conv.id;
 
-            // Caso A: DM locale/stub (se la tua AppState lo supporta)
+            // Caso A: DM locale/stub
             if state.is_dm_stub(cid) {
                 state.remove_dm_stub(cid);
                 if let Some(ref mut list) = state.conversations {
@@ -329,6 +326,8 @@ impl ConversationsSidebar {
                             crate::api::conversation::delete_conversation(&base, &token, cid).await;
                         match res {
                             Ok(()) => {
+                                let _ = tx.send(UiEvent::ConversationDeleted(cid));
+                                
                                 // Piccola attesa per coerenza UI
                                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 

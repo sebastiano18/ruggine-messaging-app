@@ -239,6 +239,22 @@ pub async fn spawn_receiver(
                                             consecutive_none_count = 0;
                                         }
                                     }
+                                    "conversation_deleted" => {
+                                        stream_manager.refresh_conversation_streams(&state, user_id).await;
+
+                                        // Forward al client come testo
+                                        if let Ok(txt) = serde_json::to_string(&val) {
+                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                                warn!("Failed to send user notification to user {}, stopping receiver", user_id);
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            }
+                                        }
+
+                                        // Reset contatori backoff
+                                        empty_backoff_seconds = 30;
+                                        consecutive_none_count = 0;
+                                    }
                                     _ => {
                                         // Altri tipi di notifiche utente - forward al client
                                         debug!("Received user notification type '{}' for user {}", msg_type, user_id);
