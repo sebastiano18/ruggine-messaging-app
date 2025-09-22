@@ -195,22 +195,16 @@ impl AppState {
             });
         }
     }
-    
 
     // === Enhanced Ping System ===
 
     pub fn send_enhanced_ping(&mut self) {
-        // SEMPRE invia user_sequence se > 0
-        // Usa il MAX tra confirmed e received per user sequence
         let user_seq = {
             let seq = self.user_sequence_confirmed.max(self.user_sequence_received);
             if seq > 0 { Some(seq) } else { None }
         };
 
-        // Solo se c'è una conversazione attiva, invia la sua sequence
         let (conv_seq, active_conv) = if let Some(cid) = self.cid {
-            // Prendi la sequence solo se è stata inizializzata
-            // Check se la conversazione ha una sequence tracciata
             let seq = self.conversation_sequences.get(&cid).copied();
 
             debug!(
@@ -221,12 +215,8 @@ impl AppState {
                 seq
             );
 
-            // IMPORTANTE: invia la sequence anche se è 0 (se presente nella HashMap)
-            // None significa "non sto ancora tracciando questa conversazione"
-            // Some(0) significa "sto tracciando ma non ho ancora messaggi"
             (seq, Some(cid))
         } else {
-            // Nessuna conversazione selezionata
             (None, None)
         };
 
@@ -237,7 +227,6 @@ impl AppState {
 
         self.sequence_stats.ping_count += 1;
 
-        // IMPORTANTE: Invia SEMPRE tutti i campi opzionali quando disponibili
         self.send_via_websocket(Outgoing::EnhancedPing {
             user_sequence: user_seq,
             conversation_sequence: conv_seq,
@@ -245,9 +234,31 @@ impl AppState {
         });
     }
 
-    // === Sequence Update Methods ===
+    // === Sequence Update Methods con RILEVAMENTO GAP IMMEDIATO ===
 
     pub fn update_user_sequence(&mut self, sequence: u64) {
+        let current = self.user_sequence_received;
+
+        // Rileva gap IMMEDIATAMENTE
+        if sequence > current + 1 {
+            let gap_size = sequence - current - 1;
+            warn!(
+                "User events gap detected! Expected {}, got {} (missing {} events)",
+                current + 1, sequence, gap_size
+            );
+            self.sequence_stats.gaps_detected += 1;
+            self.sequence_stats.last_gap_time = Some(Instant::now());
+
+            // Resume IMMEDIATO per gap >= 3 eventi utente
+            if gap_size >= 3 {
+                warn!("Large user events gap ({}), requesting immediate resume", gap_size);
+                self.request_user_events_resume(current);
+            } else {
+                debug!("Small user events gap ({}), will handle at next ping", gap_size);
+            }
+        }
+
+        // Aggiorna sequence
         if sequence > self.user_sequence_received {
             self.user_sequence_received = sequence;
             self.sequence_stats.total_events_received += 1;
@@ -256,35 +267,42 @@ impl AppState {
         if sequence == self.user_sequence_confirmed + 1 {
             self.user_sequence_confirmed = sequence;
             debug!("User sequence {} confirmed (continuous)", sequence);
-        } else if sequence > self.user_sequence_confirmed + 1 {
-            let gap_size = sequence - self.user_sequence_confirmed - 1;
-            warn!(
-                "User sequence gap detected! Expected {}, got {} (missing {} events)",
-                self.user_sequence_confirmed + 1, sequence, gap_size
-            );
-            self.sequence_stats.gaps_detected += 1;
-            self.sequence_stats.last_gap_time = Some(Instant::now());
         }
     }
 
     pub fn update_conversation_sequence(&mut self, conversation_id: Uuid, sequence: u64) {
         let current = self.conversation_sequences.get(&conversation_id).copied().unwrap_or(0);
 
+        // Rileva gap IMMEDIATAMENTE
+        if sequence > current + 1 {
+            let gap_size = sequence - current - 1;
+            warn!(
+                "Messages gap in conversation {}! Expected {}, got {} (missing {} messages)",
+                conversation_id, current + 1, sequence, gap_size
+            );
+            self.sequence_stats.gaps_detected += 1;
+            self.sequence_stats.last_gap_time = Some(Instant::now());
+
+            // Resume IMMEDIATO per gap >= 5 messaggi
+            if gap_size >= 5 {
+                warn!("Large messages gap ({}) in conversation {}, requesting immediate resume", 
+                      gap_size, conversation_id);
+                self.request_messages_resume(conversation_id, current);
+            } else {
+                debug!("Small messages gap ({}) in conversation {}, will handle at next ping", 
+                       gap_size, conversation_id);
+            }
+        }
+
+        // Aggiorna sequence
         if sequence > current {
             self.conversation_sequences.insert(conversation_id, sequence);
         }
 
         let confirmed = self.conversation_sequences_confirmed.get(&conversation_id).copied().unwrap_or(0);
-
         if sequence == confirmed + 1 {
             self.conversation_sequences_confirmed.insert(conversation_id, sequence);
             debug!("Conversation {} sequence {} confirmed", conversation_id, sequence);
-        } else if sequence > confirmed + 1 {
-            let gap_size = sequence - confirmed - 1;
-            warn!(
-                "Conversation {} sequence gap! Expected {}, got {} (missing {})",
-                conversation_id, confirmed + 1, sequence, gap_size
-            );
         }
     }
 
