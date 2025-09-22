@@ -1,4 +1,4 @@
-use crate::models::{MessageDto, UiEvent, GapInfo, UserEventData};
+use crate::models::{MessageDto, UiEvent, GapInfo, UserEventData, ConversationDto};
 use serde_json::Value;
 use uuid::Uuid;
 use tracing::{debug, error, info, warn};
@@ -33,11 +33,13 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     // Handle messages by type
     match msg_type {
         "chat_message" => handle_chat_message(tx, &parsed_value),
-        "pong" => handle_simple_pong(tx, &parsed_value),  // AGGIUNTO: gestisci pong semplice
+        "initial_state" => handle_initial_state(tx, &parsed_value),
+        "conversation_messages" => handle_conversation_messages(tx, &parsed_value),
+        "pong" => handle_simple_pong(tx, &parsed_value),
         "pong_with_sequences" => handle_enhanced_pong(tx, &parsed_value),
-        "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value), // AGGIUNTO
-        "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value), // AGGIUNTO
-        "fetch_conversation_messages" => handle_fetch_conversation_messages(tx, &parsed_value), // AGGIUNTO: EVENT-BASED FETCH!
+        "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value),
+        "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value),
+        "fetch_conversation_messages" => handle_fetch_conversation_messages(tx, &parsed_value),
         "user_events_resume" => handle_user_events_resume(tx, &parsed_value),
         "messages_resume" => handle_messages_resume(tx, &parsed_value),
         "user_resume_complete" => handle_resume_complete(tx, &parsed_value, "user"),
@@ -50,6 +52,157 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
             debug!("Unhandled message type: {}", msg_type);
         }
     }
+}
+
+/// Handle initial state from server
+fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    // Estrai conversazioni
+    let conversations: Vec<ConversationDto> = value.get("conversations")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|conv| {
+                    let id = parse_uuid_field(conv, "id")?;
+                    let kind = conv.get("kind")?.as_str()?.to_string();
+                    let owner_id = parse_uuid_field(conv, "owner_id")?;
+                    let created_at = conv.get("created_at")?.as_i64()?;
+
+                    // title può essere null per DM
+                    let title = conv.get("title")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    Some(ConversationDto {
+                        id,
+                        kind,
+                        title,
+                        owner_id,
+                        created_at,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let user_sequence = value.get("user_sequence")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0);
+
+    info!("Received initial state with {} conversations, user_seq: {}",
+          conversations.len(), user_sequence);
+
+    // Invia le conversazioni al sistema eventi
+    let _ = tx.send(UiEvent::InitialStateReceived {
+        conversations,
+        user_sequence,
+    });
+
+    // Processa l'ultimo messaggio per ogni conversazione
+    if let Some(convs) = value.get("conversations").and_then(|c| c.as_array()) {
+        for conv in convs {
+            if let Some(last_msg) = conv.get("last_message") {
+                if let Some(conv_id) = parse_uuid_field(conv, "id") {
+                    process_last_message(tx, conv_id, last_msg);
+                }
+            }
+        }
+    }
+}
+
+/// Process last message from conversation
+fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conversation_id: Uuid, msg: &Value) {
+    let content = msg.get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let author_username = msg.get("author_username")
+        .and_then(|a| a.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let created_at = msg.get("created_at")
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+
+    let sequence = msg.get("sequence")
+        .and_then(|s| s.as_i64())
+        .map(|s| s as u64);
+
+    debug!("Last message for {}: \"{}\" by {} (seq: {:?})",
+           conversation_id,
+           content.chars().take(50).collect::<String>(),
+           author_username,
+           sequence);
+
+    // Crea un MessageDto per l'ultimo messaggio
+    let last_msg_dto = MessageDto {
+        id: Uuid::new_v4(), // ID temporaneo per visualizzazione
+        author_id: Uuid::nil(), // Non abbiamo l'author_id
+        author_username,
+        conversation_id,
+        content,
+        created_at,
+        sequence_num: sequence,
+    };
+
+    // Invia come evento LastMessageUpdate
+    let _ = tx.send(UiEvent::LastMessageUpdate {
+        conversation_id,
+        message: last_msg_dto,
+    });
+}
+
+/// Handle conversation messages when opening a conversation
+fn handle_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let conversation_id = match parse_uuid_field(value, "conversation_id") {
+        Some(id) => id,
+        None => {
+            warn!("Invalid conversation_id in conversation_messages");
+            return;
+        }
+    };
+
+    let messages: Vec<MessageDto> = value.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|msg| {
+                    let id = parse_uuid_field(msg, "id")?;
+                    let author_id = parse_uuid_field(msg, "author_id")?;
+                    let author_username = msg.get("author_username")?.as_str()?.to_string();
+                    let content = msg.get("content")?.as_str()?.to_string();
+                    let created_at = msg.get("created_at")?.as_i64()?;
+                    let sequence_num = msg.get("sequence_num").and_then(|s| s.as_i64()).map(|s| s as u64);
+
+                    Some(MessageDto {
+                        id,
+                        author_id,
+                        author_username,
+                        conversation_id,
+                        content,
+                        created_at,
+                        sequence_num,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let has_more = value.get("has_more")
+        .and_then(|h| h.as_bool())
+        .unwrap_or(false);
+
+    info!("Received {} messages for conversation {} (has_more: {})",
+          messages.len(), conversation_id, has_more);
+
+    // Invia i messaggi al sistema eventi
+    let _ = tx.send(UiEvent::ConversationMessagesReceived {
+        conversation_id,
+        messages,
+        has_more,
+    });
 }
 
 /// Handle simple pong (retrocompatibilità)
@@ -85,9 +238,6 @@ fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, val
         .unwrap_or(0);
 
     debug!("Server heartbeat received - user: {}, timestamp: {}", user_id, timestamp);
-
-    // Potresti voler inviare un evento per resettare timeout, etc
-    // Per ora solo log
 }
 
 /// Handle user channel ready notification
@@ -99,7 +249,7 @@ fn handle_user_channel_ready(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, v
     info!("User channel ready notification received for user {}", user_id);
 }
 
-/// Handle fetch conversation messages event (EVENT-BASED FETCH!)
+/// Handle fetch conversation messages event
 fn handle_fetch_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let conversation_id = match parse_conversation_id(value) {
         Some(id) => id,
@@ -124,7 +274,6 @@ fn handle_fetch_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<Ui
     info!("Fetch event for conversation {} ({} messages, seq: {}, reason: {})",
           conversation_id, message_count, current_sequence, reason);
 
-    // Trigger fetch della conversazione via event system
     let _ = tx.send(UiEvent::TriggerConversationFetch(
         conversation_id,
         format!("fetch_event_{}", reason)
@@ -224,7 +373,7 @@ fn handle_messages_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, valu
         }
     };
 
-    let messages = value.get("messages")
+    let messages: Vec<MessageDto> = value.get("messages")
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
@@ -265,7 +414,7 @@ fn handle_resume_complete(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, valu
         .and_then(|c| c.as_u64())
         .unwrap_or(0);
 
-    debug!("{} resume complete - from: {}, current: {}, count: {}", 
+    debug!("{} resume complete - from: {}, current: {}, count: {}",
            resume_type, from_sequence, current_sequence, count);
 
     if count == 0 {
@@ -316,7 +465,7 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-    let sequence_num = value.get("sequence_num").and_then(|s| s.as_u64());
+    let sequence_num = value.get("sequence").and_then(|s| s.as_u64());
 
     let dto = MessageDto {
         id,
@@ -346,7 +495,6 @@ fn handle_conversation_created(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
     let sequence = value.get("sequence").and_then(|s| s.as_u64());
 
     if let Some(seq) = sequence {
-        // This is a sequenced user event
         let _ = tx.send(UiEvent::UserNotification {
             sequence: seq,
             event_type: "conversation_created".to_string(),
@@ -355,7 +503,6 @@ fn handle_conversation_created(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
             recovery: false,
         });
     } else {
-        // Legacy non-sequenced event
         let _ = tx.send(UiEvent::ConversationCreated(conversation_id));
     }
 }

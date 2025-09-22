@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::{
-    helpers::{cleanup_empty_channels, send_initial_fetch_events},
+    helpers::{cleanup_empty_channels},
     reader::spawn_reader,
     recv_merge::spawn_receiver
 };
@@ -162,14 +162,6 @@ impl ConnectionActor {
             }
             info!("Writer task ended for user {}", user_id);
         });
-
-        // Invia fetch events iniziali per tutte le conversazioni con messaggi
-        // Fallo PRIMA di avviare il receiver per evitare race conditions
-        if let Err(e) = send_initial_fetch_events(&state, user_id, &out_tx).await {
-            warn!("Failed to send initial fetch events for user {}: {}", user_id, e);
-        } else {
-            info!("Successfully sent initial fetch events for user {}", user_id);
-        }
 
         // Receiver: merge dei broadcast delle conversazioni (server -> client)
         let recv_task_result = spawn_receiver(

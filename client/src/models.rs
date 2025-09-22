@@ -221,6 +221,21 @@ pub enum UiEvent {
         conversation_id: Option<Uuid>,
         recovery: bool,
     },
+
+    // NUOVI EVENTI per initial_state e conversation_messages
+    InitialStateReceived {
+        conversations: Vec<ConversationDto>,
+        user_sequence: u64,
+    },
+    LastMessageUpdate {
+        conversation_id: Uuid,
+        message: MessageDto,
+    },
+    ConversationMessagesReceived {
+        conversation_id: Uuid,
+        messages: Vec<MessageDto>,
+        has_more: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
