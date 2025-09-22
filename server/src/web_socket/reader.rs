@@ -704,7 +704,7 @@ async fn get_initial_state(
 ) -> Result<InitialState, Box<dyn std::error::Error + Send + Sync>> {
     let user_id_str = user_id.to_string();
 
-    // Query ottimizzata che gestisce correttamente i titoli DM
+    // Query ottimizzata che gestisce correttamente i titoli DM e include author_id
     let query = r#"
         SELECT
             c.id as conv_id,
@@ -729,6 +729,10 @@ async fn get_initial_state(
              FROM messages m
              WHERE m.conversation_id = c.id
              ORDER BY m.created_at DESC LIMIT 1) as last_content,
+            (SELECT m.author_id
+             FROM messages m
+             WHERE m.conversation_id = c.id
+             ORDER BY m.created_at DESC LIMIT 1) as last_author_id,
             (SELECT u.username
              FROM messages m
              INNER JOIN users u ON m.author_id = u.id
@@ -797,6 +801,11 @@ async fn get_initial_state(
                     "author_username": author
                 });
 
+                // Includi author_id nel last_message
+                if let Ok(author_id) = row.try_get::<String, _>("last_author_id") {
+                    last_message["author_id"] = json!(author_id);
+                }
+
                 if let Ok(msg_time) = row.try_get::<i64, _>("last_msg_time") {
                     last_message["created_at"] = json!(msg_time);
                 }
@@ -823,7 +832,7 @@ async fn get_initial_state(
         .await
         .unwrap_or(0);
 
-    info!("Loaded {} conversations for user {} (all with proper titles)",
+    info!("Loaded {} conversations for user {} (all with proper titles and author_ids)",
           conversations.len(), user_id_str);
 
     Ok(InitialState {

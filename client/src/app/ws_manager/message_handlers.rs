@@ -111,6 +111,7 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
 }
 
 /// Process last message from conversation
+/// Process last message from conversation
 fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conversation_id: Uuid, msg: &Value) {
     let content = msg.get("content")
         .and_then(|c| c.as_str())
@@ -122,6 +123,12 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         .unwrap_or("unknown")
         .to_string();
 
+    // IMPORTANTE: Estrai anche l'author_id!
+    let author_id = msg.get("author_id")
+        .and_then(|id| id.as_str())
+        .and_then(|id_str| Uuid::parse_str(id_str).ok())
+        .unwrap_or(Uuid::nil());
+
     let created_at = msg.get("created_at")
         .and_then(|t| t.as_i64())
         .unwrap_or(0);
@@ -130,16 +137,16 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         .and_then(|s| s.as_i64())
         .map(|s| s as u64);
 
-    debug!("Last message for {}: \"{}\" by {} (seq: {:?})",
+    debug!("Last message for {}: \"{}\" by {} (author_id: {})",
            conversation_id,
            content.chars().take(50).collect::<String>(),
            author_username,
-           sequence);
+           author_id);
 
-    // Crea un MessageDto per l'ultimo messaggio
+    // Crea un MessageDto con l'author_id corretto
     let last_msg_dto = MessageDto {
-        id: Uuid::new_v4(), // ID temporaneo per visualizzazione
-        author_id: Uuid::nil(), // Non abbiamo l'author_id
+        id: Uuid::new_v4(),
+        author_id, // USA L'AUTHOR_ID REALE!
         author_username,
         conversation_id,
         content,
