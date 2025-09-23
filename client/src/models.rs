@@ -14,6 +14,7 @@ pub struct LoginResp {
     pub token: String,
     pub user_id: Uuid,
     pub username: String,
+    pub last_sequence: u64,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +64,8 @@ pub struct MessageDto {
     pub author_username: String,
     pub content: String,
     pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_num: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -78,6 +81,18 @@ pub struct ConversationDto {
 pub struct User {
     pub id: Uuid,
     pub username: String,
+}
+
+// IMPORTANTE: MessageResponse ora include sequence
+#[derive(Deserialize)]
+pub struct MessageResponse {
+    pub id: String,
+    pub author_id: String,
+    pub author_username: String,
+    pub content: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub sequence_num: Option<i64>,  // Nome campo dal server: sequence_num
 }
 
 // === ENUMS ===
@@ -109,10 +124,34 @@ pub enum Outgoing {
     ChatMessage {
         cid: Uuid,
         content: String,
-        target_username: Option<String>
+        target_username: Option<String>,
     },
-    InviteUser { cid: Uuid, username: String },
-    Typing { cid: Uuid, is_typing: bool },
+    InviteUser {
+        cid: Uuid,
+        username: String,
+    },
+    Typing {
+        cid: Uuid,
+        is_typing: bool,
+    },
+    EnhancedPing {
+        user_sequence: Option<u64>,
+        conversation_sequence: Option<u64>,
+        active_conversation_id: Option<Uuid>,
+    },
+    RequestUserResume {
+        from_sequence: u64,
+        limit: i64,
+    },
+    RequestMessagesResume {
+        conversation_id: Uuid,
+        from_sequence: u64,
+        limit: i64,
+    },
+    SequenceAck {
+        user_sequence: Option<u64>,
+        conversation_sequences: Option<HashMap<Uuid, u64>>,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===
@@ -123,7 +162,7 @@ pub enum UiEvent {
     Error(String),
     LoginStarted,
     RegisterStarted,
-    Logged(String, Uuid),
+    Logged(String, Uuid, u64),
     LoggedOut,
 
     // WebSocket events
@@ -137,6 +176,9 @@ pub enum UiEvent {
     Opened(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
+    //DeleteConversation(Uuid),
+    ConversationDeleted(Uuid),
+    //RequestConversationsRefresh,
 
     // Data loading events
     ConversationsLoaded(Vec<ConversationDto>),
@@ -152,20 +194,67 @@ pub enum UiEvent {
     // General events
     InviteCreated(String),
 
-    // NUOVO: Sistema unificato di fetch conversazione
-    TriggerConversationFetch(Uuid, String), // conversation_id, reason
+    // Sistema unificato di fetch conversazione
+    TriggerConversationFetch(Uuid, String),
     ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
 
     // Conversation management events
     ConversationListUpdated,
+
+    // Sistema di sequenze dual
+    SendPing,
+    EnhancedPongReceived {
+        current_user_sequence: u64,
+        conversation_sequences: Option<HashMap<String, u64>>,
+        gaps_detected: bool,
+        user_events_gap: Option<GapInfo>,
+        message_gap: Option<GapInfo>,
+    },
+    UserEventsResume {
+        events: Vec<UserEventData>,
+    },
+    MessagesResume {
+        conversation_id: Uuid,
+        messages: Vec<MessageDto>,
+    },
+    UserNotification {
+        sequence: u64,
+        event_type: String,
+        event_data: serde_json::Value,
+        conversation_id: Option<Uuid>,
+        recovery: bool,
+    },
+
+    // NUOVI EVENTI per initial_state e conversation_messages
+    InitialStateReceived {
+        conversations: Vec<ConversationDto>,
+        user_sequence: u64,
+    },
+    LastMessageUpdate {
+        conversation_id: Uuid,
+        message: MessageDto,
+    },
+    ConversationMessagesReceived {
+        conversation_id: Uuid,
+        messages: Vec<MessageDto>,
+        has_more: bool,
+    },
 }
 
-#[derive(Deserialize)]
-pub struct MessageResponse {
-    pub id: String,
-    pub author_id: String,
-    pub author_username: String,
-    pub content: String,
+#[derive(Debug, Clone)]
+pub struct GapInfo {
+    pub detected: bool,
+    pub client_seq: u64,
+    pub server_seq: u64,
+    pub gap_size: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserEventData {
+    pub sequence: u64,
+    pub event_type: String,
+    pub event_data: serde_json::Value,
+    pub conversation_id: Option<Uuid>,
     pub created_at: i64,
 }
 
@@ -178,6 +267,7 @@ impl MessageDto {
             author_username: "system".to_string(),
             content,
             created_at: chrono::Utc::now().timestamp(),
+            sequence_num: None,
         }
     }
 
@@ -193,6 +283,7 @@ impl MessageDto {
             author_username: "system".to_string(),
             content: format!("Sincronizzati {} messaggi ({})", message_count, reason),
             created_at: chrono::Utc::now().timestamp(),
+            sequence_num: None,
         }
     }
 }

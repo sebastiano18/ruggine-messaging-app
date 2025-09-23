@@ -35,17 +35,19 @@ pub async fn list(
     Path(conversation_id): Path<Uuid>,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<Message>>> {
+    // Ora list ritorna 6 elementi, incluso sequence_num
     let rows = MessageService::list(&st.pool, conversation_id, 50).await?;
     let out = rows
         .into_iter()
         .map(
-            |(id, author_id, author_username, content, created_at)| Message {
+            |(id, author_id, author_username, content, created_at, sequence_num)| Message {
                 id,
                 author_id,
                 conversation_id,
                 author_username,
                 content,
                 created_at,
+                sequence_num, // AGGIUNTO
             },
         )
         .rev()
@@ -72,7 +74,7 @@ pub async fn post(
     Ok(Json(CreatedId { id: message_id }))
 }
 
-/// NUOVO: Endpoint per fetch messaggi (usato dal sistema fetch-on-subscribe)
+/// Endpoint per fetch messaggi (usato dal sistema fetch-on-subscribe)
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn fetch_messages(
     user: AuthUser,

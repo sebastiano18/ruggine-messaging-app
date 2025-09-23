@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use axum::http::StatusCode;
 use uuid::Uuid;
 use crate::services::user_service::UserService;
+use serde_json::json;
 
 #[derive(Deserialize)]
 pub struct CreateGroupReq {
@@ -21,7 +22,9 @@ pub struct CreateDmReq {
 }
 
 #[derive(Serialize)]
-pub struct CreatedId { pub id: Uuid }
+pub struct CreatedId {
+    pub id: Uuid
+}
 
 #[derive(Deserialize)]
 pub struct AddMemberReq {
@@ -35,6 +38,23 @@ pub struct ConversationOut {
     pub title: String,
     pub owner_id: Uuid,
     pub created_at: i64,
+}
+
+#[derive(Serialize)]
+pub struct ConversationWithMessages {
+    pub conversation: ConversationOut,
+    pub messages: Vec<MessageOut>,
+}
+
+#[derive(Serialize)]
+pub struct MessageOut {
+    pub id: Uuid,
+    pub author_id: Uuid,
+    pub author_username: String,
+    pub conversation_id: Uuid,
+    pub content: String,
+    pub created_at: i64,
+    pub sequence_num: Option<i64>, // AGGIUNTO
 }
 
 // Crea un nuovo gruppo
@@ -55,12 +75,12 @@ pub async fn create_dm(
     State(st): State<AppState>,
     Json(req): Json<CreateDmReq>,
 ) -> Result<Json<CreatedId>> {
-    let user2_id = UserService::get_user_id_by_username(&st.pool,&req.user_username).await?;
+    let user2_id = UserService::get_user_id_by_username(&st.pool, &req.user_username).await?;
     let id = ConversationService::create_dm(&st.pool, user.id, user2_id).await?;
     Ok(Json(CreatedId { id }))
 }
 
-// Ottieni le mie conversazioni - RIMOSSI TUTTI I PRINTLN
+// Ottieni le mie conversazioni
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn mine(
     user: AuthUser,
@@ -81,14 +101,13 @@ pub async fn mine(
     Ok(Json(conversations))
 }
 
-// NUOVO: Ottieni singola conversazione
+// Ottieni singola conversazione
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn get_conversation(
     user: AuthUser,
     State(st): State<AppState>,
     Path(conversation_id): Path<Uuid>,
 ) -> Result<Json<ConversationOut>> {
-    // Ottieni la conversazione (include già controllo autorizzazione)
     let conversation_data = ConversationService::get_conversation(&st.pool, conversation_id, user.id).await?;
 
     match conversation_data {
@@ -117,26 +136,7 @@ pub async fn add_member(
     Ok(StatusCode::OK)
 }
 
-// Aggiungi queste strutture al tuo conversation_controller.rs
-
-#[derive(Serialize)]
-pub struct ConversationWithMessages {
-    pub conversation: ConversationOut,
-    pub messages: Vec<MessageOut>,
-}
-
-#[derive(Serialize)]
-pub struct MessageOut {
-    pub id: Uuid,
-    pub author_id: Uuid,
-    pub author_username: String,
-    pub conversation_id: Uuid,
-    pub content: String,
-    pub created_at: i64,
-}
-
-// CORREGGI il metodo get_conversation_with_messages nel tuo conversation_controller.rs
-
+// Ottieni conversazione con messaggi
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn get_conversation_with_messages(
     user: AuthUser,
@@ -157,18 +157,19 @@ pub async fn get_conversation_with_messages(
         None => return Err(crate::error::AppError::NotFound),
     };
 
-    // 2. CORRETTO: Usa il metodo 'list' che esiste nel MessageService
+    // 2. Usa il metodo 'list' aggiornato che ora ritorna anche sequence_num
     let messages_data = crate::services::message_service::MessageService::list(&st.pool, conversation_id, 50).await?;
 
     let messages: Vec<MessageOut> = messages_data
         .into_iter()
-        .map(|(id, author_id, author_username, content, created_at)| MessageOut {
+        .map(|(id, author_id, author_username, content, created_at, sequence_num)| MessageOut {
             id,
             author_id,
             author_username,
-            conversation_id, // Usa il conversation_id dal parametro
+            conversation_id,
             content,
             created_at,
+            sequence_num, // AGGIUNTO
         })
         .collect();
 
@@ -176,4 +177,50 @@ pub async fn get_conversation_with_messages(
         conversation,
         messages,
     }))
+}
+
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn delete_conversation(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Result<StatusCode> {
+    
+    let participant_ids =
+        ConversationService::list_participant_ids(&st.pool, conversation_id).await?;
+
+    // Cancella la conversazione
+    ConversationService::delete_conversation(&st.pool, conversation_id, user.id).await?;
+
+    let event_payload = json!({
+        "type": "conversation_deleted",
+        "conversation_id": conversation_id,
+        "by": user.id,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
+
+    for pid in participant_ids {
+        if pid == user.id {
+            continue; // è inutile
+        }
+
+        if let Err(e) = st
+            .send_sequenced_event_to_user(
+                pid,
+                "conversation_deleted",
+                event_payload.clone(),
+                Some(conversation_id),
+            )
+            .await
+        {
+            tracing::warn!(
+                "Failed to send conversation_deleted to user {} for conversation {}: {}",
+                pid,
+                conversation_id,
+                e
+            );
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -1,8 +1,10 @@
 // controllers/users_controller.rs
+// controllers/users_controller.rs
 use crate::{error::Result, services::user_service::UserService, state::AppState};
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tracing::{debug, warn};
 
 #[derive(Deserialize)]
 pub struct RegisterReq {
@@ -16,11 +18,13 @@ pub struct LoginReq {
     pub password: String,
 }
 
+// UPDATED: Added last_sequence field
 #[derive(Serialize)]
 pub struct LoginResp {
     pub token: String,
-    pub user_id: Uuid, // <- UUID nativo (in JSON sarà una stringa)
+    pub user_id: Uuid,
     pub username: String,
+    pub last_sequence: u64,  // NUOVO: Include sequenza corrente dell'utente
 }
 
 #[derive(Serialize)]
@@ -49,11 +53,29 @@ pub async fn login(
 ) -> Result<Json<LoginResp>> {
     let (token, user_id) =
         UserService::login(&st.pool, &st.jwt_secret, &req.username, &req.password).await?;
-    Ok(Json(LoginResp {
+
+    // NUOVO: Get user's current sequence
+    let last_sequence = match st.get_current_user_sequence(user_id).await {
+        Ok(seq) => {
+            debug!("Retrieved sequence {} for user {}", seq, user_id);
+            seq
+        }
+        Err(e) => {
+            warn!("Failed to get sequence for user {}: {}, defaulting to 0", user_id, e);
+            0
+        }
+    };
+
+    let response = LoginResp {
         token,
         user_id,
         username: req.username,
-    }))
+        last_sequence,  // Include current sequence
+    };
+
+    tracing::info!("User {} logged in successfully with sequence {}", user_id, last_sequence);
+
+    Ok(Json(response))
 }
 
 #[axum::debug_handler]

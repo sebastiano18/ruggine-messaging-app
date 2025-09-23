@@ -26,7 +26,7 @@ impl ConversationsSidebar {
             return;
         }
 
-        // Auto-refresh se necessario
+        // Auto-refresh se richiesto esplicitamente
         self.auto_refresh_if_needed(state);
 
         let token = state.token.clone().unwrap();
@@ -36,16 +36,15 @@ impl ConversationsSidebar {
         ui.separator();
         ui.add_space(6.0);
 
-        // Sezione ricerca e avvio DM veloce
+        // Sezione ricerca
         self.show_search_section(ui, state, &token);
         ui.add_space(8.0);
 
-        // Lista conversazioni filtrate
+        // Lista conversazioni
         self.show_filtered_conversations(ui, state);
     }
 
     fn auto_refresh_if_needed(&self, state: &mut AppState) {
-        // Versione semplificata senza pending conversations
         if state.request_conversations_refresh {
             let token = match &state.token {
                 Some(t) => t.clone(),
@@ -64,7 +63,7 @@ impl ConversationsSidebar {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .small_button("🔄")
-                    .on_hover_text("Ricarica conversazioni")
+                    .on_hover_text("Carica conversazioni")
                     .clicked()
                 {
                     self.refresh_conversations(state, token);
@@ -74,7 +73,7 @@ impl ConversationsSidebar {
 
                 if ui
                     .small_button("➕")
-                    .on_hover_text("Gestione gruppi avanzata")
+                    .on_hover_text("Gestione gruppi")
                     .clicked()
                 {
                     state.page = Page::GroupManagement;
@@ -93,7 +92,6 @@ impl ConversationsSidebar {
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
             .rounding(egui::Rounding::same(8.0))
             .show(ui, |ui| {
-                // Ricerca conversazioni
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("🔍")
@@ -102,14 +100,10 @@ impl ConversationsSidebar {
                     );
                     ui.add_space(6.0);
 
-                    let search_response = TextEdit::singleline(&mut self.search_query)
+                    TextEdit::singleline(&mut self.search_query)
                         .hint_text("Cerca nelle conversazioni...")
                         .desired_width(ui.available_width())
                         .show(ui);
-
-                    if search_response.response.changed() {
-                        // Il filtro viene applicato automaticamente
-                    }
                 });
             });
     }
@@ -120,9 +114,11 @@ impl ConversationsSidebar {
             .show(ui, |ui| {
                 match &state.conversations {
                     None => {
-                        self.show_loading_state(ui);
+                        // Mostra lo stato vuoto quando non ci sono conversazioni caricate
+                        self.show_empty_state(ui, state);
                     }
                     Some(conversations) if conversations.is_empty() => {
+                        // Mostra lo stato vuoto quando l'array è vuoto
                         self.show_empty_state(ui, state);
                     }
                     Some(conversations) => {
@@ -214,6 +210,10 @@ impl ConversationsSidebar {
                 .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
         }
 
+        // Mostra il bottone elimina SOLO se l'utente corrente è l'owner (for groups-only)
+        let show_delete_button = state.user_id.map_or(false, |uid| uid == conv.owner_id);
+        let mut delete_clicked = false;
+
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
                 let (icon, icon_color) = match conv.kind.as_str() {
@@ -236,9 +236,127 @@ impl ConversationsSidebar {
                     ui.add_space(2.0);
                     self.show_message_preview(ui, state, conv, preview_color);
                 });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    
+                    if conv.kind == "group" {
+                        // Destra: bottone elimina (solo se owner del gruppo)
+                        if show_delete_button {
+                            // Bottone elimina (destra)
+                            let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
+                                .small()
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    if response.hovered() {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(180, 120, 70)
+                                    },
+                                ))
+                                .rounding(egui::Rounding::same(4.0));
+
+                            let del_resp = ui
+                                .add(delete_button)
+                                .on_hover_text("Elimina gruppo");
+
+                            if del_resp.clicked() {
+                                delete_clicked = true;
+                            }
+
+                            ui.add_space(8.0);
+                        }
+                    }
+                    else{
+                        let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
+                            .small()
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                if response.hovered() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(180, 120, 70)
+                                },
+                            ))
+                            .rounding(egui::Rounding::same(4.0));
+
+                        let del_resp = ui
+                            .add(delete_button)
+                            .on_hover_text("Elimina conversazione");
+
+                        if del_resp.clicked() {
+                            delete_clicked = true;
+                        }
+
+                        ui.add_space(8.0);
+                    }
+                });
             });
         });
 
+        // Gestione click "Elimina"
+        if delete_clicked {
+            let cid = conv.id;
+
+            // Caso A: DM locale/stub
+            if state.is_dm_stub(cid) {
+                state.remove_dm_stub(cid);
+                if let Some(ref mut list) = state.conversations {
+                    list.retain(|c| c.id != cid);
+                }
+                state.conversation_messages.remove(&cid);
+
+                if state.cid == Some(cid) {
+                    state.cid = None;
+                    state.conv_title.clear();
+                    state.messages.clear();
+                    state.page = Page::Conversations;
+                }
+
+                let _ = state.ui_tx.send(UiEvent::Info("Chat privata rimossa (locale)".into()));
+            } else {
+                // Caso B: conversazione reale — chiama API DELETE e poi refresh lista
+                if let Some(token) = state.token.clone() {
+                    let base = state.base.clone();
+                    let tx = state.ui_tx.clone();
+
+                    state.rt.spawn(async move {
+                        let res =
+                            crate::api::conversation::delete_conversation(&base, &token, cid).await;
+                        match res {
+                            Ok(()) => {
+                                let _ = tx.send(UiEvent::ConversationDeleted(cid));
+                                
+                                // Piccola attesa per coerenza UI
+                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                                match crate::api::conversation::get_conversations(&base, &token).await {
+                                    Ok(conversations) => {
+                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                                        let _ = tx.send(UiEvent::Info("Conversazione eliminata".into()));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Eliminata, ma errore nel refresh: {e}"
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UiEvent::Error(format!("Errore eliminazione: {e}")));
+                            }
+                        }
+                    });
+                } else {
+                    let _ = state.ui_tx.send(UiEvent::Error("Non autenticato".into()));
+                }
+            }
+
+            // Non aprire la chat se si è cliccato "Elimina"
+            return;
+        }
+         // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
         if response.clicked() {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;
@@ -264,30 +382,37 @@ impl ConversationsSidebar {
                     "Nessun messaggio".to_string()
                 }
             }
-            None => "Caricamento...".to_string(),
+            None => "Clicca per aprire".to_string(),
         };
 
         ui.label(RichText::new(preview_text).size(12.0).color(color));
     }
 
-    fn show_loading_state(&self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.spinner();
-            ui.add_space(8.0);
-            ui.label(RichText::new("Caricamento conversazioni...").color(egui::Color32::GRAY));
-        });
-    }
-
     fn show_empty_state(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
-            ui.label(RichText::new("🔭").size(32.0));
+            ui.label(RichText::new("📭").size(32.0));
             ui.add_space(8.0);
             ui.label(RichText::new("Nessuna conversazione").color(egui::Color32::GRAY));
             ui.add_space(12.0);
 
-            if ui.button("Vai alla Gestione Gruppi").clicked() {
+            ui.label(
+                RichText::new("Clicca 🔄 per caricare le conversazioni")
+                    .size(12.0)
+                    .color(egui::Color32::GRAY),
+            );
+
+            ui.add_space(8.0);
+
+            ui.label(
+                RichText::new("oppure")
+                    .size(11.0)
+                    .color(egui::Color32::GRAY),
+            );
+
+            ui.add_space(8.0);
+
+            if ui.button("Crea una nuova conversazione").clicked() {
                 state.page = Page::GroupManagement;
             }
         });
@@ -326,12 +451,13 @@ impl ConversationsSidebar {
             match crate::api::conversation::get_conversations(&base, &token2).await {
                 Ok(conversations) => {
                     let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-                    let _ = tx.send(UiEvent::Info("Conversazioni aggiornate".into()));
                 }
                 Err(e) => {
                     let _ = tx.send(UiEvent::Error(format!(
-                        "Errore nel caricamento delle conversazioni: {e}"
+                        "Errore nel caricamento: {e}"
                     )));
+                    // Invia array vuoto per mostrare lo stato vuoto
+                    let _ = tx.send(UiEvent::ConversationsLoaded(vec![]));
                 }
             }
         });

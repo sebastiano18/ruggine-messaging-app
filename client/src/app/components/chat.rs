@@ -1,8 +1,9 @@
-use crate::models::{UiEvent, WsStatus};
+use crate::models::{UiEvent, WsStatus, ConversationDto, MessageDto};
 use crate::state::AppState;
-use crate::{models::MessageDto, api};
+use crate::api;
 use eframe::egui::{self, Frame, RichText, Stroke, TextEdit};
 use uuid::Uuid;
+use tracing::info;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.heading("💬 Chat");
@@ -62,7 +63,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
         },
     );
 
-    // Separatore “cromatura”
+    // Separatore "cromatura"
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
@@ -147,17 +148,23 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
                 let icon = match conv.kind.as_str() {
                     "group" => "👥",
                     "dm" => "💬",
-                    _ => "💭",
+                    _ => "👭",
                 };
                 ui.label(format!("{} {}", icon, conv.title));
+            } else if s.is_dm_stub(cid) {
+                // Se è uno stub, mostra il titolo dallo stato
+                ui.label(format!("💬 {}", s.conv_title));
             }
         }
+    } else if s.cid.is_some() && !s.conv_title.is_empty() {
+        // Fallback per stub quando conversations non è ancora caricato
+        ui.label(format!("💬 {}", s.conv_title));
     }
 }
 
 fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str) {
     Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.1)) // Sfondo arancione tenue
+        .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.1))
         .stroke(Stroke::new(
             1.0,
             egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.3),
@@ -256,7 +263,7 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
         let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
 
         Frame::none()
-            .fill(egui::Color32::from_rgb(200, 100, 40)) // Arancione per i messaggi propri
+            .fill(egui::Color32::from_rgb(200, 100, 40))
             .rounding(egui::Rounding::same(12.0))
             .inner_margin(egui::Margin::symmetric(10.0, 6.0))
             .show(ui, |ui| {
@@ -271,7 +278,7 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
                     );
                     ui.add_space(3.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✓✓");
+                        ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✔✔");
                         ui.add_space(4.0);
                         let time = format_time(message.created_at);
                         ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
@@ -300,7 +307,7 @@ fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {
 
                 ui.vertical(|ui| {
                     ui.colored_label(
-                        egui::Color32::from_rgb(255, 180, 100), // Arancione dorato per username
+                        egui::Color32::from_rgb(255, 180, 100),
                         &message.author_username,
                     );
                     ui.add_space(2.0);
@@ -336,15 +343,16 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
     }
     s.input.clear();
 
-    // Messaggio ottimistico (appare subito) - FIX: includi conversation_id
+    // Messaggio ottimistico (appare subito)
     if let Some(user_id) = s.user_id {
         let optimistic_msg = MessageDto {
             id: Uuid::new_v4(),
             author_id: user_id,
-            conversation_id: cid, // FIX: aggiungi il conversation_id corretto
+            conversation_id: cid,
             author_username: s.username.clone(),
             content: content.clone(),
             created_at: chrono::Utc::now().timestamp(),
+            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità
         };
 
         s.messages.push(optimistic_msg.clone());
@@ -354,8 +362,33 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
         }
     }
 
-    // Usa WebSocket invece di REST
+    // Usa WebSocket - PRIMA di rimuovere lo stub!
     s.send_chat_message_ws(content);
+
+    // DOPO l'invio, se era uno stub DM, convertilo in conversazione reale
+    if s.dm_stubs.contains_key(&cid) {
+        let target_username = s.dm_stubs.remove(&cid).unwrap();
+
+        // Crea la conversazione reale e aggiungila alla lista
+        let real_conversation = ConversationDto {
+            id: cid,
+            kind: "dm".to_string(),
+            title: target_username.clone(),
+            owner_id: s.user_id.unwrap_or(Uuid::nil()),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        if let Some(ref mut conversations) = s.conversations {
+            // Verifica che non esista già (safety check)
+            if !conversations.iter().any(|c| c.id == cid) {
+                conversations.insert(0, real_conversation);
+            }
+        } else {
+            s.conversations = Some(vec![real_conversation]);
+        }
+
+        info!("DM stub converted to real conversation on message send");
+    }
 }
 
 fn format_time(timestamp: i64) -> String {

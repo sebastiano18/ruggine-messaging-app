@@ -52,4 +52,52 @@ impl ConversationService {
     ) -> Result<bool> {
         ConversationRepo::is_participant(pool, conversation_id, user_id).await
     }
+
+    /// Elimina una conversazione (DM o Gruppo).
+    /// - Gruppo: solo l'owner
+    /// - DM: partecipante o autore di almeno un messaggio
+    pub async fn delete_conversation(
+        pool: &sqlx::SqlitePool,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+    ) -> Result<()> {
+        // Scopri il tipo di conversazione
+        let kind_opt = ConversationRepo::get_conversation_kind(pool, conversation_id).await?;
+        let kind = match kind_opt {
+            Some(k) => k,
+            None => return Err(crate::error::AppError::NotFound),
+        };
+
+        match kind.as_str() {
+            "group" => {
+                // Solo owner
+                let is_owner = ConversationRepo::is_owner(pool, conversation_id, requester_id).await?;
+                if !is_owner {
+                    return Err(crate::error::AppError::Unauthorized);
+                }
+            }
+            "dm" => {
+                // Partecipante o autore di almeno un messaggio
+                let allowed = ConversationRepo::user_has_dm_access(pool, conversation_id, requester_id).await?;
+                if !allowed {
+                    return Err(crate::error::AppError::Unauthorized);
+                }
+            }
+            _ => {
+                // Tipo sconosciuto: trattalo come non autorizzato
+                return Err(crate::error::AppError::Unauthorized);
+            }
+        }
+
+        // Esegui la cancellazione (cascade rimuove messaggi/partecipanti/inviti)
+        ConversationRepo::delete_conversation(pool, conversation_id).await?;
+        Ok(())
+    }
+
+    pub async fn list_participant_ids(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        conversation_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
+        ConversationRepo::list_participant_ids(pool, conversation_id).await
+    }
 }

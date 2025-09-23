@@ -1,6 +1,7 @@
 use crate::error::Result;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
+use crate::error::AppError;
 
 #[derive(Debug, Clone)]
 pub struct ConversationRepo;
@@ -322,5 +323,73 @@ impl ConversationRepo {
                 .fetch_optional(pool)
                 .await?;
         Ok(row.is_some())
+    }
+
+    pub async fn delete_conversation(pool: &SqlitePool, conversation_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(conversation_id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    // Funzione helper
+    /// Per DM: consente accesso se l'utente è partecipante oppure ha scritto almeno un messaggio.
+    pub async fn user_has_dm_access(pool: &SqlitePool, conversation_id: Uuid, user_id: Uuid) -> Result<bool> {
+        let cid = conversation_id.to_string();
+        let uid = user_id.to_string();
+
+        // Partecipante?
+        let participant_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ? LIMIT 1",
+        )
+            .bind(&cid)
+            .bind(&uid)
+            .fetch_optional(pool)
+            .await?;
+
+        if participant_exists.is_some() {
+            return Ok(true);
+        }
+
+        // Ha scritto almeno un messaggio?
+        let author_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM messages WHERE conversation_id = ? AND author_id = ? LIMIT 1",
+        )
+            .bind(&cid)
+            .bind(&uid)
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(author_exists.is_some())
+    }
+
+    /// Restituisce la lista degli user_id (Uuid) dei partecipanti alla conversazione.
+    /// Nel DB gli UUID sono salvati come TEXT, quindi si fa parse da String -> Uuid.
+    pub async fn list_participant_ids(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        conversation_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
+        let conv_id_str = conversation_id.to_string();
+
+        let id_strs: Vec<String> = sqlx::query_scalar(
+            "SELECT user_id FROM participants WHERE conversation_id = ?"
+        )
+            .bind(&conv_id_str)
+            .fetch_all(pool)
+            .await
+            .map_err(AppError::from)?;
+
+        let mut ids = Vec::with_capacity(id_strs.len());
+        for s in id_strs {
+            match Uuid::parse_str(&s) {
+                Ok(u) => ids.push(u),
+                Err(_) => {
+                    tracing::warn!("Invalid UUID string in participants.user_id: {}", s);
+                }
+            }
+        }
+
+        Ok(ids)
     }
 }

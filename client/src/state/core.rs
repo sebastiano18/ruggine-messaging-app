@@ -1,11 +1,23 @@
 use crate::api::ws::WsControl;
 use crate::models::*;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use tracing::{debug, warn, error};
 
 use super::data_loader::DataLoader;
+
+#[derive(Debug, Default)]
+pub struct SequenceStats {
+    pub total_events_received: u64,
+    pub gaps_detected: u32,
+    pub events_recovered: u32,
+    pub ping_count: u32,
+    pub pong_count: u32,
+    pub average_gap_size: f64,
+    pub last_gap_time: Option<Instant>,
+}
 
 pub struct AppState {
     pub rt: Runtime,
@@ -56,6 +68,27 @@ pub struct AppState {
 
     // DM stub tracking - conversation_id -> target_username
     pub dm_stubs: HashMap<Uuid, String>,
+
+    // Dual sequence system
+    pub user_sequence_confirmed: u64,
+    pub user_sequence_received: u64,
+    pub conversation_sequences: HashMap<Uuid, u64>,
+    pub conversation_sequences_confirmed: HashMap<Uuid, u64>,
+
+    // Ping/Pong management
+    pub ping_interval: Duration,
+    pub last_ping_time: Instant,
+    pub missed_pings: u32,
+    pub max_missed_pings: u32,
+    pub ping_timeout: Duration,
+
+    // Recovery state
+    pub is_recovering_user_events: bool,
+    pub is_recovering_messages: HashMap<Uuid, bool>,
+    pub pending_resume_requests: u32,
+
+    // Statistics
+    pub sequence_stats: SequenceStats,
 }
 
 impl AppState {
@@ -102,8 +135,25 @@ impl AppState {
             is_initial_load_complete: false,
             is_loading: false,
 
-            // Inizializza il tracking degli stub DM
             dm_stubs: HashMap::new(),
+
+            // Dual sequence system
+            user_sequence_confirmed: 0,
+            user_sequence_received: 0,
+            conversation_sequences: HashMap::new(),
+            conversation_sequences_confirmed: HashMap::new(),
+
+            ping_interval: Duration::from_secs(30),
+            last_ping_time: Instant::now(),
+            missed_pings: 0,
+            max_missed_pings: 3,
+            ping_timeout: Duration::from_secs(45),
+
+            is_recovering_user_events: false,
+            is_recovering_messages: HashMap::new(),
+            pending_resume_requests: 0,
+
+            sequence_stats: SequenceStats::default(),
         }
     }
 
@@ -111,10 +161,6 @@ impl AppState {
         while let Ok(ev) = self.ui_rx.try_recv() {
             crate::app::events::EventDispatcher::handle_event(self, ev);
         }
-    }
-
-    pub fn preload_all_data(&mut self, token: String) {
-        DataLoader::preload_all_data(self, token);
     }
 
     pub fn load_single_conversation_messages(&self, cid: Uuid) {
@@ -133,11 +179,13 @@ impl AppState {
 
     pub fn send_chat_message_ws(&self, content: String) {
         if let Some(cid) = self.cid {
-            // Controlla se questa conversazione è uno stub DM appena creato
             let target_username = self.dm_stubs.get(&cid).cloned();
 
             if target_username.is_some() {
-                debug!("Sending message for DM stub {} with target: {:?}", cid, target_username);
+                debug!(
+                    "Sending message for DM stub {} with target: {:?}",
+                    cid, target_username
+                );
             }
 
             self.send_via_websocket(Outgoing::ChatMessage {
@@ -146,6 +194,263 @@ impl AppState {
                 target_username,
             });
         }
+    }
+
+    // === Enhanced Ping System ===
+
+    pub fn send_enhanced_ping(&mut self) {
+        let user_seq = {
+            let seq = self.user_sequence_confirmed.max(self.user_sequence_received);
+            if seq > 0 { Some(seq) } else { None }
+        };
+
+        let (conv_seq, active_conv) = if let Some(cid) = self.cid {
+            let seq = self.conversation_sequences.get(&cid).copied();
+
+            debug!(
+                "Conversation {} sequences - confirmed: {:?}, received: {:?}, sending: {:?}",
+                cid, 
+                self.conversation_sequences_confirmed.get(&cid),
+                self.conversation_sequences.get(&cid),
+                seq
+            );
+
+            (seq, Some(cid))
+        } else {
+            (None, None)
+        };
+
+        debug!(
+            "Sending enhanced ping - user_seq: {:?}, conv_seq: {:?}, active_conv: {:?}",
+            user_seq, conv_seq, active_conv
+        );
+
+        self.sequence_stats.ping_count += 1;
+
+        self.send_via_websocket(Outgoing::EnhancedPing {
+            user_sequence: user_seq,
+            conversation_sequence: conv_seq,
+            active_conversation_id: active_conv,
+        });
+    }
+
+    // === Sequence Update Methods con RILEVAMENTO GAP IMMEDIATO ===
+
+    pub fn update_user_sequence(&mut self, sequence: u64) {
+        let current = self.user_sequence_received;
+
+        // Rileva gap IMMEDIATAMENTE
+        if sequence > current + 1 {
+            let gap_size = sequence - current - 1;
+            warn!(
+                "User events gap detected! Expected {}, got {} (missing {} events)",
+                current + 1, sequence, gap_size
+            );
+            self.sequence_stats.gaps_detected += 1;
+            self.sequence_stats.last_gap_time = Some(Instant::now());
+
+            // Resume IMMEDIATO per gap >= 3 eventi utente
+            if gap_size >= 3 {
+                warn!("Large user events gap ({}), requesting immediate resume", gap_size);
+                self.request_user_events_resume(current);
+            } else {
+                debug!("Small user events gap ({}), will handle at next ping", gap_size);
+            }
+        }
+
+        // Aggiorna sequence
+        if sequence > self.user_sequence_received {
+            self.user_sequence_received = sequence;
+            self.sequence_stats.total_events_received += 1;
+        }
+
+        if sequence == self.user_sequence_confirmed + 1 {
+            self.user_sequence_confirmed = sequence;
+            debug!("User sequence {} confirmed (continuous)", sequence);
+        }
+    }
+
+    pub fn update_conversation_sequence(&mut self, conversation_id: Uuid, sequence: u64) {
+        let current = self.conversation_sequences.get(&conversation_id).copied().unwrap_or(0);
+
+        // Rileva gap IMMEDIATAMENTE
+        if sequence > current + 1 {
+            let gap_size = sequence - current - 1;
+            warn!(
+                "Messages gap in conversation {}! Expected {}, got {} (missing {} messages)",
+                conversation_id, current + 1, sequence, gap_size
+            );
+            self.sequence_stats.gaps_detected += 1;
+            self.sequence_stats.last_gap_time = Some(Instant::now());
+
+            // Resume IMMEDIATO per gap >= 5 messaggi
+            if gap_size >= 5 {
+                warn!("Large messages gap ({}) in conversation {}, requesting immediate resume", 
+                      gap_size, conversation_id);
+                self.request_messages_resume(conversation_id, current);
+            } else {
+                debug!("Small messages gap ({}) in conversation {}, will handle at next ping", 
+                       gap_size, conversation_id);
+            }
+        }
+
+        // Aggiorna sequence
+        if sequence > current {
+            self.conversation_sequences.insert(conversation_id, sequence);
+        }
+
+        let confirmed = self.conversation_sequences_confirmed.get(&conversation_id).copied().unwrap_or(0);
+        if sequence == confirmed + 1 {
+            self.conversation_sequences_confirmed.insert(conversation_id, sequence);
+            debug!("Conversation {} sequence {} confirmed", conversation_id, sequence);
+        }
+    }
+
+    // === Resume Request Methods ===
+
+    pub fn request_user_events_resume(&mut self, from_sequence: u64) {
+        if self.is_recovering_user_events {
+            debug!("User events resume already in progress");
+            return;
+        }
+
+        self.is_recovering_user_events = true;
+        self.pending_resume_requests += 1;
+
+        self.send_via_websocket(Outgoing::RequestUserResume {
+            from_sequence,
+            limit: 100,
+        });
+
+        info!("Requested user events resume from sequence {}", from_sequence);
+    }
+
+    pub fn request_messages_resume(&mut self, conversation_id: Uuid, from_sequence: u64) {
+        if *self.is_recovering_messages.get(&conversation_id).unwrap_or(&false) {
+            debug!("Messages resume already in progress for {}", conversation_id);
+            return;
+        }
+
+        self.is_recovering_messages.insert(conversation_id, true);
+        self.pending_resume_requests += 1;
+
+        self.send_via_websocket(Outgoing::RequestMessagesResume {
+            conversation_id,
+            from_sequence,
+            limit: 100,
+        });
+
+        info!("Requested messages resume for {} from sequence {}", conversation_id, from_sequence);
+    }
+
+    // === Gap Detection ===
+
+    pub fn check_for_gaps(&mut self) -> (bool, bool) {
+        let user_gap = self.user_sequence_received > self.user_sequence_confirmed;
+
+        let conversation_gap = if let Some(cid) = self.cid {
+            let received = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
+            let confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            received > confirmed
+        } else {
+            false
+        };
+
+        (user_gap, conversation_gap)
+    }
+
+    // === Ping/Pong Management ===
+
+    pub fn should_send_ping(&self) -> bool {
+        self.ws_status == WsStatus::Connected && self.last_ping_time.elapsed() >= self.ping_interval
+    }
+
+    pub fn update_ping_time(&mut self) {
+        self.last_ping_time = Instant::now();
+    }
+
+    pub fn handle_pong_timeout(&mut self) {
+        self.missed_pings += 1;
+        warn!(
+            "Pong timeout! Missed pings: {}/{}",
+            self.missed_pings, self.max_missed_pings
+        );
+
+        if self.missed_pings >= self.max_missed_pings {
+            error!(
+                "Too many missed pongs ({}), forcing reconnection",
+                self.missed_pings
+            );
+            self.request_ws_reconnect = true;
+            self.missed_pings = 0;
+        }
+    }
+
+    pub fn reset_sequence_system(&mut self) {
+        self.missed_pings = 0;
+        self.is_recovering_user_events = false;
+        self.is_recovering_messages.clear();
+        self.pending_resume_requests = 0;
+        self.last_ping_time = Instant::now();
+        debug!("Sequence system reset");
+    }
+
+    pub fn reset_sequence_on_disconnect(&mut self) {
+        debug!(
+            "WebSocket disconnected, preserving sequences - user: {}, conversations: {}",
+            self.user_sequence_confirmed,
+            self.conversation_sequences.len()
+        );
+        self.reset_sequence_system();
+    }
+
+    // === Health and Statistics ===
+
+    pub fn get_sequence_health(&self) -> f64 {
+        if self.sequence_stats.ping_count == 0 {
+            return 1.0;
+        }
+
+        let pong_rate = self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
+        let gap_penalty = (self.sequence_stats.gaps_detected as f64 * 0.1).min(0.5);
+        let missed_penalty = (self.missed_pings as f64 / self.max_missed_pings as f64) * 0.3;
+
+        (pong_rate - gap_penalty - missed_penalty).max(0.0)
+    }
+
+    pub fn get_total_cached_messages(&self) -> usize {
+        self.conversation_messages.values().map(|v| v.len()).sum()
+    }
+
+    pub fn get_debug_info(&self) -> HashMap<String, String> {
+        let mut info = HashMap::new();
+
+        info.insert("ws_status".to_string(), format!("{:?}", self.ws_status));
+        info.insert("user_seq_confirmed".to_string(), self.user_sequence_confirmed.to_string());
+        info.insert("user_seq_received".to_string(), self.user_sequence_received.to_string());
+        info.insert("active_conversation".to_string(), self.cid.map_or("none".to_string(), |id| id.to_string()));
+
+        if let Some(cid) = self.cid {
+            let conv_seq = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
+            let conv_seq_confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            info.insert("conv_seq".to_string(), conv_seq.to_string());
+            info.insert("conv_seq_confirmed".to_string(), conv_seq_confirmed.to_string());
+        }
+
+        info.insert("sequence_health".to_string(), format!("{:.2}", self.get_sequence_health()));
+        info.insert("ping_count".to_string(), self.sequence_stats.ping_count.to_string());
+        info.insert("pong_count".to_string(), self.sequence_stats.pong_count.to_string());
+        info.insert("missed_pings".to_string(), format!("{}/{}", self.missed_pings, self.max_missed_pings));
+        info.insert("gaps_detected".to_string(), self.sequence_stats.gaps_detected.to_string());
+        info.insert("pending_resume".to_string(), self.pending_resume_requests.to_string());
+
+        info
+    }
+
+    // === Authentication ===
+
+    pub fn is_authenticated(&self) -> bool {
+        self.token.is_some() && self.user_id.is_some()
     }
 
     // === DM stub management ===
@@ -158,21 +463,47 @@ impl AppState {
             warn!("DM stub already exists for conversation {}", conversation_id);
             return;
         }
-
+        println!("aaaaaaaa{:?}", self.conversations);
+        if let Some(convs) = &mut self.conversations {
+    // remove the first record (index 0)
+    convs.remove(0);
+}
+        println!("eeeeeeee{:?}", self.conversations);
         self.dm_stubs.insert(conversation_id, target_username);
-        debug!("DM stub added successfully. Total stubs: {}", self.dm_stubs.len());
     }
 
     pub fn remove_dm_stub(&mut self, conversation_id: Uuid) {
         if let Some(target) = self.dm_stubs.remove(&conversation_id) {
             debug!("Removed DM stub: {} -> {}", conversation_id, target);
-        } else {
-            debug!("Attempted to remove non-existent DM stub: {}", conversation_id);
         }
     }
 
     pub fn is_dm_stub(&self, conversation_id: Uuid) -> bool {
         self.dm_stubs.contains_key(&conversation_id)
     }
-    
+
+    // === Cleanup Methods ===
+
+    pub fn cleanup_old_data(&self) {
+        let total_messages = self.get_total_cached_messages();
+        if total_messages > 50000 {
+            warn!("High memory usage detected: {} cached messages", total_messages);
+        }
+    }
+
+    pub fn cleanup_dm_stubs(&mut self) {
+        let mut to_remove = Vec::new();
+
+        if let Some(ref conversations) = self.conversations {
+            for (&stub_id, _) in &self.dm_stubs {
+                if conversations.iter().any(|c| c.id == stub_id) {
+                    to_remove.push(stub_id);
+                }
+            }
+        }
+
+        for id in to_remove {
+            self.dm_stubs.remove(&id);
+        }
+    }
 }
