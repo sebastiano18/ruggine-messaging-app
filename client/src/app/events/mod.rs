@@ -204,10 +204,10 @@ impl EventDispatcher {
 
                 // Aggiorna sequence per questa conversazione se presente
                 if let Some(seq) = message.sequence_num {
-                    state.conversation_sequences.insert(conversation_id, seq);
-                    state
-                        .conversation_sequences_confirmed
-                        .insert(conversation_id, seq);
+                    //state.conversation_sequences.insert(conversation_id, seq);
+                    //state
+                       // .conversation_sequences_confirmed
+                        //.insert(conversation_id, seq);
                     debug!(
                         "Updated conversation {} sequence to {} from last message",
                         conversation_id, seq
@@ -384,65 +384,89 @@ impl EventDispatcher {
                 conversation_id,
                 messages,
             } => {
-                info!(
-                    "Processing {} resumed messages for {}",
-                    messages.len(),
-                    conversation_id
-                );
+                info!("Processing {} resumed messages for {}", messages.len(), conversation_id);
 
                 state.is_recovering_messages.insert(conversation_id, false);
                 state.pending_resume_requests = state.pending_resume_requests.saturating_sub(1);
 
-                let max_resumed_seq = messages
-                    .iter()
-                    .filter_map(|m| m.sequence_num)
-                    .max()
-                    .unwrap_or(0);
+                // Raccogli tutti gli ID dei messaggi esistenti (cache + UI)
+                let mut existing_ids = std::collections::HashSet::new();
 
-                // Add messages to cache
+                // ID dalla cache
+                if let Some(cache) = state.conversation_messages.get(&conversation_id) {
+                    for msg in cache {
+                        existing_ids.insert(msg.id);
+                    }
+                }
+
+                // ID dall'UI se è la conversazione corrente
+                if state.cid == Some(conversation_id) {
+                    for msg in &state.messages {
+                        existing_ids.insert(msg.id);
+                    }
+                }
+
+                // Filtra solo i messaggi veramente nuovi
+                let truly_new_messages: Vec<MessageDto> = messages
+                    .into_iter()
+                    .filter(|msg| !existing_ids.contains(&msg.id))
+                    .collect();
+
+                if truly_new_messages.is_empty() {
+                    debug!("All resumed messages already exist, skipping");
+                    return;
+                }
+
+                info!("Adding {} truly new messages from resume", truly_new_messages.len());
+
+                // Aggiorna cache con i nuovi messaggi
                 {
                     let cache = state
                         .conversation_messages
                         .entry(conversation_id)
                         .or_insert_with(Vec::new);
 
-                    for msg in &messages {
-                        if !cache.iter().any(|m| m.id == msg.id) {
-                            cache.push(msg.clone());
-                        }
-                    }
+                    cache.extend(truly_new_messages.clone());
 
+                    // Riordina per sequence
                     cache.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
                         (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
                         _ => a.created_at.cmp(&b.created_at),
                     });
                 }
 
-                // Aggiorna la sequence
-                let current_seq = state
-                    .conversation_sequences
-                    .get(&conversation_id)
-                    .copied()
+                // Aggiorna sequence
+                let max_resumed_seq = truly_new_messages
+                    .iter()
+                    .filter_map(|m| m.sequence_num)
+                    .max()
                     .unwrap_or(0);
 
-                if max_resumed_seq > current_seq {
-                    state
+                if max_resumed_seq > 0 {
+                    let current_seq = state
                         .conversation_sequences
-                        .insert(conversation_id, max_resumed_seq);
-                    state
-                        .conversation_sequences_confirmed
-                        .insert(conversation_id, max_resumed_seq);
-                    debug!(
-                        "Updated conversation {} sequence to {} after resume",
-                        conversation_id, max_resumed_seq
-                    );
+                        .get(&conversation_id)
+                        .copied()
+                        .unwrap_or(0);
+
+                    if max_resumed_seq > current_seq {
+                        state.conversation_sequences.insert(conversation_id, max_resumed_seq);
+                        state.conversation_sequences_confirmed.insert(conversation_id, max_resumed_seq);
+                        debug!("Updated conversation {} sequence to {} after resume",
+                   conversation_id, max_resumed_seq);
+                    }
                 }
 
-                // Update UI if current conversation
+                // Aggiorna UI se è la conversazione corrente
                 if state.cid == Some(conversation_id) {
-                    if let Some(cache) = state.conversation_messages.get(&conversation_id) {
-                        state.messages = cache.clone();
-                    }
+                    // Aggiungi solo i nuovi messaggi all'UI
+                    state.messages.extend(truly_new_messages);
+
+                    // Riordina
+                    state.messages.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
+                    });
                 }
             }
 
@@ -496,8 +520,22 @@ impl EventDispatcher {
                 // Carica cache se disponibile
                 if let Some(cached) = state.conversation_messages.get(&cid) {
                     state.messages = if cached.is_empty() { vec![] } else { cached.clone() };
+
+                    // Aggiorna la sequence della chat con l'ultimo messaggio
+                    if let Some(max_seq) = cached.iter().filter_map(|m| m.sequence_num).max() {
+                        state.conversation_sequences.insert(cid, max_seq);
+                        state.conversation_sequences_confirmed.insert(cid, max_seq);
+                    } else {
+                        // AGGIUNGI: Se non ci sono sequence nei messaggi cached, inizializza a 0
+                        state.conversation_sequences.entry(cid).or_insert(0);
+                        state.conversation_sequences_confirmed.entry(cid).or_insert(0);
+                    }
                 } else {
                     state.messages.clear();
+
+                    // AGGIUNGI: Inizializza la sequence a 0 quando non c'è cache
+                    state.conversation_sequences.insert(cid, 0);
+                    state.conversation_sequences_confirmed.insert(cid, 0);
                 }
 
                 state.is_loading_more = false;
@@ -637,12 +675,8 @@ impl EventDispatcher {
                     state.conversation_messages.insert(cid, messages.clone());
 
                     if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
-                        state.conversation_sequences.insert(cid, max_seq);
-                        state.conversation_sequences_confirmed.insert(cid, max_seq);
-                        debug!(
-                            "Updated sequence for conversation {} to {} after refresh",
-                            cid, max_seq
-                        );
+                        // Usa update_conversation_sequence per rilevare gap!
+                        state.update_conversation_sequence(cid, max_seq);
                     }
                 }
             }
