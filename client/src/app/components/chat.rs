@@ -40,43 +40,68 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
     // === Split manuale: messaggi (in alto, cresce) + input (in basso, fisso) ===
     let total_h = ui.available_height();
     let input_h: f32 = 60.0;
-    let chrome_h: f32 = 6.0 + 1.0 + 6.0;
-    let messages_h = (total_h - input_h - chrome_h).max(120.0);
+    let separator_space: f32 = 13.0;
+    let messages_h = (total_h - input_h - separator_space).max(120.0);
+
+    // Stati persistenti
+    let anchor_state_id = ui.id().with("anchor_state").with(cid);
+    let last_offset_id = ui.id().with("last_offset").with(cid);
+    let messages_count_id = ui.id().with("msg_count").with(cid);
+
+    // Recupera l'ancora salvata
+    let anchor_message_id: Option<Uuid> = ui.data_mut(|d|
+        d.get_temp(anchor_state_id).unwrap_or(None)
+    );
+
+    // Recupera il numero di messaggi dall'ultimo frame
+    let last_message_count: usize = ui.data_mut(|d|
+        d.get_temp(messages_count_id).unwrap_or(0)
+    );
 
     // 1) Area messaggi con ScrollArea
     let scroll = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .stick_to_bottom(!s.is_loading_more)
+        .stick_to_bottom(true)
         .max_height(messages_h)
         .id_source("chat_messages_scroll");
 
     let output = scroll.show(ui, |ui| {
-        // Se vuoto, carica iniziali
-        if s.messages.is_empty() {
-            // Se non ci sono più messaggi da caricare, mostra messaggio vuoto
-            if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(20.0);
-                    ui.label("Nessun messaggio in questa conversazione");
-                    ui.add_space(10.0);
-                    ui.label("Inizia a chattare!");
-                });
-                return;
-            }
-
-            // Altrimenti prova a caricare
-            if !s.is_loading_more && s.cid.is_some() {
+        // Se abbiamo solo 0-1 messaggi (vuoto o solo anteprima)
+        if s.messages.len() <= 1 && *s.has_more_messages.get(&cid).unwrap_or(&true) {
+            if !s.is_loading_more {
                 s.load_older_messages();
             }
 
-            ui.horizontal(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(messages_h / 2.0 - 20.0);
                 ui.spinner();
-                ui.label("Caricamento messaggi...");
+                ui.label("Caricamento chat...");
             });
             return;
         }
 
-        // Spinner quando carica
+        // Se non ci sono messaggi, chat vuota
+        if s.messages.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(messages_h / 2.0 - 40.0);
+                ui.label("— Chat vuota —");
+                ui.add_space(10.0);
+                ui.label("Invia il primo messaggio per iniziare!");
+            });
+            return;
+        }
+
+        // === Mostra i messaggi ===
+
+        // Indicatore inizio conversazione
+        if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
+            ui.vertical_centered(|ui| {
+                ui.label("— Inizio conversazione —");
+            });
+            ui.add_space(10.0);
+        }
+
+        // Spinner se sta caricando
         if s.is_loading_more {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -85,26 +110,66 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
             ui.separator();
         }
 
-        // Messaggi uno per uno
+        // Renderizza tutti i messaggi, cercando l'ancora
         for (i, message) in s.messages.iter().enumerate() {
+            // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
+            if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
+                // Scrolla a questo messaggio
+                ui.scroll_to_cursor(Some(egui::Align::TOP));
+                // Reset ancora
+                ui.data_mut(|d| d.insert_temp(anchor_state_id, None::<Uuid>));
+            }
+
             show_message(ui, s, message);
+
             if i < s.messages.len() - 1 {
                 ui.add_space(6.0);
             }
         }
     });
 
-    // Check scroll position
-    let at_top = output.state.offset.y <= 10.0;
-    if at_top && !s.is_loading_more && !s.messages.is_empty() {
-        if let Some(cid) = s.cid {
-            if *s.has_more_messages.get(&cid).unwrap_or(&true) {
-                s.load_older_messages();
+    // Salva il numero di messaggi corrente
+    ui.data_mut(|d| d.insert_temp(messages_count_id, s.messages.len()));
+
+    // === Gestione scroll per trigger fetch ===
+
+    // Recupera l'ultimo offset
+    let last_offset: f32 = ui.data_mut(|d|
+        d.get_temp(last_offset_id).unwrap_or(f32::MAX)
+    );
+
+    // Detecta quando sei nei 3/4 superiori
+    let trigger_threshold = messages_h * 0.75;
+    let near_top = output.state.offset.y <= trigger_threshold;
+
+    // Controlla TUTTI i modi di scrollare
+    let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+    let scrolling_up_with_wheel = scroll_delta > 0.0;
+
+    // Controlla se l'offset è diminuito (scroll verso l'alto in qualsiasi modo)
+    let scrolled_up = output.state.offset.y < last_offset - 5.0; // 5px di tolleranza
+
+    // Salva l'offset corrente
+    ui.data_mut(|d| d.insert_temp(last_offset_id, output.state.offset.y));
+
+    // Triggera se: sei nei 3/4 superiori E hai scrollato verso l'alto
+    if near_top && (scrolling_up_with_wheel || scrolled_up) && !s.is_loading_more && !s.messages.is_empty() {
+        if *s.has_more_messages.get(&cid).unwrap_or(&true) {
+            // Trova quale messaggio salvare come ancora
+            // Prendiamo il terzo messaggio visibile per sicurezza
+            if s.messages.len() > 3 {
+                if let Some(anchor_msg) = s.messages.get(3) {
+                    ui.data_mut(|d| d.insert_temp(anchor_state_id, Some(anchor_msg.id)));
+                }
+            } else if let Some(first_msg) = s.messages.first() {
+                ui.data_mut(|d| d.insert_temp(anchor_state_id, Some(first_msg.id)));
             }
+
+            s.load_older_messages();
         }
     }
 
-    // Separatore
+    // Separatore tra messaggi e input
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
@@ -381,7 +446,7 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
             author_username: s.username.clone(),
             content: content.clone(),
             created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità 
+            sequence_num: None,
         };
 
         s.messages.push(optimistic_msg.clone());

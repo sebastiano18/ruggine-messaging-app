@@ -514,28 +514,16 @@ impl AppState {
         }
     }
 
-    // NUOVO METODO: Carica messaggi più vecchi
     pub fn load_older_messages(&mut self) {
         let Some(cid) = self.cid else { return };
         let Some(ref token) = self.token else { return };
 
-        // Non fare nulla se già in caricamento
         if self.is_loading_more {
             return;
         }
 
-        // Non fare nulla se non ci sono più messaggi
         if !*self.has_more_messages.get(&cid).unwrap_or(&true) {
             return;
-        }
-
-        // Se vuoto, prima controlla cache
-        if self.messages.is_empty() {
-            if let Some(cached) = self.conversation_messages.get(&cid) {
-                if !cached.is_empty() {
-                    self.messages = cached.clone();
-                }
-            }
         }
 
         // Trova sequence più vecchia
@@ -544,7 +532,16 @@ impl AppState {
             .and_then(|m| m.sequence_num)
             .map(|seq| seq as i64);
 
-        // Imposta flag
+        // IMPORTANTE: Se la sequence più vecchia è 1, non ci sono messaggi precedenti
+        if let Some(seq) = before_seq {
+            if seq <= 1 {
+                // Non ci sono messaggi con sequence < 1
+                self.has_more_messages.insert(cid, false);
+                info!("First message has sequence 1, no older messages to load");
+                return;
+            }
+        }
+
         self.is_loading_more = true;
 
         let base = self.base.clone();
@@ -552,6 +549,9 @@ impl AppState {
         let tx = self.ui_tx.clone();
 
         self.rt.spawn(async move {
+            // Delay di 300ms per dare tempo allo scroll di stabilizzarsi
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
             match crate::api::chat::get_messages_paginated(
                 &base,
                 &token,
