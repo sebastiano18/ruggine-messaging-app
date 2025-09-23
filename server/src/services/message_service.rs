@@ -1,8 +1,8 @@
 use crate::{error::Result, repositories::message_repo::MessageRepo, state::AppState};
+use crate::models::Message;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
-
 use crate::web_socket::helpers::broadcast_to_conversation;
 
 pub struct MessageService;
@@ -43,9 +43,68 @@ impl MessageService {
                     username,
                     content,
                     created_at,
-                    sequence_num, // Aggiunto
+                    sequence_num,
                 )
             })
+            .collect())
+    }
+
+    /// Lista paginata semplice con before_sequence
+    pub async fn list_with_pagination(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+        limit: i64,
+        before_sequence: Option<i64>,
+    ) -> Result<Vec<Message>> {
+        let safe_limit = limit.min(100).max(1);
+
+        let rows = if let Some(before_seq) = before_sequence {
+            // Carica messaggi più vecchi
+            sqlx::query(
+                "SELECT m.id, m.author_id, u.username, m.content, m.created_at, m.sequence_num
+                 FROM messages m
+                 JOIN users u ON m.author_id = u.id
+                 WHERE m.conversation_id = ? AND m.sequence_num < ?
+                 ORDER BY m.sequence_num DESC
+                 LIMIT ?"
+            )
+                .bind(conversation_id.to_string())
+                .bind(before_seq)
+                .bind(safe_limit)
+                .fetch_all(pool)
+                .await?
+        } else {
+            // Carica ultimi messaggi
+            sqlx::query(
+                "SELECT m.id, m.author_id, u.username, m.content, m.created_at, m.sequence_num
+                 FROM messages m
+                 JOIN users u ON m.author_id = u.id
+                 WHERE m.conversation_id = ?
+                 ORDER BY m.sequence_num DESC
+                 LIMIT ?"
+            )
+                .bind(conversation_id.to_string())
+                .bind(safe_limit)
+                .fetch_all(pool)
+                .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let id_str: String = r.get("id");
+                let author_str: String = r.get("author_id");
+                Message {
+                    id: Uuid::parse_str(&id_str).unwrap(),
+                    author_id: Uuid::parse_str(&author_str).unwrap(),
+                    conversation_id,
+                    author_username: r.get("username"),
+                    content: r.get("content"),
+                    created_at: r.get("created_at"),
+                    sequence_num: r.get("sequence_num"),
+                }
+            })
+            .rev() // Inverti per ordine cronologico
             .collect())
     }
 
@@ -116,7 +175,7 @@ impl MessageService {
             "author_username": author_username,
             "content": trimmed_content,
             "created_at": chrono::Utc::now().timestamp(),
-            "sequence": sequence_num, // Aggiunto
+            "sequence": sequence_num,
         });
 
         match broadcast_to_conversation(state, conversation_id, event).await {

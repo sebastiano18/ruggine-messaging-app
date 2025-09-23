@@ -6,9 +6,9 @@ use axum::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Endpoint esistenti per messaggi
+        // Endpoint unificato per messaggi con paginazione opzionale
         .route("/conversations/:cid/messages", get(c::list).post(c::post))
 
-        // NUOVO: Endpoint per fetch messaggi (fetch-on-subscribe)
+        // Endpoint per fetch messaggi (fetch-on-subscribe)
         .route("/conversations/:cid/messages/fetch", get(c::fetch_messages))
 }

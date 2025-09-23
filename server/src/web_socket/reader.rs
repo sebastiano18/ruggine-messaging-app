@@ -149,113 +149,6 @@ pub fn spawn_reader(
                             }
                         }
 
-                        "open_conversation" => {
-                            let conversation_id = value
-                                .get("conversation_id")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok());
-
-                            if let Some(conv_id) = conversation_id {
-                                info!("User {} opening conversation {}", username, conv_id);
-
-                                let user_id_str = user_id.to_string();
-                                let conv_id_str = conv_id.to_string();
-
-                                let is_participant: i64 = sqlx::query_scalar(
-                                    "SELECT COUNT(*) FROM participants WHERE user_id = ? AND conversation_id = ?"
-                                )
-                                    .bind(&user_id_str)
-                                    .bind(&conv_id_str)
-                                    .fetch_one(&state.pool)
-                                    .await
-                                    .unwrap_or(0);
-
-                                if is_participant == 0 {
-                                    let error_msg = json!({
-                                        "type": "error",
-                                        "message": "Not authorized to view this conversation",
-                                        "error_code": "UNAUTHORIZED_CONVERSATION"
-                                    });
-                                    if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                    }
-                                    continue;
-                                }
-
-                                // Ottieni info conversazione con titolo corretto per DM
-                                let conv_info = sqlx::query(
-                                    r#"
-                                    SELECT
-                                        c.kind,
-                                        c.title,
-                                        CASE
-                                            WHEN c.kind = 'dm' AND c.title IS NULL THEN (
-                                                SELECT u.username
-                                                FROM participants p2
-                                                INNER JOIN users u ON p2.user_id = u.id
-                                                WHERE p2.conversation_id = c.id
-                                                AND p2.user_id != ?
-                                                LIMIT 1
-                                            )
-                                            ELSE c.title
-                                        END as display_title
-                                    FROM conversations c
-                                    WHERE c.id = ?
-                                    "#
-                                )
-                                    .bind(&user_id_str)
-                                    .bind(&conv_id_str)
-                                    .fetch_optional(&state.pool)
-                                    .await;
-
-                                match get_conversation_messages(&state.pool, conv_id, 50).await {
-                                    Ok(messages) => {
-                                        let mut msg = json!({
-                                            "type": "conversation_messages",
-                                            "conversation_id": conv_id,
-                                            "messages": messages,
-                                            "has_more": messages.len() >= 50,
-                                            "timestamp": chrono::Utc::now().timestamp()
-                                        });
-
-                                        // Aggiungi il titolo corretto se disponibile
-                                        if let Ok(Some(info)) = conv_info {
-                                            if let Ok(display_title) = info.try_get::<Option<String>, _>("display_title") {
-                                                if let Some(title) = display_title {
-                                                    msg["conversation_title"] = json!(title);
-                                                }
-                                            }
-                                        }
-
-                                        if let Ok(txt) = serde_json::to_string(&msg) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                            debug!("Sent {} messages for conversation {} to user {}",
-                                                   messages.len(), conv_id, username);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to get messages for conversation {}: {}", conv_id, e);
-                                        let error_msg = json!({
-                                            "type": "error",
-                                            "message": "Failed to load conversation messages",
-                                            "error_code": "MESSAGES_LOAD_ERROR"
-                                        });
-                                        if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        }
-                                    }
-                                }
-                            } else {
-                                let error_msg = json!({
-                                    "type": "error",
-                                    "message": "Invalid conversation_id",
-                                    "error_code": "INVALID_CONVERSATION_ID"
-                                });
-                                if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                }
-                            }
-                        }
 
                         "ping" => {
                             debug!("Ping received from user {}", user_id);
@@ -787,38 +680,46 @@ async fn get_initial_state(
         let mut conv = json!({
             "id": id,
             "kind": kind,
-            "title": display_title,  // Usa sempre display_title
+            "title": display_title,
             "owner_id": owner_id,
             "created_at": created_at,
             "message_count": message_count
         });
 
-        // Aggiungi ultimo messaggio se presente
-        if let Ok(content) = row.try_get::<String, _>("last_content") {
-            if let Ok(author) = row.try_get::<String, _>("last_author") {
-                let mut last_message = json!({
-                    "content": content,
-                    "author_username": author
-                });
+        // CORREZIONE: Aggiungi ultimo messaggio SOLO se esiste veramente
+        // Usa Option<String> invece di String per gestire correttamente i NULL
+        if let Ok(Some(content)) = row.try_get::<Option<String>, _>("last_content") {
+            // Verifica che il contenuto non sia vuoto
+            if !content.is_empty() {
+                // Solo se c'è contenuto, prova a recuperare gli altri campi
+                if let Ok(Some(author)) = row.try_get::<Option<String>, _>("last_author") {
+                    let mut last_message = json!({
+                        "content": content,
+                        "author_username": author
+                    });
 
-                // Includi author_id nel last_message
-                if let Ok(author_id) = row.try_get::<String, _>("last_author_id") {
-                    last_message["author_id"] = json!(author_id);
-                }
+                    // Includi author_id nel last_message
+                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id") {
+                        last_message["author_id"] = json!(author_id);
+                    }
 
-                if let Ok(msg_time) = row.try_get::<i64, _>("last_msg_time") {
-                    last_message["created_at"] = json!(msg_time);
-                }
+                    if let Ok(Some(msg_time)) = row.try_get::<Option<i64>, _>("last_msg_time") {
+                        last_message["created_at"] = json!(msg_time);
+                    }
 
-                if let Ok(seq) = row.try_get::<Option<i64>, _>("last_sequence") {
-                    if let Some(s) = seq {
-                        last_message["sequence"] = json!(s);
+                    // IMPORTANTE: sequence_num deve essere presente per messaggi validi
+                    if let Ok(Some(seq)) = row.try_get::<Option<i64>, _>("last_sequence") {
+                        last_message["sequence_num"] = json!(seq);
+                        // Solo se abbiamo tutti i dati validi, aggiungi last_message
+                        conv["last_message"] = last_message;
+                    } else {
+                        // Se non c'è sequence, non includere last_message
+                        debug!("Message without sequence for conversation {}, not including in initial state", id);
                     }
                 }
-
-                conv["last_message"] = last_message;
             }
         }
+        // Se last_content è NULL o vuoto, NON aggiungiamo last_message
 
         conversations.push(conv);
     }
@@ -832,7 +733,7 @@ async fn get_initial_state(
         .await
         .unwrap_or(0);
 
-    info!("Loaded {} conversations for user {} (all with proper titles and author_ids)",
+    info!("Loaded {} conversations for user {} (only including last_message where messages exist)",
           conversations.len(), user_id_str);
 
     Ok(InitialState {

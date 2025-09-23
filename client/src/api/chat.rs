@@ -3,6 +3,7 @@ use reqwest::Client;
 use uuid::Uuid;
 use crate::models::{MessageDto, MessageResponse, SendMsgReq};
 
+
 pub async fn get_messages(base: &str, token: &str, cid: Uuid) -> Result<Vec<MessageDto>> {
     let response_messages = Client::new()
         .get(format!("{base}/api/conversations/{cid}/messages"))
@@ -13,7 +14,6 @@ pub async fn get_messages(base: &str, token: &str, cid: Uuid) -> Result<Vec<Mess
         .json::<Vec<MessageResponse>>()
         .await?;
 
-    // Converte MessageResponse in MessageDto preservando la sequence
     let messages: Vec<MessageDto> = response_messages
         .into_iter()
         .filter_map(|msg| {
@@ -27,10 +27,70 @@ pub async fn get_messages(base: &str, token: &str, cid: Uuid) -> Result<Vec<Mess
                 author_username: msg.author_username,
                 content: msg.content,
                 created_at: msg.created_at,
-                sequence_num: msg.sequence_num.map(|s| s as u64), // Preserva sequence_num dal server
+                sequence_num: msg.sequence_num.map(|s| s as u64),
             })
         })
         .collect();
+
+    Ok(messages)
+}
+
+// NUOVA FUNZIONE: Get messages con paginazione
+pub async fn get_messages_paginated(
+    base: &str,
+    token: &str,
+    cid: Uuid,
+    limit: Option<i64>,
+    before_sequence: Option<i64>,
+) -> Result<Vec<MessageDto>> {
+    let mut url = format!("{base}/api/conversations/{cid}/messages");
+
+    let mut params = Vec::new();
+    if let Some(limit) = limit {
+        params.push(format!("limit={}", limit));
+    }
+    if let Some(before_seq) = before_sequence {
+        params.push(format!("before_sequence={}", before_seq));
+    }
+
+    if !params.is_empty() {
+        url.push_str("?");
+        url.push_str(&params.join("&"));
+    }
+
+    let response_messages = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<MessageResponse>>()
+        .await?;
+
+    let messages: Vec<MessageDto> = response_messages
+        .into_iter()
+        .filter_map(|msg| {
+            let id = Uuid::parse_str(&msg.id).ok()?;
+            let author_id = Uuid::parse_str(&msg.author_id).ok()?;
+
+            Some(MessageDto {
+                id,
+                author_id,
+                conversation_id: cid,
+                author_username: msg.author_username,
+                content: msg.content,
+                created_at: msg.created_at,
+                sequence_num: msg.sequence_num.map(|s| s as u64),
+            })
+        })
+        .collect();
+
+    tracing::debug!(
+        "Fetched {} messages for conversation {} (before_seq: {:?})",
+        messages.len(),
+        cid,
+        before_sequence
+    );
 
     Ok(messages)
 }
@@ -46,7 +106,6 @@ pub async fn send_message(base: &str, token: &str, cid: Uuid, content: &str) -> 
     Ok(())
 }
 
-/// Fetch messaggi per fetch-on-subscribe con supporto sequence
 pub async fn fetch_conversation_messages(
     base: &str,
     token: &str,
@@ -68,11 +127,9 @@ pub async fn fetch_conversation_messages(
         .json::<Vec<MessageResponse>>()
         .await?;
 
-    // IMPORTANTE: Preserva la sequence dal server
     let messages: Vec<MessageDto> = response_messages
         .into_iter()
         .filter_map(|msg| {
-            // Parse UUID con gestione errori
             let id = Uuid::parse_str(&msg.id).ok()?;
             let author_id = Uuid::parse_str(&msg.author_id).ok()?;
 
@@ -83,12 +140,11 @@ pub async fn fetch_conversation_messages(
                 author_username: msg.author_username,
                 content: msg.content,
                 created_at: msg.created_at,
-                sequence_num: msg.sequence_num.map(|s| s as u64), // CORRETTO: Preserva la sequence
+                sequence_num: msg.sequence_num.map(|s| s as u64),
             })
         })
         .collect();
 
-    // Log per debug
     let sequences: Vec<u64> = messages
         .iter()
         .filter_map(|m| m.sequence_num)
@@ -106,7 +162,6 @@ pub async fn fetch_conversation_messages(
     Ok(messages)
 }
 
-/// Recupera messaggi con un range di sequence specifico
 pub async fn fetch_messages_by_sequence_range(
     base: &str,
     token: &str,

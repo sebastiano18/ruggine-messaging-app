@@ -89,6 +89,10 @@ pub struct AppState {
 
     // Statistics
     pub sequence_stats: SequenceStats,
+
+    pub is_loading_more: bool,
+    pub has_more_messages: HashMap<Uuid, bool>,
+    
 }
 
 impl AppState {
@@ -154,6 +158,9 @@ impl AppState {
             pending_resume_requests: 0,
 
             sequence_stats: SequenceStats::default(),
+
+            is_loading_more: false,
+            has_more_messages: HashMap::new(),
         }
     }
 
@@ -506,4 +513,61 @@ impl AppState {
             self.dm_stubs.remove(&id);
         }
     }
+
+    // NUOVO METODO: Carica messaggi più vecchi
+    pub fn load_older_messages(&mut self) {
+        let Some(cid) = self.cid else { return };
+        let Some(ref token) = self.token else { return };
+
+        // Non fare nulla se già in caricamento
+        if self.is_loading_more {
+            return;
+        }
+
+        // Non fare nulla se non ci sono più messaggi
+        if !*self.has_more_messages.get(&cid).unwrap_or(&true) {
+            return;
+        }
+
+        // Se vuoto, prima controlla cache
+        if self.messages.is_empty() {
+            if let Some(cached) = self.conversation_messages.get(&cid) {
+                if !cached.is_empty() {
+                    self.messages = cached.clone();
+                }
+            }
+        }
+
+        // Trova sequence più vecchia
+        let before_seq = self.messages
+            .first()
+            .and_then(|m| m.sequence_num)
+            .map(|seq| seq as i64);
+
+        // Imposta flag
+        self.is_loading_more = true;
+
+        let base = self.base.clone();
+        let token = token.clone();
+        let tx = self.ui_tx.clone();
+
+        self.rt.spawn(async move {
+            match crate::api::chat::get_messages_paginated(
+                &base,
+                &token,
+                cid,
+                Some(30),
+                before_seq
+            ).await {
+                Ok(messages) => {
+                    let _ = tx.send(UiEvent::OlderMessagesLoaded(messages));
+                }
+                Err(e) => {
+                    error!("Failed to load messages: {}", e);
+                    let _ = tx.send(UiEvent::LoadingError);
+                }
+            }
+        });
+    }
+
 }

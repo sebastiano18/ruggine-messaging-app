@@ -164,6 +164,7 @@ pub enum UiEvent {
     RegisterStarted,
     Logged(String, Uuid, u64),
     LoggedOut,
+    LoadingError,
 
     // WebSocket events
     WsConnected,
@@ -239,6 +240,8 @@ pub enum UiEvent {
         messages: Vec<MessageDto>,
         has_more: bool,
     },
+
+    OlderMessagesLoaded(Vec<MessageDto>),
 }
 
 #[derive(Debug, Clone)]
