@@ -134,7 +134,7 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         .and_then(|t| t.as_i64())
         .unwrap_or(0);
 
-    let sequence = msg.get("sequence")
+    let sequence_num = msg.get("sequence_num")
         .and_then(|s| s.as_i64())
         .map(|s| s as u64);
 
@@ -152,7 +152,7 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         conversation_id,
         content,
         created_at,
-        sequence_num: sequence,
+        sequence_num,
     };
 
     // Invia come evento LastMessageUpdate

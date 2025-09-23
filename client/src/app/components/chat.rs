@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::api;
 use eframe::egui::{self, Frame, RichText, Stroke, TextEdit};
 use uuid::Uuid;
-use tracing::info;
+use tracing::{debug, info};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.heading("💬 Chat");
@@ -39,56 +39,78 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
 
     // === Split manuale: messaggi (in alto, cresce) + input (in basso, fisso) ===
     let total_h = ui.available_height();
-    let total_w = ui.available_width();
     let input_h: f32 = 60.0;
-
-    // "cromatura" fra messaggi e input: spazio + separatore + spazio
     let chrome_h: f32 = 6.0 + 1.0 + 6.0;
-
-    // L'area messaggi prende tutto lo spazio restante
     let messages_h = (total_h - input_h - chrome_h).max(120.0);
 
-    // 1) Messaggi: occupano lo spazio superiore
-    ui.allocate_ui_with_layout(
-        egui::vec2(total_w, messages_h),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            // Frame opzionale per garantire minimo e isolare lo scroll
-            Frame::none()
-                .fill(ui.visuals().panel_fill) // stesso colore del pannello
-                .show(ui, |ui| {
-                    ui.set_min_height(messages_h);
-                    show_messages_area(ui, s);
-                });
-        },
-    );
+    // 1) Area messaggi con ScrollArea
+    let scroll = egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(!s.is_loading_more)
+        .max_height(messages_h)
+        .id_source("chat_messages_scroll");
 
-    // Separatore "cromatura"
+    let output = scroll.show(ui, |ui| {
+        // Se vuoto, carica iniziali
+        if s.messages.is_empty() {
+            // Se non ci sono più messaggi da caricare, mostra messaggio vuoto
+            if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.label("Nessun messaggio in questa conversazione");
+                    ui.add_space(10.0);
+                    ui.label("Inizia a chattare!");
+                });
+                return;
+            }
+
+            // Altrimenti prova a caricare
+            if !s.is_loading_more && s.cid.is_some() {
+                s.load_older_messages();
+            }
+
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Caricamento messaggi...");
+            });
+            return;
+        }
+
+        // Spinner quando carica
+        if s.is_loading_more {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Caricamento messaggi precedenti...");
+            });
+            ui.separator();
+        }
+
+        // Messaggi uno per uno
+        for (i, message) in s.messages.iter().enumerate() {
+            show_message(ui, s, message);
+            if i < s.messages.len() - 1 {
+                ui.add_space(6.0);
+            }
+        }
+    });
+
+    // Check scroll position
+    let at_top = output.state.offset.y <= 10.0;
+    if at_top && !s.is_loading_more && !s.messages.is_empty() {
+        if let Some(cid) = s.cid {
+            if *s.has_more_messages.get(&cid).unwrap_or(&true) {
+                s.load_older_messages();
+            }
+        }
+    }
+
+    // Separatore
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
 
-    // 2) Input: altezza fissa in basso
+    // 2) Input area
     show_input_area(ui, s, cid, token, input_h);
-}
-
-fn show_messages_area(ui: &mut egui::Ui, s: &AppState) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            for message in &s.messages {
-                let row_width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(row_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |row| {
-                        show_message(row, s, message);
-                    },
-                );
-                ui.add_space(6.0);
-            }
-        });
 }
 
 fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, height: f32) {
@@ -98,7 +120,6 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, 
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             // Campo di testo
-            // Calcolo una larghezza "prudente" per lasciare spazio ai bottoni a destra
             let mut input_width = ui.available_width();
             // spazio stimato per bottoni e stato a destra
             input_width = (input_width - 110.0).max(120.0);
@@ -253,78 +274,86 @@ fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
 }
 
 fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-        ui.add_space(8.0);
+    // Usa allocate_space per un controllo preciso senza espansione
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::TOP),
+        |ui| {
+            ui.add_space(8.0);
 
-        let row_w = ui.available_size_before_wrap().x;
-        let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
-        let inner_pad_x = 20.0;
+            let row_w = ui.available_size_before_wrap().x;
+            let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
+            let inner_pad_x = 20.0;
+            let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
 
-        let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
+            Frame::none()
+                .fill(egui::Color32::from_rgb(200, 100, 40))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(bw);
 
-        Frame::none()
-            .fill(egui::Color32::from_rgb(200, 100, 40))
-            .rounding(egui::Rounding::same(12.0))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(bw);
-
-                ui.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&message.content).color(egui::Color32::WHITE),
-                        )
-                            .wrap(true),
-                    );
-                    ui.add_space(3.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✔✔");
-                        ui.add_space(4.0);
-                        let time = format_time(message.created_at);
-                        ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message.content).color(egui::Color32::WHITE),
+                            )
+                                .wrap(true),
+                        );
+                        ui.add_space(3.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✔✔");
+                            ui.add_space(4.0);
+                            let time = format_time(message.created_at);
+                            ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
+                        });
                     });
                 });
-            });
-    });
+        }
+    );
 }
 
 fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-        ui.add_space(8.0);
+    // Usa allocate_space per un controllo preciso senza espansione
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::TOP),
+        |ui| {
+            ui.add_space(8.0);
 
-        let row_w = ui.available_size_before_wrap().x;
-        let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
-        let inner_pad_x = 20.0;
+            let row_w = ui.available_size_before_wrap().x;
+            let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
+            let inner_pad_x = 20.0;
+            let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
 
-        let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
+            Frame::none()
+                .fill(egui::Color32::from_rgb(60, 60, 60))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(bw);
 
-        Frame::none()
-            .fill(egui::Color32::from_rgb(60, 60, 60))
-            .rounding(egui::Rounding::same(12.0))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(bw);
-
-                ui.vertical(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 180, 100),
-                        &message.author_username,
-                    );
-                    ui.add_space(2.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&message.content).color(egui::Color32::WHITE),
-                        )
-                            .wrap(true),
-                    );
-                    ui.add_space(3.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let time = format_time(message.created_at);
-                        ui.colored_label(egui::Color32::from_rgb(180, 180, 180), time);
+                    ui.vertical(|ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 180, 100),
+                            &message.author_username,
+                        );
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message.content).color(egui::Color32::WHITE),
+                            )
+                                .wrap(true),
+                        );
+                        ui.add_space(3.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let time = format_time(message.created_at);
+                            ui.colored_label(egui::Color32::from_rgb(180, 180, 180), time);
+                        });
                     });
                 });
-            });
-    });
+        }
+    );
 }
 
 fn show_empty_state(ui: &mut egui::Ui) {
@@ -352,7 +381,7 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
             author_username: s.username.clone(),
             content: content.clone(),
             created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità
+            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità 
         };
 
         s.messages.push(optimistic_msg.clone());

@@ -25,6 +25,7 @@ impl EventDispatcher {
                 info!("Login started");
             }
 
+
             UiEvent::RegisterStarted => {
                 state.login_state = LoginState::Registering;
                 info!("Registration started");
@@ -141,9 +142,15 @@ impl EventDispatcher {
             }
 
             // ===== NUOVI HANDLER PER INITIAL_STATE =====
-            UiEvent::InitialStateReceived { conversations, user_sequence } => {
-                info!("Processing initial state: {} conversations, user_seq: {}", 
-                      conversations.len(), user_sequence);
+            UiEvent::InitialStateReceived {
+                conversations,
+                user_sequence,
+            } => {
+                info!(
+                    "Processing initial state: {} conversations, user_seq: {}",
+                    conversations.len(),
+                    user_sequence
+                );
 
                 // Aggiorna la sequenza utente
                 state.user_sequence_confirmed = user_sequence;
@@ -168,7 +175,7 @@ impl EventDispatcher {
                 // Notifica UI
                 helpers::add_system_message(
                     state,
-                    format!("Sincronizzate {} conversazioni", conversations.len())
+                    format!("Sincronizzate {} conversazioni", conversations.len()),
                 );
 
                 // Richiedi refresh se necessario
@@ -177,11 +184,15 @@ impl EventDispatcher {
                 }
             }
 
-            UiEvent::LastMessageUpdate { conversation_id, message } => {
+            UiEvent::LastMessageUpdate {
+                conversation_id,
+                message,
+            } => {
                 debug!("Updating last message for conversation {}", conversation_id);
 
                 // Aggiorna la cache dei messaggi
-                let cache = state.conversation_messages
+                let cache = state
+                    .conversation_messages
                     .entry(conversation_id)
                     .or_insert_with(Vec::new);
 
@@ -193,10 +204,14 @@ impl EventDispatcher {
 
                 // Aggiorna sequence per questa conversazione se presente
                 if let Some(seq) = message.sequence_num {
-                    state.conversation_sequences.insert(conversation_id, seq);
-                    state.conversation_sequences_confirmed.insert(conversation_id, seq);
-                    debug!("Updated conversation {} sequence to {} from last message",
-                           conversation_id, seq);
+                    //state.conversation_sequences.insert(conversation_id, seq);
+                    //state
+                       // .conversation_sequences_confirmed
+                        //.insert(conversation_id, seq);
+                    debug!(
+                        "Updated conversation {} sequence to {} from last message",
+                        conversation_id, seq
+                    );
                 }
 
                 // Se è la conversazione corrente e non ci sono messaggi, mostra questo
@@ -205,26 +220,52 @@ impl EventDispatcher {
                 }
             }
 
-            UiEvent::ConversationMessagesReceived { conversation_id, messages, has_more } => {
-                info!("Received {} messages for conversation {} (has_more: {})",
-                      messages.len(), conversation_id, has_more);
+            UiEvent::ConversationMessagesReceived {
+                conversation_id,
+                messages,
+                has_more,
+            } => {
+                info!(
+                    "Received {} messages for conversation {} (has_more: {})",
+                    messages.len(),
+                    conversation_id,
+                    has_more
+                );
 
-                // Aggiorna la cache
-                state.conversation_messages.insert(conversation_id, messages.clone());
+                // DEBUG: Mostra le sequence ricevute
+                let sequences: Vec<u64> = messages.iter().filter_map(|m| m.sequence_num).collect();
+                info!("Message sequences received: {:?}", sequences);
+
+                // Ordina i messaggi PRIMA di salvarli
+                let mut sorted_messages = messages.clone();
+                sorted_messages.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                    (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                    _ => a.created_at.cmp(&b.created_at),
+                });
+
+                // Aggiorna la cache con i messaggi ordinati
+                state
+                    .conversation_messages
+                    .insert(conversation_id, sorted_messages.clone());
 
                 // Trova la sequenza massima
-                if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
-                    state.conversation_sequences.insert(conversation_id, max_seq);
-                    state.conversation_sequences_confirmed.insert(conversation_id, max_seq);
-                    debug!("Updated conversation {} sequence to {} from messages",
-                           conversation_id, max_seq);
+                if let Some(max_seq) = sorted_messages.iter().filter_map(|m| m.sequence_num).max() {
+                    state
+                        .conversation_sequences
+                        .insert(conversation_id, max_seq);
+                    state
+                        .conversation_sequences_confirmed
+                        .insert(conversation_id, max_seq);
+                    debug!(
+                        "Updated conversation {} sequence to {} from messages",
+                        conversation_id, max_seq
+                    );
                 }
 
-                // Se è la conversazione corrente, aggiorna UI e titolo
+                // Se è la conversazione corrente, aggiorna UI con messaggi ordinati
                 if state.cid == Some(conversation_id) {
-                    state.messages = messages;
+                    state.messages = sorted_messages; // Usa i messaggi ordinati
 
-                    // Aggiorna anche il titolo se abbiamo le conversazioni
                     if let Some(ref conversations) = state.conversations {
                         if let Some(conv) = conversations.iter().find(|c| c.id == conversation_id) {
                             state.conv_title = conv.title.clone();
@@ -235,7 +276,7 @@ impl EventDispatcher {
                     if has_more {
                         helpers::add_system_message(
                             state,
-                            "Caricati messaggi recenti (altri disponibili)".into()
+                            "Caricati messaggi recenti (altri disponibili)".into(),
                         );
                     }
                 }
@@ -343,107 +384,164 @@ impl EventDispatcher {
                 conversation_id,
                 messages,
             } => {
-                info!(
-                    "Processing {} resumed messages for {}",
-                    messages.len(),
-                    conversation_id
-                );
+                info!("Processing {} resumed messages for {}", messages.len(), conversation_id);
 
                 state.is_recovering_messages.insert(conversation_id, false);
                 state.pending_resume_requests = state.pending_resume_requests.saturating_sub(1);
 
-                let max_resumed_seq = messages
-                    .iter()
-                    .filter_map(|m| m.sequence_num)
-                    .max()
-                    .unwrap_or(0);
+                // Raccogli tutti gli ID dei messaggi esistenti (cache + UI)
+                let mut existing_ids = std::collections::HashSet::new();
 
-                // Add messages to cache
+                // ID dalla cache
+                if let Some(cache) = state.conversation_messages.get(&conversation_id) {
+                    for msg in cache {
+                        existing_ids.insert(msg.id);
+                    }
+                }
+
+                // ID dall'UI se è la conversazione corrente
+                if state.cid == Some(conversation_id) {
+                    for msg in &state.messages {
+                        existing_ids.insert(msg.id);
+                    }
+                }
+
+                // Filtra solo i messaggi veramente nuovi
+                let truly_new_messages: Vec<MessageDto> = messages
+                    .into_iter()
+                    .filter(|msg| !existing_ids.contains(&msg.id))
+                    .collect();
+
+                if truly_new_messages.is_empty() {
+                    debug!("All resumed messages already exist, skipping");
+                    return;
+                }
+
+                info!("Adding {} truly new messages from resume", truly_new_messages.len());
+
+                // Aggiorna cache con i nuovi messaggi
                 {
                     let cache = state
                         .conversation_messages
                         .entry(conversation_id)
                         .or_insert_with(Vec::new);
 
-                    for msg in &messages {
-                        if !cache.iter().any(|m| m.id == msg.id) {
-                            cache.push(msg.clone());
-                        }
-                    }
+                    cache.extend(truly_new_messages.clone());
 
+                    // Riordina per sequence
                     cache.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
                         (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
                         _ => a.created_at.cmp(&b.created_at),
                     });
                 }
 
-                // Aggiorna la sequence
-                let current_seq = state
-                    .conversation_sequences
-                    .get(&conversation_id)
-                    .copied()
+                // Aggiorna sequence
+                let max_resumed_seq = truly_new_messages
+                    .iter()
+                    .filter_map(|m| m.sequence_num)
+                    .max()
                     .unwrap_or(0);
 
-                if max_resumed_seq > current_seq {
-                    state
+                if max_resumed_seq > 0 {
+                    let current_seq = state
                         .conversation_sequences
-                        .insert(conversation_id, max_resumed_seq);
-                    state
-                        .conversation_sequences_confirmed
-                        .insert(conversation_id, max_resumed_seq);
-                    debug!(
-                        "Updated conversation {} sequence to {} after resume",
-                        conversation_id, max_resumed_seq
-                    );
+                        .get(&conversation_id)
+                        .copied()
+                        .unwrap_or(0);
+
+                    if max_resumed_seq > current_seq {
+                        state.conversation_sequences.insert(conversation_id, max_resumed_seq);
+                        state.conversation_sequences_confirmed.insert(conversation_id, max_resumed_seq);
+                        debug!("Updated conversation {} sequence to {} after resume",
+                   conversation_id, max_resumed_seq);
+                    }
                 }
 
-                // Update UI if current conversation
+                // Aggiorna UI se è la conversazione corrente
                 if state.cid == Some(conversation_id) {
-                    if let Some(cache) = state.conversation_messages.get(&conversation_id) {
-                        state.messages = cache.clone();
-                    }
+                    // Aggiungi solo i nuovi messaggi all'UI
+                    state.messages.extend(truly_new_messages);
+
+                    // Riordina
+                    state.messages.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
+                    });
                 }
             }
 
             // ===== CONVERSATION EVENTS =====
+            UiEvent::OlderMessagesLoaded(new_messages) => {
+                state.is_loading_more = false;
+
+                let Some(cid) = state.cid else { return };
+
+                // Se ritornati 0 messaggi, interrompi il caricamento
+                if new_messages.is_empty() {
+                    state.has_more_messages.insert(cid, false);
+                    // Rimuovi lo spinner mostrando che non ci sono messaggi
+                    return;
+                }
+
+                // Se meno di 30, non ce ne sono più
+                if new_messages.len() < 30 {
+                    state.has_more_messages.insert(cid, false);
+                }
+
+                // Combina messaggi
+                let mut all_messages = Vec::new();
+                all_messages.extend(new_messages);
+                all_messages.extend(state.messages.clone());
+
+                // Rimuovi duplicati
+                let mut seen_ids = std::collections::HashSet::new();
+                all_messages.retain(|msg| seen_ids.insert(msg.id));
+
+                // Ordina
+                all_messages.sort_by(|a, b| {
+                    match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
+                    }
+                });
+
+                state.messages = all_messages.clone();
+                state.conversation_messages.insert(cid, all_messages);
+            }
+
+            UiEvent::LoadingError => {
+                state.is_loading_more = false;
+            }
+
             UiEvent::Opened(cid) => {
-                info!("Opening conversation: {}", cid);
                 state.cid = Some(cid);
                 state.page = Page::Chat;
 
-                // Imposta il titolo della conversazione
-                if let Some(ref conversations) = state.conversations {
-                    if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-                        state.conv_title = conv.title.clone();
-                        debug!("Set conversation title to: {}", state.conv_title);
-                    }
-                }
-
-                // Controlla se abbiamo messaggi cached
+                // Carica cache se disponibile
                 if let Some(cached) = state.conversation_messages.get(&cid) {
-                    if !cached.is_empty() {
-                        state.messages = cached.clone();
-                        debug!("Loaded {} cached messages for conversation {}", cached.len(), cid);
+                    state.messages = if cached.is_empty() { vec![] } else { cached.clone() };
 
-                        // Estrai sequence dai messaggi cached
-                        if let Some(max_seq) = cached.iter().filter_map(|m| m.sequence_num).max() {
-                            state.conversation_sequences.insert(cid, max_seq);
-                            state.conversation_sequences_confirmed.insert(cid, max_seq);
-                            debug!("Initialized conversation {} with sequence {} from cache", cid, max_seq);
-                        }
+                    // Aggiorna la sequence della chat con l'ultimo messaggio
+                    if let Some(max_seq) = cached.iter().filter_map(|m| m.sequence_num).max() {
+                        state.conversation_sequences.insert(cid, max_seq);
+                        state.conversation_sequences_confirmed.insert(cid, max_seq);
                     } else {
-                        // Cache vuota, richiedi messaggi dal server via WebSocket
-                        state.messages.clear();
-                        Self::request_conversation_messages(state, cid);
+                        // AGGIUNGI: Se non ci sono sequence nei messaggi cached, inizializza a 0
+                        state.conversation_sequences.entry(cid).or_insert(0);
+                        state.conversation_sequences_confirmed.entry(cid).or_insert(0);
                     }
                 } else {
-                    // Nessuna cache, richiedi messaggi dal server
                     state.messages.clear();
-                    if !state.is_dm_stub(cid) {
-                        Self::request_conversation_messages(state, cid);
-                    }
+
+                    // AGGIUNGI: Inizializza la sequence a 0 quando non c'è cache
+                    state.conversation_sequences.insert(cid, 0);
+                    state.conversation_sequences_confirmed.insert(cid, 0);
                 }
+
+                state.is_loading_more = false;
+                state.has_more_messages.insert(cid, true);
             }
+
 
             UiEvent::ConversationDeleted(cid) => {
                 info!("Conversation deleted: {}", cid);
@@ -477,7 +575,7 @@ impl EventDispatcher {
 
                 // Opzionale: richiedi un refresh lista (se necessario)
                 // state.request_conversations_refresh = true;
-            },
+            }
 
             UiEvent::ConversationCreated(cid) => {
                 info!("Conversation created: {}", cid);
@@ -577,12 +675,8 @@ impl EventDispatcher {
                     state.conversation_messages.insert(cid, messages.clone());
 
                     if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
-                        state.conversation_sequences.insert(cid, max_seq);
-                        state.conversation_sequences_confirmed.insert(cid, max_seq);
-                        debug!(
-                            "Updated sequence for conversation {} to {} after refresh",
-                            cid, max_seq
-                        );
+                        // Usa update_conversation_sequence per rilevare gap!
+                        state.update_conversation_sequence(cid, max_seq);
                     }
                 }
             }
@@ -654,7 +748,7 @@ impl EventDispatcher {
                         match crate::api::conversation::get_conversation_with_messages(
                             &base, &token, cid,
                         )
-                            .await
+                        .await
                         {
                             Ok(conv_with_msgs) => {
                                 let _ = tx.send(UiEvent::ConversationCompleteFetched(
@@ -807,7 +901,10 @@ impl EventDispatcher {
 
     /// Richiede i messaggi di una conversazione via WebSocket
     fn request_conversation_messages(state: &mut AppState, conversation_id: Uuid) {
-        debug!("Requesting messages for conversation {} via WebSocket", conversation_id);
+        debug!(
+            "Requesting messages for conversation {} via WebSocket",
+            conversation_id
+        );
 
         // Invia richiesta "open_conversation" al server
         let request = serde_json::json!({
@@ -819,10 +916,7 @@ impl EventDispatcher {
             if let Ok(json_str) = serde_json::to_string(&request) {
                 let _ = ws_ctrl.outgoing_tx.send(json_str);
 
-                helpers::add_system_message(
-                    state,
-                    "Caricamento messaggi...".into()
-                );
+                helpers::add_system_message(state, "Caricamento messaggi...".into());
             }
         } else {
             warn!("Cannot request messages: WebSocket not connected");
