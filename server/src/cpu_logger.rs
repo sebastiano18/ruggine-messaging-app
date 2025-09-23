@@ -1,4 +1,4 @@
-use sysinfo::{System, Process}; // SystemExt e ProcessExt sono direttamente sotto sysinfo
+use sysinfo::{System, Process}; 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Duration;
@@ -16,8 +16,8 @@ pub fn spawn_cpu_logger() {
             sys.refresh_all();
 
             if let Some(proc) = sys.process(pid) {
-                let cpu_percent = proc.cpu_usage() / sys.cpus().len() as f32; // normalizza su 1 core
-                let memory_kb = proc.memory();
+                let cpu_percent = proc.cpu_usage() / sys.cpus().len() as f32;
+                let memory_kb = proc.memory() as f64 / (1024.0 * 1024.0);
 
                 // Scrive sul file di log
                 let mut file = OpenOptions::new()
@@ -28,7 +28,7 @@ pub fn spawn_cpu_logger() {
 
                 writeln!(
                     file,
-                    "[{}] CPU: {:.2}% | Memoria: {} KB",
+                      "[{}] CPU: {:.2}% | Memoria: {:.2} GB",
                     Local::now().format("%Y-%m-%d %H:%M:%S"),
                     cpu_percent,
                     memory_kb
