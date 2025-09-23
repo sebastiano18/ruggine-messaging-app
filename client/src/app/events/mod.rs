@@ -514,32 +514,34 @@ impl EventDispatcher {
             }
 
             UiEvent::Opened(cid) => {
+                info!("Opening conversation: {}", cid);
+
                 state.cid = Some(cid);
                 state.page = Page::Chat;
 
-                // Carica cache se disponibile
-                if let Some(cached) = state.conversation_messages.get(&cid) {
-                    state.messages = if cached.is_empty() { vec![] } else { cached.clone() };
+                // Resetta lo stato dei messaggi
+                state.messages.clear();
+                state.is_loading_more = false;
 
-                    // Aggiorna la sequence della chat con l'ultimo messaggio
+                // Inizializza has_more_messages per questa conversazione
+                state.has_more_messages.insert(cid, true);
+
+                // Inizializza le sequence per questa conversazione
+                state.conversation_sequences.entry(cid).or_insert(0);
+                state.conversation_sequences_confirmed.entry(cid).or_insert(0);
+
+                // IMPORTANTE: Carica dalla cache se disponibile
+                if let Some(cached) = state.conversation_messages.get(&cid) {
+                    state.messages = cached.clone();
+
+                    // Aggiorna sequence dall'ultimo messaggio cached
                     if let Some(max_seq) = cached.iter().filter_map(|m| m.sequence_num).max() {
                         state.conversation_sequences.insert(cid, max_seq);
                         state.conversation_sequences_confirmed.insert(cid, max_seq);
-                    } else {
-                        // AGGIUNGI: Se non ci sono sequence nei messaggi cached, inizializza a 0
-                        state.conversation_sequences.entry(cid).or_insert(0);
-                        state.conversation_sequences_confirmed.entry(cid).or_insert(0);
                     }
-                } else {
-                    state.messages.clear();
 
-                    // AGGIUNGI: Inizializza la sequence a 0 quando non c'è cache
-                    state.conversation_sequences.insert(cid, 0);
-                    state.conversation_sequences_confirmed.insert(cid, 0);
+                    info!("Loaded {} messages from cache for conversation {}", cached.len(), cid);
                 }
-
-                state.is_loading_more = false;
-                state.has_more_messages.insert(cid, true);
             }
 
 
