@@ -159,7 +159,19 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
     let author_username = value.get("author_username")?.as_str()?.to_string();
     let content = value.get("content")?.as_str()?.to_string();
     let created_at = value.get("created_at")?.as_i64()?;
-    let sequence_num = value.get("sequence_num").and_then(|s| s.as_u64());
+    let sequence_num = value.get("sequence_num")
+        .or_else(|| value.get("sequence"))  // Supporta entrambi i nomi
+        .and_then(|s| s.as_u64());
+
+    // IMPORTANTE: Estrai client_msg_id se presente
+    let client_msg_id = value.get("client_msg_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // LOG per debug
+    if client_msg_id.is_some() {
+        info!("Parsed message {} with client_msg_id: {:?}", id, client_msg_id);
+    }
 
     Some(MessageDto {
         id,
@@ -169,7 +181,7 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
         content,
         created_at,
         sequence_num,
-        client_msg_id: None,
+        client_msg_id,  // ASSICURATI CHE SIA QUI
         is_confirmed: Some(true),
     })
 }

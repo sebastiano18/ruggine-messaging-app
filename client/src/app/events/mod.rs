@@ -398,104 +398,168 @@ impl EventDispatcher {
                 conversation_id,
                 messages,
             } => {
-                info!(
-                    "Processing {} resumed messages for {}",
-                    messages.len(),
-                    conversation_id
-                );
+                info!("Processing {} resumed messages for {}", messages.len(), conversation_id);
+
+                // LOG dettagliato dei messaggi ottimistici attuali nell'UI
+                info!("Current UI messages for conversation {}:", conversation_id);
+                if state.cid == Some(conversation_id) {
+                    for (idx, msg) in state.messages.iter().enumerate() {
+                        info!("  UI[{}]: id={}, client_msg_id={:?}, content_preview={}...",
+                  idx, msg.id, msg.client_msg_id,
+                  msg.content.chars().take(20).collect::<String>());
+                    }
+                }
+
+                // LOG dettagliato dei pending confirmations
+                info!("Current pending confirmations:");
+                for (client_id, pending_msg) in &state.pending_confirmations {
+                    info!("  Pending: client_id={}, msg_id={}, conv_id={}, content_preview={}...",
+              client_id, pending_msg.id, pending_msg.conversation_id,
+              pending_msg.content.chars().take(20).collect::<String>());
+                }
+
+                // LOG dettagliato dei messaggi in arrivo dal resume
+                info!("Incoming resume messages:");
+                for (idx, msg) in messages.iter().enumerate() {
+                    info!("  Resume[{}]: id={}, client_msg_id={:?}, content_preview={}...",
+              idx, msg.id, msg.client_msg_id,
+              msg.content.chars().take(20).collect::<String>());
+                }
 
                 state.is_recovering_messages.insert(conversation_id, false);
                 state.pending_resume_requests = state.pending_resume_requests.saturating_sub(1);
 
-                // Raccogli tutti gli ID dei messaggi esistenti (cache + UI)
+                // Aggiorna le sequenze
+                if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
+                    state.conversation_sequences.insert(conversation_id, max_seq);
+                    state.conversation_sequences_confirmed.insert(conversation_id, max_seq);
+                    info!("Updated conversation {} sequences to {}", conversation_id, max_seq);
+                }
+
+                // Raccogli ID esistenti
                 let mut existing_ids = std::collections::HashSet::new();
 
-                // ID dalla cache
                 if let Some(cache) = state.conversation_messages.get(&conversation_id) {
                     for msg in cache {
                         existing_ids.insert(msg.id);
                     }
                 }
 
-                // ID dall'UI se è la conversazione corrente
                 if state.cid == Some(conversation_id) {
                     for msg in &state.messages {
                         existing_ids.insert(msg.id);
                     }
                 }
 
-                // Filtra solo i messaggi veramente nuovi
-                let truly_new_messages: Vec<MessageDto> = messages
-                    .into_iter()
-                    .filter(|msg| !existing_ids.contains(&msg.id))
-                    .collect();
+                let mut pending_to_remove = Vec::new();
+                let mut optimistic_to_remove = Vec::new();
+                let mut truly_new_messages = Vec::new();
+
+                for new_msg in messages {
+                    info!("Processing resume message id={}, client_msg_id={:?}", new_msg.id, new_msg.client_msg_id);
+
+                    // Check se già esiste per server ID
+                    if existing_ids.contains(&new_msg.id) {
+                        info!("  -> Message {} already exists by server ID, skipping", new_msg.id);
+                        continue;
+                    }
+
+                    let mut should_add = true;
+
+                    // Se ha un client_msg_id, cerca di matchare con pending
+                    if let Some(ref server_client_id) = new_msg.client_msg_id {
+                        info!("  -> Checking for pending with client_id: {}", server_client_id);
+
+                        // Cerca nei pending confirmations
+                        if let Some(pending_msg) = state.pending_confirmations.get(server_client_id) {
+                            info!("    FOUND in pending! Pending msg_id={}, will replace with server msg",
+                      pending_msg.id);
+                            pending_to_remove.push(server_client_id.clone());
+                            optimistic_to_remove.push((pending_msg.id, server_client_id.clone()));
+                            // Non serve aggiungere, sostituiremo l'ottimistico
+                        } else {
+                            info!("    NOT found in pending confirmations");
+
+                            // Cerca direttamente nei messaggi UI per client_msg_id
+                            if state.cid == Some(conversation_id) {
+                                for ui_msg in &state.messages {
+                                    if ui_msg.client_msg_id.as_ref() == Some(server_client_id) {
+                                        info!("    FOUND in UI messages! UI msg_id={}, will replace", ui_msg.id);
+                                        optimistic_to_remove.push((ui_msg.id, server_client_id.clone()));
+                                        should_add = true; // Dobbiamo aggiungere il messaggio del server
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        info!("  -> No client_msg_id, will add as new message");
+                    }
+
+                    if should_add {
+                        truly_new_messages.push(new_msg);
+                    }
+                }
+
+                // Rimuovi i pending confirmations
+                for client_id in &pending_to_remove {
+                    if let Some(removed) = state.pending_confirmations.remove(client_id) {
+                        info!("Removed pending confirmation for client_id={}", client_id);
+                    }
+                }
+
+                // Rimuovi i messaggi ottimistici dall'UI e dalla cache
+                for (optimistic_id, client_id) in &optimistic_to_remove {
+                    info!("Removing optimistic message id={} with client_id={}", optimistic_id, client_id);
+
+                    // Rimuovi dall'UI
+                    if state.cid == Some(conversation_id) {
+                        let before = state.messages.len();
+                        state.messages.retain(|m| {
+                            // Rimuovi per ID ottimistico O per client_msg_id
+                            !(m.id == *optimistic_id || m.client_msg_id.as_ref() == Some(client_id))
+                        });
+                        let after = state.messages.len();
+                        info!("  Removed {} messages from UI", before - after);
+                    }
+
+                    // Rimuovi dalla cache
+                    if let Some(cache) = state.conversation_messages.get_mut(&conversation_id) {
+                        let before = cache.len();
+                        cache.retain(|m| {
+                            !(m.id == *optimistic_id || m.client_msg_id.as_ref() == Some(client_id))
+                        });
+                        let after = cache.len();
+                        info!("  Removed {} messages from cache", before - after);
+                    }
+                }
 
                 if truly_new_messages.is_empty() {
-                    debug!("All resumed messages already exist, skipping");
+                    info!("No new messages to add after deduplication");
                     return;
                 }
 
-                info!(
-                    "Adding {} truly new messages from resume",
-                    truly_new_messages.len()
-                );
+                info!("Adding {} truly new messages", truly_new_messages.len());
 
-                // Aggiorna cache con i nuovi messaggi
-                {
-                    let cache = state
-                        .conversation_messages
-                        .entry(conversation_id)
-                        .or_insert_with(Vec::new);
-
+                // Aggiungi i nuovi messaggi
+                if let Some(cache) = state.conversation_messages.get_mut(&conversation_id) {
                     cache.extend(truly_new_messages.clone());
-
-                    // Riordina per sequence
                     cache.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
                         (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
                         _ => a.created_at.cmp(&b.created_at),
                     });
+                } else {
+                    state.conversation_messages.insert(conversation_id, truly_new_messages.clone());
                 }
 
-                // Aggiorna sequence
-                let max_resumed_seq = truly_new_messages
-                    .iter()
-                    .filter_map(|m| m.sequence_num)
-                    .max()
-                    .unwrap_or(0);
-
-                if max_resumed_seq > 0 {
-                    let current_seq = state
-                        .conversation_sequences
-                        .get(&conversation_id)
-                        .copied()
-                        .unwrap_or(0);
-
-                    if max_resumed_seq > current_seq {
-                        state
-                            .conversation_sequences
-                            .insert(conversation_id, max_resumed_seq);
-                        state
-                            .conversation_sequences_confirmed
-                            .insert(conversation_id, max_resumed_seq);
-                        debug!(
-                            "Updated conversation {} sequence to {} after resume",
-                            conversation_id, max_resumed_seq
-                        );
-                    }
-                }
-
-                // Aggiorna UI se è la conversazione corrente
                 if state.cid == Some(conversation_id) {
-                    // Aggiungi solo i nuovi messaggi all'UI
                     state.messages.extend(truly_new_messages);
+                    state.messages.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
+                    });
 
-                    // Riordina
-                    state
-                        .messages
-                        .sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
-                            (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
-                            _ => a.created_at.cmp(&b.created_at),
-                        });
+                    info!("Final UI message count: {}", state.messages.len());
                 }
             }
 
@@ -1092,25 +1156,51 @@ impl EventDispatcher {
     ) {
         info!("Processing confirmation for msg {}", client_msg_id);
 
+        // Prima controlla se il messaggio è già stato ricevuto via resume
+        let already_exists = state.messages.iter().any(|m| m.id == server_msg_id);
+
+        if already_exists {
+            // Il messaggio è già arrivato via resume, rimuovi solo l'ottimistico se ancora presente
+            state.messages.retain(|m| m.client_msg_id.as_ref() != Some(&client_msg_id));
+            state.pending_confirmations.remove(&client_msg_id);
+
+            // Aggiorna anche nella cache
+            if let Some(cid) = state.cid {
+                if let Some(cache) = state.conversation_messages.get_mut(&cid) {
+                    cache.retain(|m| m.client_msg_id.as_ref() != Some(&client_msg_id));
+                }
+            }
+
+            info!("Message {} already received via resume, cleaned optimistic", server_msg_id);
+            return;
+        }
+
         // Trova e aggiorna il messaggio pending
         if let Some(mut pending_msg) = state.pending_confirmations.remove(&client_msg_id) {
             let old_id = pending_msg.id;
-            let conversation_id = pending_msg.conversation_id; // Salva per uso successivo
+            let conversation_id = pending_msg.conversation_id;
 
             // Aggiorna nei messaggi UI
+            let mut updated = false;
             for msg in &mut state.messages {
                 if msg.client_msg_id.as_ref() == Some(&client_msg_id) {
                     msg.id = server_msg_id;
                     msg.sequence_num = sequence;
                     msg.is_confirmed = Some(true);
+                    updated = true;
                     debug!("Updated UI msg {} -> {}", old_id, server_msg_id);
                     break;
                 }
             }
 
+            // Se non trovato nell'UI, potrebbe essere stato già processato via resume
+            if !updated {
+                debug!("Message {} not found in UI, likely processed via resume", client_msg_id);
+                return;
+            }
+
             // Aggiorna nella cache
             if let Some(cache) = state.conversation_messages.get_mut(&conversation_id) {
-                // Prima aggiorna il messaggio
                 for msg in cache.iter_mut() {
                     if msg.client_msg_id.as_ref() == Some(&client_msg_id) {
                         msg.id = server_msg_id;
@@ -1120,7 +1210,7 @@ impl EventDispatcher {
                     }
                 }
 
-                // Poi riordina se necessario
+                // Riordina se necessario
                 if sequence.is_some() {
                     cache.sort_by(|a, b| {
                         match (a.sequence_num, b.sequence_num) {
@@ -1136,7 +1226,7 @@ impl EventDispatcher {
                 state.update_conversation_sequence(conversation_id, seq);
             }
 
-            info!("Message confirmed: {} -> {} (seq: {:?})", 
+            info!("Message confirmed: {} -> {} (seq: {:?})",
               client_msg_id, server_msg_id, sequence);
         } else {
             warn!("Received confirmation for unknown message: {}", client_msg_id);
