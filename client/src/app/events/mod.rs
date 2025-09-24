@@ -879,18 +879,139 @@ impl EventDispatcher {
                             }
                         }
                     }
-                    "conversation_created" => {
-                        if let Some(cid) = conversation_id {
-                            info!("New conversation created: {}, fetching with messages", cid);
+                    // Nella sezione UserNotification, aggiungi questo case:
 
-                            let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
-                                cid,
-                                "new_conversation_created".to_string(),
-                            ));
+                    "conversation_created_complete" => {
+                        info!("Processing conversation_created_complete with sequence {}", sequence);
 
-                            if state.dm_stubs.contains_key(&cid) {
-                                state.remove_dm_stub(cid);
+                        // Estrai la conversazione completa dai dati
+                        if let Some(conv_obj) = event_data.get("conversation") {
+                            // Parse della conversazione
+                            let id = conv_obj.get("id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| Uuid::parse_str(s).ok())
+                                .unwrap_or_else(|| {
+                                    warn!("Invalid conversation ID in conversation_created_complete");
+                                    Uuid::nil()
+                                });
+
+                            if id == Uuid::nil() {
+                                return; // Skip invalid conversation
                             }
+
+                            let kind = conv_obj.get("kind")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            let owner_id = conv_obj.get("owner_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| Uuid::parse_str(s).ok())
+                                .unwrap_or_else(|| Uuid::nil());
+
+                            let created_at = conv_obj.get("created_at")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+
+                            // Usa display_title se presente, altrimenti title
+                            let title = conv_obj.get("display_title")
+                                .and_then(|t| t.as_str())
+                                .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
+                                .unwrap_or("")
+                                .to_string();
+
+                            let conversation = ConversationDto {
+                                id,
+                                kind,
+                                title,
+                                owner_id,
+                                created_at,
+                            };
+
+                            // Parse dell'ultimo messaggio se presente
+                            let mut messages = Vec::new();
+                            if let Some(last_msg) = conv_obj.get("last_message") {
+                                let msg_id = last_msg.get("id")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| Uuid::parse_str(s).ok())
+                                    .unwrap_or_else(|| Uuid::new_v4());
+
+                                let msg_author_id = last_msg.get("author_id")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| Uuid::parse_str(s).ok())
+                                    .unwrap_or_else(|| Uuid::nil());
+
+                                let msg_author_username = last_msg.get("author_username")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+
+                                let msg_content = last_msg.get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                let msg_created_at = last_msg.get("created_at")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+
+                                let msg_sequence = last_msg.get("sequence_num")
+                                    .and_then(|v| v.as_u64());
+
+                                messages.push(MessageDto {
+                                    id: msg_id,
+                                    author_id: msg_author_id,
+                                    author_username: msg_author_username,
+                                    conversation_id: id,
+                                    content: msg_content,
+                                    created_at: msg_created_at,
+                                    sequence_num: msg_sequence,
+                                });
+                            }
+
+                            // Rimuovi eventuali DM stub
+                            if state.dm_stubs.contains_key(&id) {
+                                state.remove_dm_stub(id);
+                                info!("Removed DM stub {} after receiving complete conversation", id);
+                            }
+
+                            // Aggiungi la conversazione
+                            if let Some(ref mut conversations) = state.conversations {
+                                conversations.retain(|c| c.id != id); // Rimuovi duplicati
+                                conversations.push(conversation.clone());
+                                conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                            } else {
+                                state.conversations = Some(vec![conversation.clone()]);
+                            }
+
+                            // Aggiungi messaggi alla cache
+                            if !messages.is_empty() {
+                                state.conversation_messages.insert(id, messages.clone());
+
+                                // Se è la conversazione corrente, aggiorna UI
+                                if state.cid == Some(id) {
+                                    state.messages = messages;
+                                }
+                            }
+
+                            // Se siamo in chat view con questa conversazione, assicurati che sia selezionata
+                            if state.page == Page::Chat && (state.cid == Some(id) || state.cid.is_none()) {
+                                state.cid = Some(id);
+                                state.conv_title = conversation.title.clone();
+
+                                if let Some(cached) = state.conversation_messages.get(&id) {
+                                    state.messages = cached.clone();
+                                }
+                            }
+
+                            helpers::add_system_message(
+                                state,
+                                format!("Nuova conversazione '{}' creata e sincronizzata", conversation.title)
+                            );
+
+                            info!("Successfully processed conversation_created_complete for {}", id);
+                        } else {
+                            warn!("conversation_created_complete missing conversation object");
                         }
                     }
                     _ => {

@@ -35,6 +35,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "chat_message" => handle_chat_message(tx, &parsed_value),
         "initial_state" => handle_initial_state(tx, &parsed_value),
         "conversation_messages" => handle_conversation_messages(tx, &parsed_value),
+        "conversation_created_complete" => handle_conversation_created_complete(tx, &parsed_value),
         "pong" => handle_simple_pong(tx, &parsed_value),
         "pong_with_sequences" => handle_enhanced_pong(tx, &parsed_value),
         "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value),
@@ -55,6 +56,90 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     }
 }
 
+/// Handle conversation_created_complete con tutti i dati
+fn handle_conversation_created_complete(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    // Estrai la sequenza dell'evento se presente
+    let sequence = value.get("sequence")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0);
+
+    // Estrai i dati della conversazione
+    let conversation_opt = value.get("conversation").and_then(|conv_obj| {
+        let id = parse_uuid_field(conv_obj, "id")?;
+        let kind = conv_obj.get("kind")?.as_str()?.to_string();
+        let owner_id = parse_uuid_field(conv_obj, "owner_id")?;
+        let created_at = conv_obj.get("created_at")?.as_i64()?;
+
+        // Usa display_title per DM, altrimenti usa title normale
+        let title = conv_obj.get("display_title")
+            .and_then(|t| t.as_str())
+            .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
+            .unwrap_or("")
+            .to_string();
+
+        Some(ConversationDto {
+            id,
+            kind,
+            title,
+            owner_id,
+            created_at,
+        })
+    });
+
+    let conversation = match conversation_opt {
+        Some(c) => c,
+        None => {
+            warn!("conversation_created_complete missing valid conversation object");
+            return;
+        }
+    };
+
+    info!("Received complete conversation: {} ({}) - seq: {}", 
+          conversation.id, conversation.title, sequence);
+
+    // Se ha una sequenza, usa il sistema di notifiche per aggiornare le sequenze
+    if sequence > 0 {
+        let _ = tx.send(UiEvent::UserNotification {
+            sequence,
+            event_type: "conversation_created_complete".to_string(),
+            event_data: value.clone(),
+            conversation_id: Some(conversation.id),
+            recovery: false,
+        });
+    } else {
+        // Altrimenti gestisci direttamente
+        // Estrai messaggi se presenti
+        let mut messages = Vec::new();
+        if let Some(last_msg) = value.get("conversation").and_then(|c| c.get("last_message")) {
+            if let Some(msg) = parse_message_from_json(last_msg, conversation.id) {
+                messages.push(msg);
+            }
+        }
+
+        let _ = tx.send(UiEvent::ConversationCompleteFetched(conversation, messages));
+    }
+}
+
+/// Helper per parsare un messaggio da JSON
+fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<MessageDto> {
+    let id = parse_uuid_field(value, "id")?;
+    let author_id = parse_uuid_field(value, "author_id")?;
+    let author_username = value.get("author_username")?.as_str()?.to_string();
+    let content = value.get("content")?.as_str()?.to_string();
+    let created_at = value.get("created_at")?.as_i64()?;
+    let sequence_num = value.get("sequence_num").and_then(|s| s.as_u64());
+
+    Some(MessageDto {
+        id,
+        author_id,
+        author_username,
+        conversation_id,
+        content,
+        created_at,
+        sequence_num,
+    })
+}
+
 /// Handle initial state from server
 fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     // Estrai conversazioni
@@ -68,7 +153,6 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                     let owner_id = parse_uuid_field(conv, "owner_id")?;
                     let created_at = conv.get("created_at")?.as_i64()?;
 
-                    // title può essere null per DM
                     let title = conv.get("title")
                         .and_then(|t| t.as_str())
                         .unwrap_or("")
@@ -93,7 +177,6 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
     info!("Received initial state with {} conversations, user_seq: {}",
           conversations.len(), user_sequence);
 
-    // Invia le conversazioni al sistema eventi
     let _ = tx.send(UiEvent::InitialStateReceived {
         conversations,
         user_sequence,
@@ -112,7 +195,6 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
 }
 
 /// Process last message from conversation
-/// Process last message from conversation
 fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conversation_id: Uuid, msg: &Value) {
     let content = msg.get("content")
         .and_then(|c| c.as_str())
@@ -124,7 +206,6 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         .unwrap_or("unknown")
         .to_string();
 
-    // IMPORTANTE: Estrai anche l'author_id!
     let author_id = msg.get("author_id")
         .and_then(|id| id.as_str())
         .and_then(|id_str| Uuid::parse_str(id_str).ok())
@@ -144,10 +225,9 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
            author_username,
            author_id);
 
-    // Crea un MessageDto con l'author_id corretto
     let last_msg_dto = MessageDto {
         id: Uuid::new_v4(),
-        author_id, // USA L'AUTHOR_ID REALE!
+        author_id,
         author_username,
         conversation_id,
         content,
@@ -155,7 +235,6 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         sequence_num,
     };
 
-    // Invia come evento LastMessageUpdate
     let _ = tx.send(UiEvent::LastMessageUpdate {
         conversation_id,
         message: last_msg_dto,
@@ -176,24 +255,7 @@ fn handle_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|msg| {
-                    let id = parse_uuid_field(msg, "id")?;
-                    let author_id = parse_uuid_field(msg, "author_id")?;
-                    let author_username = msg.get("author_username")?.as_str()?.to_string();
-                    let content = msg.get("content")?.as_str()?.to_string();
-                    let created_at = msg.get("created_at")?.as_i64()?;
-                    let sequence_num = msg.get("sequence_num").and_then(|s| s.as_i64()).map(|s| s as u64);
-
-                    Some(MessageDto {
-                        id,
-                        author_id,
-                        author_username,
-                        conversation_id,
-                        content,
-                        created_at,
-                        sequence_num,
-                    })
-                })
+                .filter_map(|msg| parse_message_from_json(msg, conversation_id))
                 .collect()
         })
         .unwrap_or_default();
@@ -205,7 +267,6 @@ fn handle_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     info!("Received {} messages for conversation {} (has_more: {})",
           messages.len(), conversation_id, has_more);
 
-    // Invia i messaggi al sistema eventi
     let _ = tx.send(UiEvent::ConversationMessagesReceived {
         conversation_id,
         messages,
@@ -225,7 +286,6 @@ fn handle_simple_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &
 
     debug!("Simple pong received - user_seq: {}, message: {}", current_user_sequence, message);
 
-    // Converti in formato enhanced per uniformità
     let _ = tx.send(UiEvent::EnhancedPongReceived {
         current_user_sequence,
         conversation_sequences: None,
@@ -233,59 +293,6 @@ fn handle_simple_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &
         user_events_gap: None,
         message_gap: None,
     });
-}
-
-/// Handle server heartbeat
-fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let user_id = value.get("user_id")
-        .and_then(|u| u.as_str())
-        .unwrap_or("unknown");
-
-    let timestamp = value.get("timestamp")
-        .and_then(|t| t.as_i64())
-        .unwrap_or(0);
-
-    debug!("Server heartbeat received - user: {}, timestamp: {}", user_id, timestamp);
-}
-
-/// Handle user channel ready notification
-fn handle_user_channel_ready(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let user_id = value.get("user_id")
-        .and_then(|u| u.as_str())
-        .unwrap_or("unknown");
-
-    info!("User channel ready notification received for user {}", user_id);
-}
-
-/// Handle fetch conversation messages event
-fn handle_fetch_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let conversation_id = match parse_conversation_id(value) {
-        Some(id) => id,
-        None => {
-            warn!("Invalid conversation_id in fetch_conversation_messages event");
-            return;
-        }
-    };
-
-    let message_count = value.get("message_count")
-        .and_then(|c| c.as_i64())
-        .unwrap_or(0);
-
-    let current_sequence = value.get("current_sequence")
-        .and_then(|s| s.as_i64())
-        .unwrap_or(0);
-
-    let reason = value.get("reason")
-        .and_then(|r| r.as_str())
-        .unwrap_or("unknown");
-
-    info!("Fetch event for conversation {} ({} messages, seq: {}, reason: {})",
-          conversation_id, message_count, current_sequence, reason);
-
-    let _ = tx.send(UiEvent::TriggerConversationFetch(
-        conversation_id,
-        format!("fetch_event_{}", reason)
-    ));
 }
 
 /// Handle enhanced pong with sequences
@@ -323,6 +330,8 @@ fn handle_enhanced_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
     });
 }
 
+// ... resto delle funzioni helper rimangono identiche ...
+
 fn parse_gap_info(value: &Value) -> Option<GapInfo> {
     let detected = value.get("detected")?.as_bool()?;
     let client_seq = value.get("client_seq")?.as_u64()?;
@@ -337,7 +346,56 @@ fn parse_gap_info(value: &Value) -> Option<GapInfo> {
     })
 }
 
-/// Handle user events resume
+fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let user_id = value.get("user_id")
+        .and_then(|u| u.as_str())
+        .unwrap_or("unknown");
+
+    let timestamp = value.get("timestamp")
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+
+    debug!("Server heartbeat received - user: {}, timestamp: {}", user_id, timestamp);
+}
+
+fn handle_user_channel_ready(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let user_id = value.get("user_id")
+        .and_then(|u| u.as_str())
+        .unwrap_or("unknown");
+
+    info!("User channel ready notification received for user {}", user_id);
+}
+
+fn handle_fetch_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let conversation_id = match parse_conversation_id(value) {
+        Some(id) => id,
+        None => {
+            warn!("Invalid conversation_id in fetch_conversation_messages event");
+            return;
+        }
+    };
+
+    let message_count = value.get("message_count")
+        .and_then(|c| c.as_i64())
+        .unwrap_or(0);
+
+    let current_sequence = value.get("current_sequence")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+
+    let reason = value.get("reason")
+        .and_then(|r| r.as_str())
+        .unwrap_or("unknown");
+
+    info!("Fetch event for conversation {} ({} messages, seq: {}, reason: {})",
+          conversation_id, message_count, current_sequence, reason);
+
+    let _ = tx.send(UiEvent::TriggerConversationFetch(
+        conversation_id,
+        format!("fetch_event_{}", reason)
+    ));
+}
+
 fn handle_user_events_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let events = value.get("events")
         .and_then(|e| e.as_array())
@@ -369,7 +427,6 @@ fn handle_user_events_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, v
     let _ = tx.send(UiEvent::UserEventsResume { events });
 }
 
-/// Handle messages resume
 fn handle_messages_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let conversation_id = match value.get("conversation_id")
         .and_then(|c| c.as_str())
@@ -385,24 +442,7 @@ fn handle_messages_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, valu
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|msg| {
-                    let id = parse_uuid_field(msg, "id")?;
-                    let author_id = parse_uuid_field(msg, "author_id")?;
-                    let author_username = msg.get("author_username")?.as_str()?.to_string();
-                    let content = msg.get("content")?.as_str()?.to_string();
-                    let created_at = msg.get("created_at")?.as_i64()?;
-                    let sequence_num = msg.get("sequence_num").and_then(|s| s.as_u64());
-
-                    Some(MessageDto {
-                        id,
-                        author_id,
-                        author_username,
-                        conversation_id,
-                        content,
-                        created_at,
-                        sequence_num,
-                    })
-                })
+                .filter_map(|msg| parse_message_from_json(msg, conversation_id))
                 .collect()
         })
         .unwrap_or_default();
@@ -413,7 +453,6 @@ fn handle_messages_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, valu
     let _ = tx.send(UiEvent::MessagesResume { conversation_id, messages });
 }
 
-/// Handle resume complete notifications
 fn handle_resume_complete(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value, resume_type: &str) {
     let from_sequence = value.get("from_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
     let current_sequence = value.get("current_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
@@ -430,7 +469,6 @@ fn handle_resume_complete(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, valu
     }
 }
 
-/// Handle chat messages with sequence
 fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let id = match parse_uuid_field(value, "id") {
         Some(id) => id,
@@ -490,7 +528,6 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
     let _ = tx.send(UiEvent::WsIncoming(dto));
 }
 
-/// Handle conversation created events
 fn handle_conversation_created(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let conversation_id = match parse_conversation_id(value) {
         Some(id) => id,
@@ -544,20 +581,6 @@ fn handle_server_warning(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value
     let _ = tx.send(UiEvent::Info(format!("Attenzione: {}", warning_msg)));
 }
 
-// Utility functions
-fn parse_uuid_field(value: &Value, field_name: &str) -> Option<Uuid> {
-    value.get(field_name)
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok())
-}
-
-fn parse_conversation_id(value: &Value) -> Option<Uuid> {
-    value.get("conversation_id")
-        .or_else(|| value.get("cid"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok())
-}
-
 fn handle_conversation_deleted(
     tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
     value: &Value,
@@ -570,11 +593,24 @@ fn handle_conversation_deleted(
     match cid_opt {
         Some(conversation_id) => {
             debug!("Handling conversation_deleted for {}", conversation_id);
-
             let _ = tx.send(UiEvent::ConversationDeleted(conversation_id));
         }
         None => {
             warn!("conversation_deleted without valid conversation_id: {:?}", value);
         }
     }
+}
+
+// Utility functions
+fn parse_uuid_field(value: &Value, field_name: &str) -> Option<Uuid> {
+    value.get(field_name)
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+fn parse_conversation_id(value: &Value) -> Option<Uuid> {
+    value.get("conversation_id")
+        .or_else(|| value.get("cid"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
 }
