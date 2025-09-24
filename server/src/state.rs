@@ -637,28 +637,58 @@ impl AppState {
         events: Vec<UserEvent>,
         out_tx: &mpsc::Sender<OutboundMsg>,
     ) -> Result<()> {
-        let resume_msg = json!({
-            "type": "user_events_resume",
-            "events": events.iter().map(|e| {
-                let mut event = e.event_data.clone();
-                event["sequence"] = json!(e.sequence);
-                event["event_type"] = json!(&e.event_type);
-                event["created_at"] = json!(e.created_at);
-                if let Some(conv_id) = e.conversation_id {
-                    event["conversation_id"] = json!(conv_id);
+        // NUOVO: Prepara gli eventi con last_message aggiornato
+        let mut enriched_events = Vec::new();
+
+        for e in events {
+            let mut event = e.event_data.clone();
+
+            // Se è un evento conversation_created_complete, aggiorna last_message
+            if e.event_type == "conversation_created_complete" {
+                if let Some(conv_data) = event.get("conversation").and_then(|c| c.as_object()) {
+                    if let Some(conv_id_value) = conv_data.get("id") {
+                        if let Some(conv_id_str) = conv_id_value.as_str() {
+                            if let Ok(conv_id) = Uuid::parse_str(conv_id_str) {
+                                // Recupera l'ultimo messaggio attuale per questa conversazione
+                                if let Ok(last_msg) = self.get_latest_message_for_conversation(conv_id).await {
+                                    if let Some(msg_data) = last_msg {
+                                        // Aggiorna il last_message nell'evento
+                                        if let Some(conversation) = event.get_mut("conversation") {
+                                            conversation["last_message"] = msg_data;
+                                            debug!("Updated last_message for conversation {} in resume", conv_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                event
-            }).collect::<Vec<_>>(),
-            "count": events.len(),
-            "timestamp": chrono::Utc::now().timestamp()
-        });
+            }
+
+            // Aggiungi i metadati standard
+            event["sequence"] = json!(e.sequence);
+            event["event_type"] = json!(&e.event_type);
+            event["created_at"] = json!(e.created_at);
+            if let Some(conv_id) = e.conversation_id {
+                event["conversation_id"] = json!(conv_id);
+            }
+
+            enriched_events.push(event);
+        }
+
+        let resume_msg = json!({
+        "type": "user_events_resume",
+        "events": enriched_events,
+        "count": enriched_events.len(),
+        "timestamp": chrono::Utc::now().timestamp()
+    });
 
         if let Ok(txt) = serde_json::to_string(&resume_msg) {
             out_tx.send(OutboundMsg::Text(txt)).await
                 .map_err(|e| AppError::Internal(format!("Failed to send user events resume: {}", e)))?;
         }
 
-        info!("Sent {} user events in resume to user {}", events.len(), user_id);
+        info!("Sent {} user events in resume to user {}", enriched_events.len(), user_id);
         Ok(())
     }
 
@@ -808,5 +838,56 @@ impl AppState {
         }
         info!("Sent conversation creation notification to {} total receivers", total_notified);
         total_notified
+    }
+
+    // Aggiungi questo metodo helper dopo gli altri metodi in AppState
+    async fn get_latest_message_for_conversation(&self, conversation_id: Uuid) -> Result<Option<Value>> {
+        let conv_id_str = conversation_id.to_string();
+
+        let query = r#"
+        SELECT 
+            m.id,
+            m.author_id,
+            u.username as author_username,
+            m.content,
+            m.created_at,
+            m.sequence_num
+        FROM messages m
+        INNER JOIN users u ON m.author_id = u.id
+        WHERE m.conversation_id = ?
+        ORDER BY m.created_at DESC
+        LIMIT 1
+    "#;
+
+        let row = sqlx::query(query)
+            .bind(&conv_id_str)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        if let Some(row) = row {
+            let mut message = json!({
+            "id": row.try_get::<String, _>("id").unwrap_or_default(),
+            "author_id": row.try_get::<String, _>("author_id").unwrap_or_default(),
+            "author_username": row.try_get::<String, _>("author_username").unwrap_or_default(),
+            "content": row.try_get::<String, _>("content").unwrap_or_default(),
+            "created_at": row.try_get::<i64, _>("created_at").unwrap_or(0)
+        });
+
+            if let Ok(Some(seq)) = row.try_get::<Option<i64>, _>("sequence_num") {
+                message["sequence_num"] = json!(seq);
+            }
+
+            // Aggiungi client_msg_id se presente in cache
+            if let Ok(msg_id) = Uuid::parse_str(&row.try_get::<String, _>("id").unwrap_or_default()) {
+                if let Some(client_id) = self.message_confirmation_cache.get(&msg_id).await {
+                    message["client_msg_id"] = json!(client_id);
+                }
+            }
+
+            Ok(Some(message))
+        } else {
+            Ok(None)
+        }
     }
 }
