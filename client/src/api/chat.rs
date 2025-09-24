@@ -3,7 +3,6 @@ use reqwest::Client;
 use uuid::Uuid;
 use crate::models::{MessageDto, MessageResponse, SendMsgReq};
 
-
 pub async fn get_messages(base: &str, token: &str, cid: Uuid) -> Result<Vec<MessageDto>> {
     let response_messages = Client::new()
         .get(format!("{base}/api/conversations/{cid}/messages"))
@@ -28,6 +27,8 @@ pub async fn get_messages(base: &str, token: &str, cid: Uuid) -> Result<Vec<Mess
                 content: msg.content,
                 created_at: msg.created_at,
                 sequence_num: msg.sequence_num.map(|s| s as u64),
+                client_msg_id: None,
+                is_confirmed: Some(true),
             })
         })
         .collect();
@@ -81,6 +82,8 @@ pub async fn get_messages_paginated(
                 content: msg.content,
                 created_at: msg.created_at,
                 sequence_num: msg.sequence_num.map(|s| s as u64),
+                client_msg_id: None,
+                is_confirmed: Some(true),
             })
         })
         .collect();
@@ -141,6 +144,8 @@ pub async fn fetch_conversation_messages(
                 content: msg.content,
                 created_at: msg.created_at,
                 sequence_num: msg.sequence_num.map(|s| s as u64),
+                client_msg_id: None,
+                is_confirmed: Some(true),
             })
         })
         .collect();
@@ -206,6 +211,8 @@ pub async fn fetch_messages_by_sequence_range(
                 content: msg.content,
                 created_at: msg.created_at,
                 sequence_num: msg.sequence_num.map(|s| s as u64),
+                client_msg_id: None,
+                is_confirmed: Some(true),
             })
         })
         .collect();

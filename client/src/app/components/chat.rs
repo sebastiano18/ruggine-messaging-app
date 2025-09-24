@@ -234,7 +234,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
                 let icon = match conv.kind.as_str() {
                     "group" => "👥",
                     "dm" => "💬",
-                    _ => "👭",
+                    _ => "💭",
                 };
                 ui.label(format!("{} {}", icon, conv.title));
             } else if s.is_dm_stub(cid) {
@@ -339,7 +339,6 @@ fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
 }
 
 fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
-    // Usa allocate_space per un controllo preciso senza espansione
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
         egui::Layout::right_to_left(egui::Align::TOP),
@@ -367,7 +366,20 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
                         );
                         ui.add_space(3.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✔✔");
+                            // Stato conferma
+                            let status_icon = match message.is_confirmed {
+                                Some(true) => "✓✓",  // Confermato
+                                Some(false) => "✓",   // Non confermato/in attesa
+                                None => "⏳",         // Sconosciuto/in invio
+                            };
+
+                            let status_color = match message.is_confirmed {
+                                Some(true) => egui::Color32::from_rgb(255, 220, 180),
+                                Some(false) => egui::Color32::from_rgb(255, 150, 100),
+                                None => egui::Color32::from_rgb(200, 200, 200),
+                            };
+
+                            ui.colored_label(status_color, status_icon);
                             ui.add_space(4.0);
                             let time = format_time(message.created_at);
                             ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
@@ -379,7 +391,6 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
 }
 
 fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {
-    // Usa allocate_space per un controllo preciso senza espansione
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
         egui::Layout::left_to_right(egui::Align::TOP),
@@ -437,17 +448,21 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
     }
     s.input.clear();
 
-    // Messaggio ottimistico (appare subito)
+    // Genera client_msg_id per tracking
+    let client_msg_id = Uuid::new_v4().to_string();
+
+    // Messaggio ottimistico con tracking
     if let Some(user_id) = s.user_id {
-        let optimistic_msg = MessageDto {
-            id: Uuid::new_v4(),
-            author_id: user_id,
-            conversation_id: cid,
-            author_username: s.username.clone(),
-            content: content.clone(),
-            created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None,
-        };
+        let optimistic_msg = MessageDto::optimistic_message(
+            user_id,
+            s.username.clone(),
+            cid,
+            content.clone(),
+            client_msg_id.clone(),
+        );
+
+        // Salva per tracking conferma
+        s.pending_confirmations.insert(client_msg_id.clone(), optimistic_msg.clone());
 
         s.messages.push(optimistic_msg.clone());
 
@@ -456,8 +471,8 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
         }
     }
 
-    // Usa WebSocket - PRIMA di rimuovere lo stub!
-    s.send_chat_message_ws(content);
+    // Usa WebSocket con client_msg_id
+    s.send_chat_message_ws(content, Some(client_msg_id));
 
     // DOPO l'invio, se era uno stub DM, convertilo in conversazione reale
     if s.dm_stubs.contains_key(&cid) {
