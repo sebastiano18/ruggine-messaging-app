@@ -1,9 +1,9 @@
-use crate::state::AppState;
 use crate::models::{Outgoing, UiEvent};
+use crate::state::AppState;
 use tracing::{debug, error, warn};
 
-use super::rate_limiter::RateLimiter;
 use super::connection_manager::ConnectionManager;
+use super::rate_limiter::RateLimiter;
 
 pub struct MessageProcessor;
 
@@ -13,11 +13,7 @@ impl MessageProcessor {
     }
 
     /// Processa tutti i messaggi in uscita
-    pub fn process_outgoing_messages(
-        &self,
-        state: &mut AppState,
-        rate_limiter: &mut RateLimiter
-    ) {
+    pub fn process_outgoing_messages(&self, state: &mut AppState, rate_limiter: &mut RateLimiter) {
         let mut processed_count = 0;
 
         // Rate limiting check
@@ -31,15 +27,20 @@ impl MessageProcessor {
 
             // Protezione anti-flooding
             if processed_count > 200 {
-                error!("Too many outgoing messages in queue ({}), stopping processing", processed_count);
+                error!(
+                    "Too many outgoing messages in queue ({}), stopping processing",
+                    processed_count
+                );
                 break;
             }
 
             if let Some(ref ws_ctrl) = state.ws_ctrl {
                 match self.format_outgoing_message(&outgoing) {
                     Ok(json_msg) => {
-                        debug!("Sending WebSocket message: {}",
-                               json_msg.chars().take(200).collect::<String>());
+                        debug!(
+                            "Sending WebSocket message: {}",
+                            json_msg.chars().take(200).collect::<String>()
+                        );
 
                         match ws_ctrl.outgoing_tx.send(json_msg) {
                             Ok(_) => {
@@ -47,7 +48,9 @@ impl MessageProcessor {
                             }
                             Err(e) => {
                                 error!("Failed to send WebSocket message: {}", e);
-                                let _ = state.ui_tx.send(UiEvent::Error("Connessione WebSocket persa".into()));
+                                let _ = state
+                                    .ui_tx
+                                    .send(UiEvent::Error("Connessione WebSocket persa".into()));
                                 break;
                             }
                         }
@@ -72,7 +75,12 @@ impl MessageProcessor {
     /// Formatta i messaggi in uscita
     fn format_outgoing_message(&self, outgoing: &Outgoing) -> Result<String, String> {
         let json_obj = match outgoing {
-            Outgoing::ChatMessage { cid, content, target_username } => {
+            Outgoing::ChatMessage {
+                cid,
+                content,
+                target_username,
+                client_msg_id,
+            } => {
                 if content.trim().is_empty() {
                     return Err("Empty message content".into());
                 }
@@ -94,6 +102,13 @@ impl MessageProcessor {
                 if let Some(ref username) = target_username {
                     json_obj["target_username"] = serde_json::Value::String(username.clone());
                 }
+
+                // Includi client_msg_id per tracking conferma
+                if let Some(ref msg_id) = client_msg_id {
+                    json_obj["client_msg_id"] = serde_json::Value::String(msg_id.clone());
+                    debug!("Including client_msg_id: {}", msg_id);
+                }
+
                 json_obj
             }
 
@@ -116,7 +131,11 @@ impl MessageProcessor {
                 })
             }
 
-            Outgoing::EnhancedPing { user_sequence, conversation_sequence, active_conversation_id } => {
+            Outgoing::EnhancedPing {
+                user_sequence,
+                conversation_sequence,
+                active_conversation_id,
+            } => {
                 // SEMPRE invia type: "ping"
                 let mut json_obj = serde_json::json!({
                     "type": "ping",
@@ -138,13 +157,18 @@ impl MessageProcessor {
                     json_obj["active_conversation_id"] = serde_json::json!(conv_id.to_string());
                 }
 
-                debug!("Formatted enhanced ping: user_seq={:?}, conv_seq={:?}, active_conv={:?}",
-                       user_sequence, conversation_sequence, active_conversation_id);
+                debug!(
+                    "Formatted enhanced ping: user_seq={:?}, conv_seq={:?}, active_conv={:?}",
+                    user_sequence, conversation_sequence, active_conversation_id
+                );
 
                 json_obj
             }
 
-            Outgoing::RequestUserResume { from_sequence, limit } => {
+            Outgoing::RequestUserResume {
+                from_sequence,
+                limit,
+            } => {
                 serde_json::json!({
                     "type": "request_user_resume",
                     "from_sequence": from_sequence,
@@ -152,7 +176,11 @@ impl MessageProcessor {
                 })
             }
 
-            Outgoing::RequestMessagesResume { conversation_id, from_sequence, limit } => {
+            Outgoing::RequestMessagesResume {
+                conversation_id,
+                from_sequence,
+                limit,
+            } => {
                 serde_json::json!({
                     "type": "request_messages_resume",
                     "conversation_id": conversation_id,
@@ -161,7 +189,10 @@ impl MessageProcessor {
                 })
             }
 
-            Outgoing::SequenceAck { user_sequence, conversation_sequences } => {
+            Outgoing::SequenceAck {
+                user_sequence,
+                conversation_sequences,
+            } => {
                 let mut json_obj = serde_json::json!({
                     "type": "sequence_ack",
                     "timestamp": chrono::Utc::now().timestamp()

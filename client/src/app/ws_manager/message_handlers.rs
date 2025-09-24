@@ -43,6 +43,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "fetch_conversation_messages" => handle_fetch_conversation_messages(tx, &parsed_value),
         "user_events_resume" => handle_user_events_resume(tx, &parsed_value),
         "messages_resume" => handle_messages_resume(tx, &parsed_value),
+        "message_confirmation" => handle_message_confirmation(tx, &parsed_value),
         "user_resume_complete" => handle_resume_complete(tx, &parsed_value, "user"),
         "messages_resume_complete" => handle_resume_complete(tx, &parsed_value, "messages"),
         "conversation_created" => handle_conversation_created(tx, &parsed_value),
@@ -53,6 +54,37 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         _ => {
             debug!("Unhandled message type: {}", msg_type);
         }
+    }
+}
+
+fn handle_message_confirmation(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let client_msg_id = value.get("client_msg_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let server_msg_id = value.get("server_msg_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    let sequence = value.get("sequence")
+        .and_then(|v| v.as_u64());
+
+    let status = value.get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if let (Some(client_id), Some(server_id)) = (client_msg_id, server_msg_id) {
+        info!("Message confirmation: client_id={}, server_id={}, seq={:?}, status={}",
+              client_id, server_id, sequence, status);
+
+        let _ = tx.send(UiEvent::MessageConfirmation {
+            client_msg_id: client_id,
+            server_msg_id: server_id,
+            sequence,
+            status: status.to_string(),
+        });
+    } else {
+        warn!("Invalid message_confirmation: missing required fields");
     }
 }
 
@@ -94,7 +126,7 @@ fn handle_conversation_created_complete(tx: &tokio::sync::mpsc::UnboundedSender<
         }
     };
 
-    info!("Received complete conversation: {} ({}) - seq: {}", 
+    info!("Received complete conversation: {} ({}) - seq: {}",
           conversation.id, conversation.title, sequence);
 
     // Se ha una sequenza, usa il sistema di notifiche per aggiornare le sequenze
@@ -137,6 +169,8 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
         content,
         created_at,
         sequence_num,
+        client_msg_id: None,
+        is_confirmed: Some(true),
     })
 }
 
@@ -233,6 +267,8 @@ fn process_last_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, conver
         content,
         created_at,
         sequence_num,
+        client_msg_id: None,
+        is_confirmed: Some(true),
     };
 
     let _ = tx.send(UiEvent::LastMessageUpdate {
@@ -329,8 +365,6 @@ fn handle_enhanced_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
         message_gap,
     });
 }
-
-// ... resto delle funzioni helper rimangono identiche ...
 
 fn parse_gap_info(value: &Value) -> Option<GapInfo> {
     let detected = value.get("detected")?.as_bool()?;
@@ -521,6 +555,8 @@ fn handle_chat_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         content,
         created_at,
         sequence_num,
+        client_msg_id: None,
+        is_confirmed: Some(true),
     };
 
     debug!("Received chat message with sequence {:?}", sequence_num);

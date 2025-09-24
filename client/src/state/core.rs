@@ -69,6 +69,11 @@ pub struct AppState {
     // DM stub tracking - conversation_id -> target_username
     pub dm_stubs: HashMap<Uuid, String>,
 
+    // Message confirmation tracking
+    pub pending_confirmations: HashMap<String, MessageDto>, // client_msg_id -> messaggio ottimistico
+    pub confirmation_timeout: Duration,
+    pub last_confirmation_cleanup: Instant,
+
     // Dual sequence system
     pub user_sequence_confirmed: u64,
     pub user_sequence_received: u64,
@@ -140,6 +145,11 @@ impl AppState {
 
             dm_stubs: HashMap::new(),
 
+            // Message confirmation
+            pending_confirmations: HashMap::new(),
+            confirmation_timeout: Duration::from_secs(10),
+            last_confirmation_cleanup: Instant::now(),
+
             // Dual sequence system
             user_sequence_confirmed: 0,
             user_sequence_received: 0,
@@ -167,6 +177,12 @@ impl AppState {
         while let Ok(ev) = self.ui_rx.try_recv() {
             crate::app::events::EventDispatcher::handle_event(self, ev);
         }
+
+        // Cleanup periodico delle conferme
+        if self.last_confirmation_cleanup.elapsed() > Duration::from_secs(5) {
+            self.cleanup_pending_confirmations();
+            self.last_confirmation_cleanup = Instant::now();
+        }
     }
 
     pub fn load_single_conversation_messages(&self, cid: Uuid) {
@@ -183,7 +199,7 @@ impl AppState {
         }
     }
 
-    pub fn send_chat_message_ws(&self, content: String) {
+    pub fn send_chat_message_ws(&self, content: String, client_msg_id: Option<String>) {
         if let Some(cid) = self.cid {
             let target_username = self.dm_stubs.get(&cid).cloned();
 
@@ -198,7 +214,41 @@ impl AppState {
                 cid,
                 content,
                 target_username,
+                client_msg_id,
             });
+        }
+    }
+
+    // === Message Confirmation Methods ===
+
+    pub fn cleanup_pending_confirmations(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        let timeout_secs = self.confirmation_timeout.as_secs() as i64;
+
+        let mut expired = Vec::new();
+        for (client_id, msg) in &self.pending_confirmations {
+            if now - msg.created_at > timeout_secs {
+                expired.push(client_id.clone());
+            }
+        }
+
+        for client_id in expired {
+            if let Some(msg) = self.pending_confirmations.remove(&client_id) {
+                warn!("Message confirmation timeout for {}", client_id);
+
+                // Marca il messaggio come fallito nell'UI
+                for ui_msg in &mut self.messages {
+                    if ui_msg.client_msg_id == Some(client_id.clone()) {
+                        ui_msg.is_confirmed = Some(false);
+                        break;
+                    }
+                }
+
+                // Notifica l'utente
+                let _ = self.ui_tx.send(UiEvent::Info(
+                    "⚠️ Messaggio potrebbe non essere stato inviato".into()
+                ));
+            }
         }
     }
 
@@ -246,12 +296,11 @@ impl AppState {
         });
     }
 
-    // === Sequence Update Methods con RILEVAMENTO GAP IMMEDIATO ===
+    // ... resto dei metodi esistenti rimangono invariati ...
 
     pub fn update_user_sequence(&mut self, sequence: u64) {
         let current = self.user_sequence_received;
 
-        // Rileva gap IMMEDIATAMENTE
         if sequence > current + 1 {
             let gap_size = sequence - current - 1;
             warn!(
@@ -263,7 +312,6 @@ impl AppState {
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
-            // Resume IMMEDIATO per gap >= 3 eventi utente
             if gap_size >= 3 {
                 warn!(
                     "Large user events gap ({}), requesting immediate resume",
@@ -278,7 +326,6 @@ impl AppState {
             }
         }
 
-        // Aggiorna sequence
         if sequence > self.user_sequence_received {
             self.user_sequence_received = sequence;
             self.sequence_stats.total_events_received += 1;
@@ -297,7 +344,6 @@ impl AppState {
             .copied()
             .unwrap_or(0);
 
-        // Rileva gap IMMEDIATAMENTE
         if sequence > current + 1 {
             let gap_size = sequence - current - 1;
             warn!(
@@ -310,7 +356,6 @@ impl AppState {
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
-            // Resume IMMEDIATO per gap >= 5 messaggi
             if gap_size >= 5 {
                 warn!(
                     "Large messages gap ({}) in conversation {}, requesting immediate resume",
@@ -325,7 +370,6 @@ impl AppState {
             }
         }
 
-        // Aggiorna sequence
         if sequence > current {
             self.conversation_sequences
                 .insert(conversation_id, sequence);
@@ -345,8 +389,6 @@ impl AppState {
             );
         }
     }
-
-    // === Resume Request Methods ===
 
     pub fn request_user_events_resume(&mut self, from_sequence: u64) {
         if self.is_recovering_user_events {
@@ -396,8 +438,6 @@ impl AppState {
         );
     }
 
-    // === Gap Detection ===
-
     pub fn check_for_gaps(&mut self) -> (bool, bool) {
         let user_gap = self.user_sequence_received > self.user_sequence_confirmed;
 
@@ -415,8 +455,6 @@ impl AppState {
 
         (user_gap, conversation_gap)
     }
-
-    // === Ping/Pong Management ===
 
     pub fn should_send_ping(&self) -> bool {
         self.ws_status == WsStatus::Connected && self.last_ping_time.elapsed() >= self.ping_interval
@@ -461,8 +499,6 @@ impl AppState {
         self.reset_sequence_system();
     }
 
-    // === Health and Statistics ===
-
     pub fn get_sequence_health(&self) -> f64 {
         if self.sequence_stats.ping_count == 0 {
             return 1.0;
@@ -495,6 +531,10 @@ impl AppState {
         info.insert(
             "active_conversation".to_string(),
             self.cid.map_or("none".to_string(), |id| id.to_string()),
+        );
+        info.insert(
+            "pending_confirmations".to_string(),
+            self.pending_confirmations.len().to_string(),
         );
 
         if let Some(cid) = self.cid {
@@ -539,18 +579,13 @@ impl AppState {
         info
     }
 
-    // === Authentication ===
-
     pub fn is_authenticated(&self) -> bool {
         self.token.is_some() && self.user_id.is_some()
     }
 
-    // === DM stub management ===
-
     pub fn add_dm_stub(&mut self, conversation_id: Uuid, target_username: String) {
         debug!("Adding DM stub: {} -> {}", conversation_id, target_username);
 
-        // Verifica duplicati prima di aggiungere
         if self.dm_stubs.contains_key(&conversation_id) {
             warn!(
                 "DM stub already exists for conversation {}",
@@ -570,8 +605,6 @@ impl AppState {
     pub fn is_dm_stub(&self, conversation_id: Uuid) -> bool {
         self.dm_stubs.contains_key(&conversation_id)
     }
-
-    // === Cleanup Methods ===
 
     pub fn cleanup_old_data(&self) {
         let total_messages = self.get_total_cached_messages();
@@ -611,17 +644,14 @@ impl AppState {
             return;
         }
 
-        // Trova sequence più vecchia
         let before_seq = self
             .messages
             .first()
             .and_then(|m| m.sequence_num)
             .map(|seq| seq as i64);
 
-        // IMPORTANTE: Se la sequence più vecchia è 1, non ci sono messaggi precedenti
         if let Some(seq) = before_seq {
             if seq <= 1 {
-                // Non ci sono messaggi con sequence < 1
                 self.has_more_messages.insert(cid, false);
                 info!("First message has sequence 1, no older messages to load");
                 return;
@@ -635,7 +665,6 @@ impl AppState {
         let tx = self.ui_tx.clone();
 
         self.rt.spawn(async move {
-            // Delay di 300ms per dare tempo allo scroll di stabilizzarsi
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
             match crate::api::chat::get_messages_paginated(&base, &token, cid, Some(30), before_seq)
