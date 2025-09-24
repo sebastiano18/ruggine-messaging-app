@@ -30,6 +30,7 @@ pub async fn broadcast_to_conversation(
     }
 }
 
+
 /// Gestisce messaggi di chat con evento completo per nuove conversazioni
 pub async fn handle_chat_message(
     state: &AppState,
@@ -37,6 +38,9 @@ pub async fn handle_chat_message(
     user_id: Uuid,
     username: &str,
 ) -> Result<()> {
+    // AGGIUNGI QUESTO LOG PER VEDERE IL JSON COMPLETO
+    info!("RECEIVED CHAT MESSAGE JSON: {}", value);
+
     let cid = value
         .get("cid")
         .or_else(|| value.get("conversation_id"))
@@ -62,6 +66,9 @@ pub async fn handle_chat_message(
         .get("client_msg_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+
+    // AGGIUNGI QUESTO LOG
+    info!("EXTRACTED client_msg_id: {:?} from message", client_msg_id);
 
     let conversation_id_str = conversation_id.to_string();
     let user_id_str = user_id.to_string();
@@ -195,28 +202,38 @@ pub async fn handle_chat_message(
 
     info!("Message {} saved to DB with sequence {}", id, message_sequence);
 
-    // NUOVO: Invia sempre conferma al mittente con ID e sequenza
-    {
-        let confirmation = json!({
-            "type": "message_confirmation",
-            "client_msg_id": client_msg_id,
-            "server_msg_id": id.to_string(),
-            "conversation_id": conversation_id,
-            "sequence": message_sequence,
-            "created_at": ts,
-            "status": "saved"
-        });
+    // NUOVO: Salva client_msg_id in cache se presente
+    if let Some(ref client_id) = client_msg_id {
+        state.message_confirmation_cache.insert(id, client_id.clone()).await;
+        info!("SUCCESSFULLY CACHED client_msg_id {} for server message {}", client_id, id);
+    } else {
+        info!("NO client_msg_id to cache for message {}", id);
+    }
 
-        // Invia direttamente al canale utente del mittente
-        let user_tx = state.get_or_create_user_notification_channel(user_id).await;
-        match user_tx.send(confirmation) {
-            Ok(receiver_count) => {
-                debug!("Sent message confirmation to sender {} ({} receivers)", user_id, receiver_count);
-            }
-            Err(e) => {
-                warn!("Failed to send confirmation to sender {}: {}", user_id, e);
-            }
-        }
+    // MODIFICATO: Invia sempre conferma al mittente con ID e sequenza
+    {
+        
+         let confirmation = json!({
+             "type": "message_confirmation",
+             "client_msg_id": client_msg_id,
+             "server_msg_id": id.to_string(),
+             "conversation_id": conversation_id,
+             "sequence": message_sequence,
+             "created_at": ts,
+             "status": "saved"
+         });
+ 
+         // Invia direttamente al canale utente del mittente
+         let user_tx = state.get_or_create_user_notification_channel(user_id).await;
+         match user_tx.send(confirmation) {
+             Ok(receiver_count) => {
+                 debug!("Sent message confirmation to sender {} ({} receivers)", user_id, receiver_count);
+             }
+             Err(e) => {
+                 warn!("Failed to send confirmation to sender {}: {}", user_id, e);
+             }
+         }
+        
     }
 
     // Gestione diversa per nuove conversazioni vs esistenti
@@ -251,7 +268,9 @@ pub async fn handle_chat_message(
                     "author_username": username,
                     "content": content,
                     "created_at": ts,
-                    "sequence_num": message_sequence
+                    "sequence_num": message_sequence,
+                    // NUOVO: Include client_msg_id nel last_message se presente
+                    "client_msg_id": client_msg_id.clone()
                 }
             }
         });
@@ -285,7 +304,7 @@ pub async fn handle_chat_message(
 
     } else {
         // Per conversazioni esistenti: broadcast normale del messaggio
-        let event = json!({
+        let mut event = json!({
             "type": "chat_message",
             "id": id,
             "cid": conversation_id,
@@ -296,6 +315,11 @@ pub async fn handle_chat_message(
             "created_at": ts,
             "sequence": message_sequence
         });
+
+        // NUOVO: Include client_msg_id nel broadcast se presente
+        if let Some(ref client_id) = client_msg_id {
+            event["client_msg_id"] = json!(client_id);
+        }
 
         match broadcast_to_conversation(state, conversation_id, event).await {
             Ok(delivered) if delivered > 0 => {

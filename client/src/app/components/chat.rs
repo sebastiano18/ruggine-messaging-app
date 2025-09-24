@@ -13,24 +13,23 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         ui.colored_label(egui::Color32::RED, "Login richiesto");
         return;
     }
-    let token = s.token.clone().unwrap();
 
     if let Some(cid) = s.cid {
-        show_chat_interface(ui, s, cid, &token);
+        show_chat_interface(ui, s, cid);
     } else {
         show_empty_state(ui);
     }
 }
 
-fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str) {
+fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     // Header conversazione
     show_conversation_header(ui, s);
 
-    // Se gruppo, mostra opzioni invito
+    // Se gruppo, mostra opzioni invito (senza passare token come parametro)
     if let Some(ref conversations) = s.conversations {
         if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
             if conv.kind == "group" {
-                show_invite_options(ui, s, cid, token);
+                show_invite_options(ui, s, cid);
             }
         }
     }
@@ -175,10 +174,10 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
     ui.add_space(6.0);
 
     // 2) Input area
-    show_input_area(ui, s, cid, token, input_h);
+    show_input_area(ui, s, cid, input_h);
 }
 
-fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, height: f32) {
+fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) {
     // Contenitore con altezza fissa per la barra dei messaggi
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), height),
@@ -197,12 +196,12 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, 
 
             // Invio con Enter
             if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                send_message(s, cid, token);
+                send_message(s, cid);
             }
 
             // Pulsante invio
             if ui.button("📤").on_hover_text("Invia").clicked() {
-                send_message(s, cid, token);
+                send_message(s, cid);
             }
 
             // Stato/azioni (a destra)
@@ -248,7 +247,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
     }
 }
 
-fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str) {
+fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.1))
         .stroke(Stroke::new(
@@ -274,23 +273,25 @@ fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
                         .on_hover_text("Crea un token di invito per questo gruppo")
                         .clicked()
                     {
-                        let base = s.base.clone();
-                        let token2 = token.to_string();
-                        let tx = s.ui_tx.clone();
+                        // Accedi al token di autenticazione quando serve
+                        if let Some(token) = s.token.clone() {
+                            let base = s.base.clone();
+                            let tx = s.ui_tx.clone();
 
-                        s.rt.spawn(async move {
-                            match api::conversation::create_invite(&base, &token2, cid).await {
-                                Ok(invite_token) => {
-                                    let _ = tx.send(UiEvent::InviteCreated(invite_token));
+                            s.rt.spawn(async move {
+                                match api::conversation::create_invite(&base, &token, cid).await {
+                                    Ok(invite_token) => {
+                                        let _ = tx.send(UiEvent::InviteCreated(invite_token));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Creazione invito fallita: {}",
+                                            e
+                                        )));
+                                    }
                                 }
-                                Err(e) => {
-                                    let _ = tx.send(UiEvent::Error(format!(
-                                        "Creazione invito fallita: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     ui.add_space(8.0);
@@ -368,8 +369,8 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Stato conferma
                             let status_icon = match message.is_confirmed {
-                                Some(true) => "✓✓",  // Confermato
-                                Some(false) => "✓",   // Non confermato/in attesa
+                                Some(true) => "✔✔",  // Confermato
+                                Some(false) => "✔",   // Non confermato/in attesa
                                 None => "⏳",         // Sconosciuto/in invio
                             };
 
@@ -441,7 +442,7 @@ fn show_empty_state(ui: &mut egui::Ui) {
     });
 }
 
-fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
+fn send_message(s: &mut AppState, cid: Uuid) {
     let content = s.input.trim().to_string();
     if content.is_empty() {
         return;
@@ -450,6 +451,7 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
 
     // Genera client_msg_id per tracking
     let client_msg_id = Uuid::new_v4().to_string();
+    info!("Sending message with client_msg_id: {}", client_msg_id);
 
     // Messaggio ottimistico con tracking
     if let Some(user_id) = s.user_id {
@@ -461,11 +463,14 @@ fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
             client_msg_id.clone(),
         );
 
-        // Salva per tracking conferma
+        // IMPORTANTE: Salva nei pending per tracking conferma
         s.pending_confirmations.insert(client_msg_id.clone(), optimistic_msg.clone());
+        info!("Added pending confirmation for client_id: {}", client_msg_id);
 
+        // Aggiungi alla UI
         s.messages.push(optimistic_msg.clone());
 
+        // Aggiungi alla cache
         if let Some(msgs) = s.conversation_messages.get_mut(&cid) {
             msgs.push(optimistic_msg);
         }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{info, warn, error, debug};
 use uuid::Uuid;
@@ -8,6 +8,50 @@ use sqlx::Row;
 use crate::error::{AppError, Result};
 use crate::web_socket::actor::OutboundMsg;
 
+// === Cache per Message Confirmations ===
+#[derive(Clone)]
+pub struct MessageConfirmationCache {
+    // server_msg_id -> (client_msg_id, timestamp)
+    entries: Arc<RwLock<HashMap<Uuid, (String, Instant)>>>,
+}
+
+impl MessageConfirmationCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub async fn insert(&self, server_id: Uuid, client_id: String) {
+        let mut map = self.entries.write().await;
+        map.insert(server_id, (client_id, Instant::now()));
+
+        // Cleanup automatico se troppo grande
+        if map.len() > 10000 {
+            let cutoff = Instant::now() - std::time::Duration::from_secs(300);
+            map.retain(|_, (_, time)| *time > cutoff);
+        }
+    }
+
+    pub async fn get(&self, server_id: &Uuid) -> Option<String> {
+        let map = self.entries.read().await;
+        map.get(server_id)
+            .filter(|(_, time)| time.elapsed() < std::time::Duration::from_secs(300))
+            .map(|(id, _)| id.clone())
+    }
+
+    pub async fn cleanup(&self) {
+        let mut map = self.entries.write().await;
+        let cutoff = Instant::now() - std::time::Duration::from_secs(300);
+        let before = map.len();
+        map.retain(|_, (_, time)| *time > cutoff);
+        let after = map.len();
+        if before != after {
+            debug!("Cleaned up {} expired message confirmations", before - after);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
@@ -16,6 +60,8 @@ pub struct AppState {
     pub channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
     // Canali per notifiche utente (nuove conversazioni, etc.)
     pub user_notification_channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<serde_json::Value>>>>,
+    // Cache per client_msg_id dei messaggi
+    pub message_confirmation_cache: MessageConfirmationCache,
 }
 
 // === Strutture di supporto ===
@@ -47,6 +93,7 @@ impl AppState {
             jwt_secret,
             channels: Arc::new(RwLock::new(HashMap::new())),
             user_notification_channels: Arc::new(RwLock::new(HashMap::new())),
+            message_confirmation_cache: MessageConfirmationCache::new(),
         }
     }
 
@@ -153,6 +200,9 @@ impl AppState {
                 }
             }
         }
+
+        // Cleanup message confirmation cache periodicamente
+        self.message_confirmation_cache.cleanup().await;
 
         if cleaned > 0 {
             info!("Cleaned up {} empty channels for user {}", cleaned, user_id);
@@ -327,10 +377,10 @@ impl AppState {
         let user_id_str = user_id.to_string();
 
         let rows = sqlx::query(
-            "SELECT sequence_num, event_type, event_data, conversation_id, created_at 
-             FROM user_events 
-             WHERE user_id = ? AND sequence_num > ? 
-             ORDER BY sequence_num ASC 
+            "SELECT sequence_num, event_type, event_data, conversation_id, created_at
+             FROM user_events
+             WHERE user_id = ? AND sequence_num > ?
+             ORDER BY sequence_num ASC
              LIMIT ?"
         )
             .bind(&user_id_str)
@@ -376,12 +426,12 @@ impl AppState {
         let conv_id_str = conversation_id.to_string();
 
         let rows = sqlx::query(
-            "SELECT m.id, m.author_id, u.username as author_username, 
-                    m.content, m.created_at, m.sequence_num 
-             FROM messages m 
-             JOIN users u ON m.author_id = u.id 
-             WHERE m.conversation_id = ? AND m.sequence_num > ? 
-             ORDER BY m.sequence_num ASC 
+            "SELECT m.id, m.author_id, u.username as author_username,
+                    m.content, m.created_at, m.sequence_num
+             FROM messages m
+             JOIN users u ON m.author_id = u.id
+             WHERE m.conversation_id = ? AND m.sequence_num > ?
+             ORDER BY m.sequence_num ASC
              LIMIT ?"
         )
             .bind(&conv_id_str)
@@ -424,9 +474,6 @@ impl AppState {
         self.handle_enhanced_ping(user_id, Some(client_last_sequence), None, None, out_tx).await
     }
 
-    /// Gestisce ping avanzato con doppio tracking
-    // Sostituisci il metodo handle_enhanced_ping in state.rs con questa versione
-
     /// Gestisce ping avanzato - SOLO DETECTION, NO AUTO-RESUME
     pub async fn handle_enhanced_ping(
         &self,
@@ -437,9 +484,9 @@ impl AppState {
         out_tx: &mpsc::Sender<OutboundMsg>,
     ) -> Result<()> {
         let mut response = json!({
-        "type": "pong_with_sequences",
-        "timestamp": chrono::Utc::now().timestamp(),
-    });
+            "type": "pong_with_sequences",
+            "timestamp": chrono::Utc::now().timestamp(),
+        });
 
         // 1. Includi sempre la sequenza corrente degli user events
         let current_user_seq = self.get_current_user_sequence(user_id).await?;
@@ -449,8 +496,8 @@ impl AppState {
         if let Some(conv_id) = active_conversation_id {
             let current_conv_seq = self.get_current_message_sequence(conv_id).await?;
             response["conversation_sequences"] = json!({
-            conv_id.to_string(): current_conv_seq
-        });
+                conv_id.to_string(): current_conv_seq
+            });
         }
 
         // 3. Opzionale: includi informazioni sui gap rilevati (solo per info)
@@ -460,13 +507,13 @@ impl AppState {
             if client_seq < current_user_seq {
                 gaps_detected = true;
                 response["user_events_gap"] = json!({
-                "detected": true,
-                "client_seq": client_seq,
-                "server_seq": current_user_seq,
-                "gap_size": current_user_seq - client_seq
-            });
-                info!("User {} has gap in user events: client={}, server={}", 
-                  user_id, client_seq, current_user_seq);
+                    "detected": true,
+                    "client_seq": client_seq,
+                    "server_seq": current_user_seq,
+                    "gap_size": current_user_seq - client_seq
+                });
+                info!("User {} has gap in user events: client={}, server={}",
+                      user_id, client_seq, current_user_seq);
             }
 
             // Aggiorna tracking del ping
@@ -479,14 +526,14 @@ impl AppState {
                 if client_seq < current_conv_seq {
                     gaps_detected = true;
                     response["message_gap"] = json!({
-                    "detected": true,
-                    "conversation_id": conv_id,
-                    "client_seq": client_seq,
-                    "server_seq": current_conv_seq,
-                    "gap_size": current_conv_seq - client_seq
-                });
-                    info!("User {} has gap in conversation {}: client={}, server={}", 
-                      user_id, conv_id, client_seq, current_conv_seq);
+                        "detected": true,
+                        "conversation_id": conv_id,
+                        "client_seq": client_seq,
+                        "server_seq": current_conv_seq,
+                        "gap_size": current_conv_seq - client_seq
+                    });
+                    info!("User {} has gap in conversation {}: client={}, server={}",
+                          user_id, conv_id, client_seq, current_conv_seq);
                 }
             }
         }
@@ -519,11 +566,11 @@ impl AppState {
             self.send_user_events_resume(user_id, events, out_tx).await?;
         } else {
             let response = json!({
-            "type": "user_resume_complete",
-            "from_sequence": from_sequence,
-            "current_sequence": self.get_current_user_sequence(user_id).await?,
-            "events_count": 0
-        });
+                "type": "user_resume_complete",
+                "from_sequence": from_sequence,
+                "current_sequence": self.get_current_user_sequence(user_id).await?,
+                "events_count": 0
+            });
 
             if let Ok(txt) = serde_json::to_string(&response) {
                 out_tx.send(OutboundMsg::Text(txt)).await
@@ -565,12 +612,12 @@ impl AppState {
             self.send_messages_resume(user_id, conversation_id, messages, out_tx).await?;
         } else {
             let response = json!({
-            "type": "messages_resume_complete",
-            "conversation_id": conversation_id,
-            "from_sequence": from_sequence,
-            "current_sequence": self.get_current_message_sequence(conversation_id).await?,
-            "messages_count": 0
-        });
+                "type": "messages_resume_complete",
+                "conversation_id": conversation_id,
+                "from_sequence": from_sequence,
+                "current_sequence": self.get_current_message_sequence(conversation_id).await?,
+                "messages_count": 0
+            });
 
             if let Ok(txt) = serde_json::to_string(&response) {
                 out_tx.send(OutboundMsg::Text(txt)).await
@@ -615,7 +662,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Invia resume di messaggi mancanti
+    /// Invia resume di messaggi mancanti (MODIFICATO per includere client_msg_id)
     pub async fn send_messages_resume(
         &self,
         user_id: Uuid,
@@ -623,20 +670,45 @@ impl AppState {
         messages: Vec<SequencedMessage>,
         out_tx: &mpsc::Sender<OutboundMsg>,
     ) -> Result<()> {
-        let resume_msg = json!({
-            "type": "messages_resume",
-            "conversation_id": conversation_id,
-            "messages": messages.iter().map(|m| json!({
-                "id": m.id,
-                "author_id": m.author_id,
-                "author_username": &m.author_username,
-                "content": &m.content,
-                "created_at": m.created_at,
-                "sequence": m.sequence
-            })).collect::<Vec<_>>(),
-            "count": messages.len(),
-            "timestamp": chrono::Utc::now().timestamp()
+        info!("PREPARING RESUME for {} messages", messages.len());
+
+        // Arricchisci i messaggi con client_msg_id dalla cache
+        let mut enriched_messages = Vec::new();
+        let messages_len = messages.len();
+
+        for msg in messages {
+            let client_msg_id = self.message_confirmation_cache.get(&msg.id).await;
+
+            // AGGIUNGI QUESTO LOG
+            info!("RESUME: Message {} has cached client_msg_id: {:?}", msg.id, client_msg_id);
+
+            let mut msg_json = json!({
+            "id": msg.id,
+            "author_id": msg.author_id,
+            "author_username": &msg.author_username,
+            "content": &msg.content,
+            "created_at": msg.created_at,
+            "sequence_num": msg.sequence  // Nota: assicurati che sia "sequence_num"
         });
+
+            // Aggiungi client_msg_id se disponibile in cache
+            if let Some(client_id) = client_msg_id {
+                msg_json["client_msg_id"] = json!(client_id);
+                info!("INCLUDING client_msg_id {} in resume for message {}", client_id, msg.id);
+            } else {
+                info!("NO client_msg_id found in cache for message {}", msg.id);
+            }
+
+            enriched_messages.push(msg_json);
+        }
+
+        let resume_msg = json!({
+        "type": "messages_resume",
+        "conversation_id": conversation_id,
+        "messages": enriched_messages,
+        "count": messages_len,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
 
         if let Ok(txt) = serde_json::to_string(&resume_msg) {
             out_tx.send(OutboundMsg::Text(txt)).await
@@ -644,7 +716,7 @@ impl AppState {
         }
 
         info!("Sent {} messages in resume for conversation {} to user {}", 
-              messages.len(), conversation_id, user_id);
+          messages_len, conversation_id, user_id);
         Ok(())
     }
 
