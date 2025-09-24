@@ -92,7 +92,6 @@ pub struct AppState {
 
     pub is_loading_more: bool,
     pub has_more_messages: HashMap<Uuid, bool>,
-    
 }
 
 impl AppState {
@@ -207,8 +206,14 @@ impl AppState {
 
     pub fn send_enhanced_ping(&mut self) {
         let user_seq = {
-            let seq = self.user_sequence_confirmed.max(self.user_sequence_received);
-            if seq > 0 { Some(seq) } else { None }
+            let seq = self
+                .user_sequence_confirmed
+                .max(self.user_sequence_received);
+            if seq > 0 {
+                Some(seq)
+            } else {
+                None
+            }
         };
 
         let (conv_seq, active_conv) = if let Some(cid) = self.cid {
@@ -216,7 +221,7 @@ impl AppState {
 
             debug!(
                 "Conversation {} sequences - confirmed: {:?}, received: {:?}, sending: {:?}",
-                cid, 
+                cid,
                 self.conversation_sequences_confirmed.get(&cid),
                 self.conversation_sequences.get(&cid),
                 seq
@@ -251,17 +256,25 @@ impl AppState {
             let gap_size = sequence - current - 1;
             warn!(
                 "User events gap detected! Expected {}, got {} (missing {} events)",
-                current + 1, sequence, gap_size
+                current + 1,
+                sequence,
+                gap_size
             );
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
             // Resume IMMEDIATO per gap >= 3 eventi utente
             if gap_size >= 3 {
-                warn!("Large user events gap ({}), requesting immediate resume", gap_size);
+                warn!(
+                    "Large user events gap ({}), requesting immediate resume",
+                    gap_size
+                );
                 self.request_user_events_resume(current);
             } else {
-                debug!("Small user events gap ({}), will handle at next ping", gap_size);
+                debug!(
+                    "Small user events gap ({}), will handle at next ping",
+                    gap_size
+                );
             }
         }
 
@@ -278,38 +291,58 @@ impl AppState {
     }
 
     pub fn update_conversation_sequence(&mut self, conversation_id: Uuid, sequence: u64) {
-        let current = self.conversation_sequences.get(&conversation_id).copied().unwrap_or(0);
+        let current = self
+            .conversation_sequences
+            .get(&conversation_id)
+            .copied()
+            .unwrap_or(0);
 
         // Rileva gap IMMEDIATAMENTE
         if sequence > current + 1 {
             let gap_size = sequence - current - 1;
             warn!(
                 "Messages gap in conversation {}! Expected {}, got {} (missing {} messages)",
-                conversation_id, current + 1, sequence, gap_size
+                conversation_id,
+                current + 1,
+                sequence,
+                gap_size
             );
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
             // Resume IMMEDIATO per gap >= 5 messaggi
             if gap_size >= 5 {
-                warn!("Large messages gap ({}) in conversation {}, requesting immediate resume", 
-                      gap_size, conversation_id);
+                warn!(
+                    "Large messages gap ({}) in conversation {}, requesting immediate resume",
+                    gap_size, conversation_id
+                );
                 self.request_messages_resume(conversation_id, current);
             } else {
-                debug!("Small messages gap ({}) in conversation {}, will handle at next ping", 
-                       gap_size, conversation_id);
+                debug!(
+                    "Small messages gap ({}) in conversation {}, will handle at next ping",
+                    gap_size, conversation_id
+                );
             }
         }
 
         // Aggiorna sequence
         if sequence > current {
-            self.conversation_sequences.insert(conversation_id, sequence);
+            self.conversation_sequences
+                .insert(conversation_id, sequence);
         }
 
-        let confirmed = self.conversation_sequences_confirmed.get(&conversation_id).copied().unwrap_or(0);
+        let confirmed = self
+            .conversation_sequences_confirmed
+            .get(&conversation_id)
+            .copied()
+            .unwrap_or(0);
         if sequence == confirmed + 1 {
-            self.conversation_sequences_confirmed.insert(conversation_id, sequence);
-            debug!("Conversation {} sequence {} confirmed", conversation_id, sequence);
+            self.conversation_sequences_confirmed
+                .insert(conversation_id, sequence);
+            debug!(
+                "Conversation {} sequence {} confirmed",
+                conversation_id, sequence
+            );
         }
     }
 
@@ -329,12 +362,22 @@ impl AppState {
             limit: 100,
         });
 
-        info!("Requested user events resume from sequence {}", from_sequence);
+        info!(
+            "Requested user events resume from sequence {}",
+            from_sequence
+        );
     }
 
     pub fn request_messages_resume(&mut self, conversation_id: Uuid, from_sequence: u64) {
-        if *self.is_recovering_messages.get(&conversation_id).unwrap_or(&false) {
-            debug!("Messages resume already in progress for {}", conversation_id);
+        if *self
+            .is_recovering_messages
+            .get(&conversation_id)
+            .unwrap_or(&false)
+        {
+            debug!(
+                "Messages resume already in progress for {}",
+                conversation_id
+            );
             return;
         }
 
@@ -347,7 +390,10 @@ impl AppState {
             limit: 100,
         });
 
-        info!("Requested messages resume for {} from sequence {}", conversation_id, from_sequence);
+        info!(
+            "Requested messages resume for {} from sequence {}",
+            conversation_id, from_sequence
+        );
     }
 
     // === Gap Detection ===
@@ -357,7 +403,11 @@ impl AppState {
 
         let conversation_gap = if let Some(cid) = self.cid {
             let received = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            let confirmed = self
+                .conversation_sequences_confirmed
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
             received > confirmed
         } else {
             false
@@ -418,7 +468,8 @@ impl AppState {
             return 1.0;
         }
 
-        let pong_rate = self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
+        let pong_rate =
+            self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
         let gap_penalty = (self.sequence_stats.gaps_detected as f64 * 0.1).min(0.5);
         let missed_penalty = (self.missed_pings as f64 / self.max_missed_pings as f64) * 0.3;
 
@@ -433,23 +484,57 @@ impl AppState {
         let mut info = HashMap::new();
 
         info.insert("ws_status".to_string(), format!("{:?}", self.ws_status));
-        info.insert("user_seq_confirmed".to_string(), self.user_sequence_confirmed.to_string());
-        info.insert("user_seq_received".to_string(), self.user_sequence_received.to_string());
-        info.insert("active_conversation".to_string(), self.cid.map_or("none".to_string(), |id| id.to_string()));
+        info.insert(
+            "user_seq_confirmed".to_string(),
+            self.user_sequence_confirmed.to_string(),
+        );
+        info.insert(
+            "user_seq_received".to_string(),
+            self.user_sequence_received.to_string(),
+        );
+        info.insert(
+            "active_conversation".to_string(),
+            self.cid.map_or("none".to_string(), |id| id.to_string()),
+        );
 
         if let Some(cid) = self.cid {
             let conv_seq = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let conv_seq_confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            let conv_seq_confirmed = self
+                .conversation_sequences_confirmed
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
             info.insert("conv_seq".to_string(), conv_seq.to_string());
-            info.insert("conv_seq_confirmed".to_string(), conv_seq_confirmed.to_string());
+            info.insert(
+                "conv_seq_confirmed".to_string(),
+                conv_seq_confirmed.to_string(),
+            );
         }
 
-        info.insert("sequence_health".to_string(), format!("{:.2}", self.get_sequence_health()));
-        info.insert("ping_count".to_string(), self.sequence_stats.ping_count.to_string());
-        info.insert("pong_count".to_string(), self.sequence_stats.pong_count.to_string());
-        info.insert("missed_pings".to_string(), format!("{}/{}", self.missed_pings, self.max_missed_pings));
-        info.insert("gaps_detected".to_string(), self.sequence_stats.gaps_detected.to_string());
-        info.insert("pending_resume".to_string(), self.pending_resume_requests.to_string());
+        info.insert(
+            "sequence_health".to_string(),
+            format!("{:.2}", self.get_sequence_health()),
+        );
+        info.insert(
+            "ping_count".to_string(),
+            self.sequence_stats.ping_count.to_string(),
+        );
+        info.insert(
+            "pong_count".to_string(),
+            self.sequence_stats.pong_count.to_string(),
+        );
+        info.insert(
+            "missed_pings".to_string(),
+            format!("{}/{}", self.missed_pings, self.max_missed_pings),
+        );
+        info.insert(
+            "gaps_detected".to_string(),
+            self.sequence_stats.gaps_detected.to_string(),
+        );
+        info.insert(
+            "pending_resume".to_string(),
+            self.pending_resume_requests.to_string(),
+        );
 
         info
     }
@@ -467,15 +552,12 @@ impl AppState {
 
         // Verifica duplicati prima di aggiungere
         if self.dm_stubs.contains_key(&conversation_id) {
-            warn!("DM stub already exists for conversation {}", conversation_id);
+            warn!(
+                "DM stub already exists for conversation {}",
+                conversation_id
+            );
             return;
         }
-        println!("aaaaaaaa{:?}", self.conversations);
-        if let Some(convs) = &mut self.conversations {
-    // remove the first record (index 0)
-    convs.remove(0);
-}
-        println!("eeeeeeee{:?}", self.conversations);
         self.dm_stubs.insert(conversation_id, target_username);
     }
 
@@ -494,7 +576,10 @@ impl AppState {
     pub fn cleanup_old_data(&self) {
         let total_messages = self.get_total_cached_messages();
         if total_messages > 50000 {
-            warn!("High memory usage detected: {} cached messages", total_messages);
+            warn!(
+                "High memory usage detected: {} cached messages",
+                total_messages
+            );
         }
     }
 
@@ -527,7 +612,8 @@ impl AppState {
         }
 
         // Trova sequence più vecchia
-        let before_seq = self.messages
+        let before_seq = self
+            .messages
             .first()
             .and_then(|m| m.sequence_num)
             .map(|seq| seq as i64);
@@ -552,13 +638,9 @@ impl AppState {
             // Delay di 300ms per dare tempo allo scroll di stabilizzarsi
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-            match crate::api::chat::get_messages_paginated(
-                &base,
-                &token,
-                cid,
-                Some(30),
-                before_seq
-            ).await {
+            match crate::api::chat::get_messages_paginated(&base, &token, cid, Some(30), before_seq)
+                .await
+            {
                 Ok(messages) => {
                     let _ = tx.send(UiEvent::OlderMessagesLoaded(messages));
                 }
@@ -569,5 +651,4 @@ impl AppState {
             }
         });
     }
-
 }

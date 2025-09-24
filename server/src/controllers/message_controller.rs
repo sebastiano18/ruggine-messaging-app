@@ -4,7 +4,6 @@ use crate::{
     error::Result,
     services::message_service::MessageService,
     state::AppState,
-    web_socket::helpers::{get_conversation_messages_api, MessageResponse},
 };
 use axum::{
     Json,
@@ -89,14 +88,3 @@ pub async fn post(
     Ok(Json(CreatedId { id: message_id }))
 }
 
-/// Endpoint per fetch messaggi (usato dal sistema fetch-on-subscribe)
-#[cfg_attr(debug_assertions, axum::debug_handler)]
-pub async fn fetch_messages(
-    user: AuthUser,
-    Path(conversation_id): Path<Uuid>,
-    Query(params): Query<MessageQuery>,
-    State(st): State<AppState>,
-) -> Result<Json<Vec<MessageResponse>>> {
-    let messages = get_conversation_messages_api(&st, conversation_id, user.id, params.limit).await?;
-    Ok(Json(messages))
-}
