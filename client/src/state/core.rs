@@ -593,6 +593,7 @@ impl AppState {
             );
             return;
         }
+
         self.dm_stubs.insert(conversation_id, target_username);
     }
 

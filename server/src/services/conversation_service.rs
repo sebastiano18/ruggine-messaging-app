@@ -1,5 +1,7 @@
+use serde_json::json;
+use tracing::warn;
 use uuid::Uuid;
-use crate::{error::Result, repositories::conversation_repo::ConversationRepo};
+use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
 
 #[derive(Debug, Clone)]
 pub struct ConversationService;
@@ -99,5 +101,43 @@ impl ConversationService {
         conversation_id: Uuid,
     ) -> Result<Vec<Uuid>> {
         ConversationRepo::list_participant_ids(pool, conversation_id).await
+    }
+
+    pub async fn broadcast_conversation_deleted(
+        st: &AppState,
+        conversation_id: Uuid,
+        by: Uuid,
+        participant_ids: Vec<Uuid>,
+        include_author: bool,
+    ) {
+        let payload = json!({
+            "type": "conversation_deleted",
+            "conversation_id": conversation_id,
+            "by": by,
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        for pid in participant_ids {
+            if !include_author && pid == by {
+                continue;
+            }
+
+            if let Err(e) = st
+                .send_sequenced_event_to_user(
+                    pid,
+                    "conversation_deleted",
+                    payload.clone(),
+                    Some(conversation_id),
+                )
+                .await
+            {
+                warn!(
+                    error = %e,
+                    user = %pid,
+                    conv = %conversation_id,
+                    "Failed to send conversation_deleted"
+                );
+            }
+        }
     }
 }

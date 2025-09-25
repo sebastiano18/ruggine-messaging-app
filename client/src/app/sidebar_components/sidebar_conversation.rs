@@ -1,5 +1,5 @@
 use crate::api;
-use crate::models::{Page, UiEvent};
+use crate::models::{Outgoing, Page, UiEvent, WsStatus};
 use crate::state::AppState;
 use eframe::egui;
 use egui::{Align, Frame, Layout, RichText, Stroke, TextEdit};
@@ -316,40 +316,14 @@ impl ConversationsSidebar {
 
                 let _ = state.ui_tx.send(UiEvent::Info("Chat privata rimossa (locale)".into()));
             } else {
-                // Caso B: conversazione reale — chiama API DELETE e poi refresh lista
-                if let Some(token) = state.token.clone() {
-                    let base = state.base.clone();
-                    let tx = state.ui_tx.clone();
+                // Caso B: conversazione reale
+                if state.ws_status == WsStatus::Connected {
+                    // Invio comando di delete via WebSocket
+                    state.send_via_websocket(Outgoing::DeleteConversation { cid });
 
-                    state.rt.spawn(async move {
-                        let res =
-                            crate::api::conversation::delete_conversation(&base, &token, cid).await;
-                        match res {
-                            Ok(()) => {
-                                let _ = tx.send(UiEvent::ConversationDeleted(cid));
-                                
-                                // Piccola attesa per coerenza UI
-                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-                                match crate::api::conversation::get_conversations(&base, &token).await {
-                                    Ok(conversations) => {
-                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-                                        let _ = tx.send(UiEvent::Info("Conversazione eliminata".into()));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(UiEvent::Error(format!(
-                                            "Eliminata, ma errore nel refresh: {e}"
-                                        )));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(UiEvent::Error(format!("Errore eliminazione: {e}")));
-                            }
-                        }
-                    });
+                    let _ = state.ui_tx.send(UiEvent::Info("Eliminazione conversazione...".into()));
                 } else {
-                    let _ = state.ui_tx.send(UiEvent::Error("Non autenticato".into()));
+                    let _ = state.ui_tx.send(UiEvent::Error("Errore di connessione".into()));
                 }
             }
 

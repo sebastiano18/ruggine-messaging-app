@@ -161,6 +161,9 @@ pub enum Outgoing {
         user_sequence: Option<u64>,
         conversation_sequences: Option<HashMap<Uuid, u64>>,
     },
+    DeleteConversation {
+        cid: Uuid,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===

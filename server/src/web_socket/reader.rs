@@ -6,6 +6,7 @@ use sqlx::{Row, SqlitePool};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use crate::services::conversation_service::ConversationService;
 
 use super::{actor::OutboundMsg, helpers::handle_chat_message};
 use crate::state::AppState;
@@ -480,6 +481,82 @@ pub fn spawn_reader(
                                     }
                                 }
                             }
+                        }
+                        "delete_conversation" => {
+                            last_heartbeat = Instant::now();
+
+                            let cid_opt = value
+                                .get("conversation_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+                            if cid_opt.is_none() {
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code":"INVALID_REQUEST",
+                                    "message":"Missing or invalid conversation_id",
+                                    "op":"delete_conversation"
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            let conversation_id = cid_opt.unwrap();
+
+                            // Recupera i partecipanti per broadcast (non usato per autorizzazione)
+                            let participants_res = crate::services::conversation_service::ConversationService::list_participant_ids(&state.pool, conversation_id).await;
+
+                            // Esegui delete: l'autorizzazione viene validata nel service
+                            let delete_res = crate::services::conversation_service::ConversationService::delete_conversation(
+                                &state.pool,
+                                conversation_id,
+                                user_id
+                            ).await;
+
+                            if let Err(e) = delete_res {
+                                // Mantieni semantica più specifica per gli errori comuni
+                                let (code, message) = match &e {
+                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
+                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    _ => ("DELETE_FAILED", format!("Delete failed: {}", e)),
+                                };
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code": code,
+                                    "message": message,
+                                    "op":"delete_conversation",
+                                    "conversation_id": conversation_id
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            // Broadcast a tutti, incluso autore (se disponibile la lista partecipanti)
+                            if let Ok(participants) = participants_res {
+                                ConversationService::broadcast_conversation_deleted(
+                                    &state,
+                                    conversation_id,
+                                    user_id,
+                                    participants.clone(),
+                                    true
+                                ).await;
+                            }
+
+                            // (Opzionale) ack esplicito
+                            let ack = json!({
+                                "type":"delete_conversation_ack",
+                                "conversation_id": conversation_id,
+                                "status":"ok"
+                            });
+                            if let Ok(txt) = serde_json::to_string(&ack) {
+                                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                            }
+                            
+                            continue;
                         }
 
                         _ => {
