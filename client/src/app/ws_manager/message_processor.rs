@@ -1,8 +1,7 @@
 use crate::models::{Outgoing, UiEvent};
 use crate::state::AppState;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
-use super::connection_manager::ConnectionManager;
 use super::rate_limiter::RateLimiter;
 
 pub struct MessageProcessor;
@@ -35,7 +34,7 @@ impl MessageProcessor {
             }
 
             if let Some(ref ws_ctrl) = state.ws_ctrl {
-                match self.format_outgoing_message(&outgoing) {
+                match self.format_outgoing_message(&outgoing, state) {
                     Ok(json_msg) => {
                         debug!(
                             "Sending WebSocket message: {}",
@@ -73,7 +72,7 @@ impl MessageProcessor {
     }
 
     /// Formatta i messaggi in uscita
-    fn format_outgoing_message(&self, outgoing: &Outgoing) -> Result<String, String> {
+    fn format_outgoing_message(&self, outgoing: &Outgoing, state: &AppState) -> Result<String, String> {
         let json_obj = match outgoing {
             Outgoing::ChatMessage {
                 cid,
@@ -93,20 +92,43 @@ impl MessageProcessor {
                 };
 
                 let mut json_obj = serde_json::json!({
-                    "type": "chat_message",
-                    "cid": cid,
-                    "content": content,
-                    "client_timestamp": chrono::Utc::now().timestamp()
-                });
+                "type": "chat_message",
+                "content": content,
+                "client_timestamp": chrono::Utc::now().timestamp()
+            });
 
+                // Gestione speciale per DM stubs vs conversazioni esistenti
                 if let Some(ref username) = target_username {
+                    // È un DM stub - potrebbe creare una nuova conversazione
                     json_obj["target_username"] = serde_json::Value::String(username.clone());
+
+                    // Se è uno stub, usa l'ID dello stub stesso come client_temp_id
+                    if state.dm_stubs.contains_key(cid) {
+                        // CRITICO: Usa l'UUID dello stub come client_temp_id
+                        // Questo permetterà al client di identificare e rimuovere lo stub
+                        // quando riceve la conferma dal server
+                        json_obj["client_temp_id"] = serde_json::Value::String(cid.to_string());
+
+                        // NON includere conversation_id per gli stub
+                        // Il server capirà che deve creare una nuova conversazione
+                        info!("Sending message to DM stub {} with client_temp_id={} and target_username={}",
+                          cid, cid, username);
+                    } else {
+                        // Non è uno stub ma ha target_username (edge case)
+                        // Questo potrebbe succedere se la conversazione esiste già
+                        json_obj["conversation_id"] = serde_json::Value::String(cid.to_string());
+                        warn!("Conversation {} has target_username but is not a stub", cid);
+                    }
+                } else {
+                    // Conversazione esistente normale (no target_username)
+                    json_obj["conversation_id"] = serde_json::Value::String(cid.to_string());
+                    debug!("Sending message to existing conversation {}", cid);
                 }
 
-                // Includi client_msg_id per tracking conferma
+                // Includi sempre client_msg_id per tracking conferma messaggi
                 if let Some(ref msg_id) = client_msg_id {
                     json_obj["client_msg_id"] = serde_json::Value::String(msg_id.clone());
-                    debug!("Including client_msg_id: {}", msg_id);
+                    debug!("Including client_msg_id: {} for message confirmation tracking", msg_id);
                 }
 
                 json_obj

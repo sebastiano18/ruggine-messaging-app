@@ -476,32 +476,16 @@ fn send_message(s: &mut AppState, cid: Uuid) {
         }
     }
 
+    // Controlla se è un DM stub PRIMA di inviare
+    let is_dm_stub = s.dm_stubs.contains_key(&cid);
+
     // Usa WebSocket con client_msg_id
     s.send_chat_message_ws(content, Some(client_msg_id));
 
-    // DOPO l'invio, se era uno stub DM, convertilo in conversazione reale
-    if s.dm_stubs.contains_key(&cid) {
-        let target_username = s.dm_stubs.remove(&cid).unwrap();
-
-        // Crea la conversazione reale e aggiungila alla lista
-        let real_conversation = ConversationDto {
-            id: cid,
-            kind: "dm".to_string(),
-            title: target_username.clone(),
-            owner_id: s.user_id.unwrap_or(Uuid::nil()),
-            created_at: chrono::Utc::now().timestamp(),
-        };
-
-        if let Some(ref mut conversations) = s.conversations {
-            // Verifica che non esista già (safety check)
-            if !conversations.iter().any(|c| c.id == cid) {
-                conversations.insert(0, real_conversation);
-            }
-        } else {
-            s.conversations = Some(vec![real_conversation]);
-        }
-
-        info!("DM stub converted to real conversation on message send");
+    // NON rimuovere lo stub qui - aspetta la conferma dal server
+    if is_dm_stub {
+        info!("Message sent to DM stub {}, waiting for server confirmation", cid);
+        // Lo stub verrà rimosso quando riceveremo conversation_confirmation dal server
     }
 }
 

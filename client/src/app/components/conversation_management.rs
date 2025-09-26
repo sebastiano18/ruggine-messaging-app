@@ -3,7 +3,7 @@ use crate::api;
 use crate::state::AppState;
 use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Stroke, TextEdit};
 use tokio::runtime::Handle;
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 use uuid::Uuid;
 
 // Costanti di stile per matching con sidebar
@@ -183,175 +183,212 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
     section_card(ui, "💬", "Crea Nuove Chat", |ui| {
         ui.columns(2, |columns| {
             // Nuovo gruppo
-            styled_frame(&columns[0]).show(&mut columns[0], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("👥")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(255, 140, 60)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Nuovo Gruppo")
-                            .strong()
-                            .color(egui::Color32::from_rgb(220, 160, 100)),
-                    );
-                });
+            create_group_subsection(&mut columns[0], s, token, rt);
 
-                ui.add_space(8.0);
+            // Chat privata
+            create_dm_subsection(&mut columns[1], s);
+        });
+    });
+}
 
-                labeled_text(ui, "Nome gruppo:", &mut s.group_name, "Es: Team Alpha");
+fn create_group_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle) {
+    styled_frame(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("👥")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(255, 140, 60)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Nuovo Gruppo")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 160, 100)),
+            );
+        });
 
-                ui.add_space(8.0);
+        ui.add_space(8.0);
 
-                let can_create = !s.group_name.trim().is_empty();
-                if action_button(ui, "➕ Crea Gruppo", can_create) {
-                    let base = s.base.clone();
-                    let name = s.group_name.trim().to_string();
-                    let tx = s.ui_tx.clone();
-                    let token2 = token.to_string();
-                    s.group_name.clear();
+        labeled_text(ui, "Nome gruppo:", &mut s.group_name, "Es: Team Alpha");
 
-                    rt.spawn(async move {
-                        match api::conversation::create_group(&base, &token2, &name).await {
-                            Ok(cid) => {
-                                let _ = tx.send(UiEvent::Info("Gruppo creato! Aggiornamento lista...".into()));
+        ui.add_space(8.0);
 
-                                // Attendi un momento per permettere al server di processare
-                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        let can_create = !s.group_name.trim().is_empty();
+        if action_button(ui, "➕ Crea Gruppo", can_create) {
+            let base = s.base.clone();
+            let name = s.group_name.trim().to_string();
+            let tx = s.ui_tx.clone();
+            let token2 = token.to_string();
+            s.group_name.clear();
 
-                                // Ricarica le conversazioni
-                                match crate::api::conversation::get_conversations(&base, &token2).await {
-                                    Ok(conversations) => {
-                                        // Invia la lista aggiornata
-                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+            rt.spawn(async move {
+                match api::conversation::create_group(&base, &token2, &name).await {
+                    Ok(cid) => {
+                        let _ = tx.send(UiEvent::Info("Gruppo creato! Aggiornamento lista...".into()));
 
-                                        // Prova ad aprire la conversazione
-                                        let _ = tx.send(UiEvent::Opened(cid));
-                                        let _ = tx.send(UiEvent::Info("Gruppo creato con successo!".into()));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(UiEvent::Error(format!(
-                                            "Gruppo creato ma errore nel refresh: {}",
-                                            e
-                                        )));
-                                    }
-                                }
+                        // Attendi un momento per permettere al server di processare
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                        // Ricarica le conversazioni
+                        match crate::api::conversation::get_conversations(&base, &token2).await {
+                            Ok(conversations) => {
+                                // Invia la lista aggiornata
+                                let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+
+                                // Prova ad aprire la conversazione
+                                let _ = tx.send(UiEvent::Opened(cid));
+                                let _ = tx.send(UiEvent::Info("Gruppo creato con successo!".into()));
                             }
                             Err(e) => {
                                 let _ = tx.send(UiEvent::Error(format!(
-                                    "Creazione gruppo fallita: {}",
+                                    "Gruppo creato ma errore nel refresh: {}",
                                     e
                                 )));
                             }
                         }
-                    });
-                }
-
-                if !can_create {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("💡 Inserisci un nome per creare il gruppo")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(160, 100, 60)),
-                    );
+                    }
+                    Err(e) => {
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Creazione gruppo fallita: {}",
+                            e
+                        )));
+                    }
                 }
             });
+        }
 
-            // Chat privata
-            styled_frame(&columns[1]).show(&mut columns[1], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("💬")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(255, 180, 100)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Chat Privata")
-                            .strong()
-                            .color(egui::Color32::from_rgb(220, 160, 100)),
-                    );
-                });
+        if !can_create {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("💡 Inserisci un nome per creare il gruppo")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+        }
+    });
+}
 
-                ui.add_space(8.0);
+fn create_dm_subsection(ui: &mut egui::Ui, s: &mut AppState) {
+    styled_frame(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("💬")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(255, 180, 100)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Chat Privata")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 160, 100)),
+            );
+        });
 
-                labeled_text(
-                    ui,
-                    "Destinatario:",
-                    &mut s.dm_user_username_input,
-                    "Username",
-                );
+        ui.add_space(8.0);
 
-                ui.add_space(8.0);
+        labeled_text(
+            ui,
+            "Destinatario:",
+            &mut s.dm_user_username_input,
+            "Username",
+        );
 
-                let can_dm = !s.dm_user_username_input.trim().is_empty();
+        ui.add_space(8.0);
 
-                if action_button(ui, "🚀 Inizia Chat", can_dm) {
-                    let target_username = s.dm_user_username_input.trim().to_owned();
+        let can_dm = !s.dm_user_username_input.trim().is_empty();
 
-                    // LOGGING PER DEBUG - Genera UUID per lo stub locale
-                    let stub_conversation_id = Uuid::new_v4();
-                    info!("Creating DM stub with ID: {} for target: {}", stub_conversation_id, target_username);
+        if action_button(ui, "🚀 Inizia Chat", can_dm) {
+            let target_username = s.dm_user_username_input.trim().to_owned();
 
-                    // CONTROLLO DUPLICATI: Verifica se esiste già una conversazione con questo target
-                    let mut duplicate_found = false;
-                    if let Some(ref conversations) = s.conversations {
-                        for conv in conversations {
-                            if conv.kind == "dm" && conv.title == target_username {
-                                warn!("Chat with {} already exists: {}", target_username, conv.id);
-                                let _ = s.ui_tx.send(UiEvent::Info(format!(
-                                    "Chat con {} già esistente",
-                                    target_username
-                                )));
-                                let _ = s.ui_tx.send(UiEvent::Opened(conv.id));
-                                duplicate_found = true;
-                                break;
-                            }
-                        }
-                    }
+            // CRITICO: Genera UUID univoco per lo stub locale
+            // Questo UUID sarà usato come client_temp_id quando invieremo il primo messaggio
+            let stub_conversation_id = Uuid::new_v4();
+            info!("Creating DM stub with ID: {} for target user: {}", 
+                  stub_conversation_id, target_username);
 
-                    // CONTROLLO DM STUB: Verifica se esiste già uno stub per questo target
-                    if !duplicate_found {
-                        for (existing_id, existing_target) in &s.dm_stubs {
-                            if existing_target == &target_username {
-                                warn!("DM stub for {} already exists: {}", target_username, existing_id);
-                                let _ = s.ui_tx.send(UiEvent::Info(format!(
-                                    "Chat con {} già in preparazione",
-                                    target_username
-                                )));
-                                let _ = s.ui_tx.send(UiEvent::Opened(*existing_id));
-                                duplicate_found = true;
-                                break;
-                            }
-                        }
-                    }
+            // CONTROLLO DUPLICATI CONVERSAZIONI: Verifica se esiste già una conversazione con questo target
+            let mut duplicate_found = false;
 
-                    if !duplicate_found {
-                        // Crea solo lo stub locale - la conversazione sarà creata sul server al primo messaggio
-                        let _ = s.ui_tx.send(UiEvent::DmStubCreated(stub_conversation_id, target_username.clone()));
-
-                        // Pulisci l'input e dai feedback
-                        s.dm_user_username_input.clear();
+            // Prima controlla tra le conversazioni esistenti
+            if let Some(ref conversations) = s.conversations {
+                for conv in conversations {
+                    if conv.kind == "dm" && conv.title == target_username {
+                        warn!("DM conversation with {} already exists: {}", 
+                              target_username, conv.id);
                         let _ = s.ui_tx.send(UiEvent::Info(format!(
-                            "Chat con {} pronta - invia il primo messaggio per iniziare!",
+                            "Chat con {} già esistente",
                             target_username
                         )));
-                    } else {
-                        // Non pulire l'input in caso di duplicato per permettere correzioni
+                        // Apri la conversazione esistente
+                        let _ = s.ui_tx.send(UiEvent::Opened(conv.id));
+                        duplicate_found = true;
+                        break;
                     }
                 }
+            }
 
-                if !can_dm {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("💡 Inserisci un username per avviare la chat")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(160, 100, 60)),
-                    );
+            // CONTROLLO DUPLICATI STUB: Verifica se esiste già uno stub per questo target
+            if !duplicate_found {
+                for (existing_stub_id, existing_target) in &s.dm_stubs {
+                    if existing_target == &target_username {
+                        warn!("DM stub for {} already exists: {}", 
+                              target_username, existing_stub_id);
+                        let _ = s.ui_tx.send(UiEvent::Info(format!(
+                            "Chat con {} già in preparazione",
+                            target_username
+                        )));
+                        // Apri lo stub esistente
+                        let _ = s.ui_tx.send(UiEvent::Opened(*existing_stub_id));
+                        duplicate_found = true;
+                        break;
+                    }
                 }
-            });
-        });
+            }
+
+            if !duplicate_found {
+                // IMPORTANTE FLOW:
+                // 1. Lo stub usa il suo UUID come identificatore locale
+                // 2. Quando invieremo il primo messaggio, useremo questo UUID come client_temp_id
+                // 3. Il server creerà la conversazione reale e restituirà il client_temp_id nella conferma
+                // 4. Useremo il client_temp_id per trovare e rimuovere questo stub
+
+                info!("Creating new DM stub: {} -> {}", stub_conversation_id, target_username);
+                debug!("This stub UUID will be used as client_temp_id: {}", stub_conversation_id);
+
+                // Invia evento per creare lo stub
+                let _ = s.ui_tx.send(UiEvent::DmStubCreated(
+                    stub_conversation_id,
+                    target_username.clone()
+                ));
+
+                // Pulisci l'input solo se lo stub è stato creato con successo
+                s.dm_user_username_input.clear();
+
+                // Feedback positivo all'utente
+                let _ = s.ui_tx.send(UiEvent::Info(format!(
+                    "Chat con {} pronta - invia il primo messaggio per iniziare!",
+                    target_username
+                )));
+
+                // Log dettagliato per debug
+                debug!("DM stub created successfully:");
+                debug!("  Stub ID: {}", stub_conversation_id);
+                debug!("  Target: {}", target_username);
+                debug!("  Will use as client_temp_id when sending first message");
+            } else {
+                // Se trovato duplicato, non pulire l'input per permettere all'utente di correggere
+                debug!("Duplicate DM found for {}, not creating new stub", target_username);
+            }
+        }
+
+        if !can_dm {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("💡 Inserisci un username per avviare la chat")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+        }
     });
 }
 
@@ -359,194 +396,203 @@ fn invites_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle
     section_card(ui, "🎫", "Sistema Inviti", |ui| {
         ui.columns(2, |columns| {
             // Join con token
-            styled_frame(&columns[0]).show(&mut columns[0], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("🔗")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(200, 140, 80)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Unisciti a un Gruppo")
-                            .strong()
-                            .color(egui::Color32::from_rgb(220, 160, 100)),
-                    );
-                });
-
-                ui.add_space(8.0);
-
-                let invite_token = s.last_invite_token.get_or_insert_with(String::new);
-                labeled_mono_text(ui, "Token:", invite_token, "abc123def456");
-
-                ui.add_space(8.0);
-
-                let can_join = !invite_token.trim().is_empty();
-                if action_button(ui, "🎯 Unisciti", can_join) {
-                    let base = s.base.clone();
-                    let token2 = token.to_string();
-                    let tx = s.ui_tx.clone();
-                    let token_input_clone = invite_token.trim().to_owned();
-
-                    rt.spawn(async move {
-                        match api::conversation::join_by_token(&base, &token2, &token_input_clone)
-                            .await
-                        {
-                            Ok(cid) => {
-                                let _ = tx.send(UiEvent::Info("Unito al gruppo! Aggiornamento lista...".into()));
-
-                                // Attendi un momento per permettere al server di processare
-                                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-
-                                // Ricarica le conversazioni
-                                match crate::api::conversation::get_conversations(&base, &token2).await {
-                                    Ok(conversations) => {
-                                        // Invia la lista aggiornata
-                                        let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-
-                                        // Prova ad aprire la conversazione
-                                        let _ = tx.send(UiEvent::Opened(cid));
-                                        let _ = tx.send(UiEvent::Info("Ti sei unito al gruppo!".into()));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(UiEvent::Error(format!(
-                                            "Unito al gruppo ma errore nel refresh: {}",
-                                            e
-                                        )));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(UiEvent::Error(format!("Join fallito: {}", e)));
-                            }
-                        }
-                    });
-                }
-
-                if !can_join {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("💡 Inserisci un token valido per procedere")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(160, 100, 60)),
-                    );
-                }
-            });
+            join_by_token_subsection(&mut columns[0], s, token, rt);
 
             // Genera invito
-            styled_frame(&columns[1]).show(&mut columns[1], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("🎟")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(140, 180, 220)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Genera Invito")
-                            .strong()
-                            .color(egui::Color32::from_rgb(220, 160, 100)),
-                    );
-                });
+            generate_invite_subsection(&mut columns[1], s, token, rt);
+        });
 
-                ui.add_space(8.0);
+        // Token generato (mostrato sotto le colonne)
+        show_generated_token(ui, s);
+    });
+}
 
-                combo_conversations(ui, s);
+fn join_by_token_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle) {
+    styled_frame(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("🔗")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(200, 140, 80)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Unisciti a un Gruppo")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 160, 100)),
+            );
+        });
 
-                ui.add_space(8.0);
+        ui.add_space(8.0);
 
-                let can_invite = s.cid.is_some() || !s.invite_conversation_id.trim().is_empty();
-                if action_button(ui, "🔮 Genera Token", can_invite) {
-                    let conv_uuid = if let Some(current_conv) = s.cid {
-                        current_conv
-                    } else {
-                        match Uuid::parse_str(s.invite_conversation_id.trim()) {
-                            Ok(u) => u,
-                            Err(_) => {
-                                let _ = s
-                                    .ui_tx
-                                    .send(UiEvent::Error("UUID conversazione non valido".into()));
-                                return;
-                            }
-                        }
-                    };
+        let invite_token = s.last_invite_token.get_or_insert_with(String::new);
+        labeled_mono_text(ui, "Token:", invite_token, "abc123def456");
 
-                    let base = s.base.clone();
-                    let token2 = token.to_string();
-                    let tx = s.ui_tx.clone();
+        ui.add_space(8.0);
 
-                    rt.spawn(async move {
-                        match api::conversation::create_invite(&base, &token2, conv_uuid).await {
-                            Ok(invite_token) => {
-                                let _ = tx.send(UiEvent::InviteCreated(invite_token));
+        let can_join = !invite_token.trim().is_empty();
+        if action_button(ui, "🎯 Unisciti", can_join) {
+            let base = s.base.clone();
+            let token2 = token.to_string();
+            let tx = s.ui_tx.clone();
+            let token_input_clone = invite_token.trim().to_owned();
+
+            rt.spawn(async move {
+                match api::conversation::join_by_token(&base, &token2, &token_input_clone)
+                    .await
+                {
+                    Ok(cid) => {
+                        let _ = tx.send(UiEvent::Info("Unito al gruppo! Aggiornamento lista...".into()));
+
+                        // Attendi un momento per permettere al server di processare
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+                        // Ricarica le conversazioni
+                        match crate::api::conversation::get_conversations(&base, &token2).await {
+                            Ok(conversations) => {
+                                let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+                                let _ = tx.send(UiEvent::Opened(cid));
+                                let _ = tx.send(UiEvent::Info("Ti sei unito al gruppo!".into()));
                             }
                             Err(e) => {
                                 let _ = tx.send(UiEvent::Error(format!(
-                                    "Creazione invito fallita: {}",
+                                    "Unito al gruppo ma errore nel refresh: {}",
                                     e
                                 )));
                             }
                         }
-                    });
-                }
-
-                if !can_invite {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("💡 Seleziona un gruppo per generare un invito")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(160, 100, 60)),
-                    );
-                }
-            });
-        });
-
-        // Token generato
-        if let Some(ref invite) = s.last_created_invite {
-            ui.add_space(12.0);
-            styled_frame(ui).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("🎉")
-                            .size(16.0)
-                            .color(egui::Color32::LIGHT_GREEN),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Token generato:")
-                            .strong()
-                            .color(egui::Color32::LIGHT_GREEN),
-                    );
-                });
-
-                ui.add_space(6.0);
-
-                ui.horizontal(|ui| {
-                    let mut invite_text = invite.clone();
-                    ui.add(
-                        TextEdit::singleline(&mut invite_text)
-                            .desired_width(ui.available_width() - 60.0)
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    if ui
-                        .button(RichText::new("📋").size(16.0))
-                        .on_hover_text("Copia")
-                        .clicked()
-                    {
-                        ui.output_mut(|o| o.copied_text = invite_text);
-                        let _ = s
-                            .ui_tx
-                            .send(UiEvent::Info("Token copiato negli appunti!".into()));
                     }
-                });
-
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("💡 Condividi questo token per invitare altri utenti")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 100, 60)),
-                );
+                    Err(e) => {
+                        let _ = tx.send(UiEvent::Error(format!("Join fallito: {}", e)));
+                    }
+                }
             });
         }
+
+        if !can_join {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("💡 Inserisci un token valido per procedere")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+        }
     });
+}
+
+fn generate_invite_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle) {
+    styled_frame(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("🎟")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(140, 180, 220)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Genera Invito")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 160, 100)),
+            );
+        });
+
+        ui.add_space(8.0);
+
+        combo_conversations(ui, s);
+
+        ui.add_space(8.0);
+
+        let can_invite = s.cid.is_some() || !s.invite_conversation_id.trim().is_empty();
+        if action_button(ui, "🔮 Genera Token", can_invite) {
+            let conv_uuid = if let Some(current_conv) = s.cid {
+                current_conv
+            } else {
+                match Uuid::parse_str(s.invite_conversation_id.trim()) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        let _ = s
+                            .ui_tx
+                            .send(UiEvent::Error("UUID conversazione non valido".into()));
+                        return;
+                    }
+                }
+            };
+
+            let base = s.base.clone();
+            let token2 = token.to_string();
+            let tx = s.ui_tx.clone();
+
+            rt.spawn(async move {
+                match api::conversation::create_invite(&base, &token2, conv_uuid).await {
+                    Ok(invite_token) => {
+                        let _ = tx.send(UiEvent::InviteCreated(invite_token));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Creazione invito fallita: {}",
+                            e
+                        )));
+                    }
+                }
+            });
+        }
+
+        if !can_invite {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("💡 Seleziona un gruppo per generare un invito")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+        }
+    });
+}
+
+fn show_generated_token(ui: &mut egui::Ui, s: &mut AppState) {
+    if let Some(ref invite) = s.last_created_invite {
+        ui.add_space(12.0);
+        styled_frame(ui).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("🎉")
+                        .size(16.0)
+                        .color(egui::Color32::LIGHT_GREEN),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Token generato:")
+                        .strong()
+                        .color(egui::Color32::LIGHT_GREEN),
+                );
+            });
+
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                let mut invite_text = invite.clone();
+                ui.add(
+                    TextEdit::singleline(&mut invite_text)
+                        .desired_width(ui.available_width() - 60.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if ui
+                    .button(RichText::new("📋").size(16.0))
+                    .on_hover_text("Copia")
+                    .clicked()
+                {
+                    ui.output_mut(|o| o.copied_text = invite_text);
+                    let _ = s
+                        .ui_tx
+                        .send(UiEvent::Info("Token copiato negli appunti!".into()));
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("💡 Condividi questo token per invitare altri utenti")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(160, 100, 60)),
+            );
+        });
+    }
 }

@@ -97,6 +97,7 @@ pub struct AppState {
 
     pub is_loading_more: bool,
     pub has_more_messages: HashMap<Uuid, bool>,
+    pub pending_conversations: HashMap<String, ConversationDto>,
 }
 
 impl AppState {
@@ -170,6 +171,7 @@ impl AppState {
 
             is_loading_more: false,
             has_more_messages: HashMap::new(),
+            pending_conversations: HashMap::new(),
         }
     }
 

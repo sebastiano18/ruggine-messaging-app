@@ -255,6 +255,12 @@ pub enum UiEvent {
     },
 
     OlderMessagesLoaded(Vec<MessageDto>),
+
+    ConversationConfirmed {
+        conversation: ConversationDto,
+        messages: Vec<MessageDto>,
+        client_temp_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
