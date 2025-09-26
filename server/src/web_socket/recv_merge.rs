@@ -246,22 +246,97 @@ pub async fn spawn_receiver(
                         Some(Ok(val)) => {
                             if let Some(msg_type) = val.get("type").and_then(|t| t.as_str()) {
                                 match msg_type {
+                                    "conversation_confirmation" => {
+                                        debug!("Received conversation_confirmation for user {}", user_id);
+
+                                        // Estrai l'ID della conversazione
+                                        let conversation_id = val.get("conversation")
+                                            .and_then(|c| c.get("id"))
+                                            .and_then(|v| v.as_str())
+                                            .and_then(|s| Uuid::parse_str(s).ok());
+
+                                        if let Some(conv_id) = conversation_id {
+                                            // Auto-iscrivi il creatore al canale broadcast
+                                            info!("Auto-subscribing creator {} to conversation {}", user_id, conv_id);
+
+                                            let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
+                                            let receiver = conv_tx.subscribe();
+                                            let stream = BroadcastStream::new(receiver);
+
+                                            stream_manager.add_conversation_stream(conv_id, stream).await;
+
+                                            let receiver_count = conv_tx.receiver_count();
+                                            info!("Creator {} subscribed to conversation {} ({} receivers)",
+                                                  user_id, conv_id, receiver_count);
+                                        }
+
+                                        // Forward l'evento al client
+                                        if let Ok(txt) = serde_json::to_string(&val) {
+                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                                warn!("Failed to send conversation_confirmation to user {}", user_id);
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            }
+                                        }
+
+                                        empty_backoff_seconds = 30;
+                                        consecutive_none_count = 0;
+                                    }
                                     "conversation_created_complete" => {
                                         debug!("Received conversation_created_complete for user {}", user_id);
 
-                                        // 1. Forward l'evento completo al client
-                                        if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
-                                            warn!("Failed to handle conversation_created_complete: {} {}", user_id, e);
+                                        // 1. PRIMA: Estrai l'ID della conversazione e iscriviti al canale
+                                        let conversation_id = val.get("conversation")
+                                            .and_then(|c| c.get("id"))
+                                            .and_then(|v| v.as_str())
+                                            .and_then(|s| Uuid::parse_str(s).ok());
+
+                                        if let Some(conv_id) = conversation_id {
+                                            // Iscrivi l'utente al canale broadcast PRIMA di inviare la notifica
+                                            info!("Auto-subscribing user {} to new conversation {}", user_id, conv_id);
+
+                                            // Ottieni il broadcast channel della conversazione
+                                            let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
+                                            let receiver = conv_tx.subscribe();
+                                            let stream = BroadcastStream::new(receiver);
+
+                                            // Aggiungi lo stream al manager
+                                            stream_manager.add_conversation_stream(conv_id, stream).await;
+
+                                            let receiver_count = conv_tx.receiver_count();
+                                            info!("User {} subscribed to conversation {} - now {} receivers (BEFORE sending notification)",
+                                                  user_id, conv_id, receiver_count);
                                         }
 
-                                        // 2. CRITICO: Refresh streams per iscriversi alla nuova conversazione!
-                                        stream_manager.refresh_conversation_streams(&state, user_id).await;
-                                        info!("Refreshed streams after conversation_created_complete for user {}", user_id);
+                                        // 2. DOPO: Invia l'evento completo al client
+                                        // L'evento contiene già:
+                                        // - conversation.id
+                                        // - conversation.display_title (username dell'altro utente per DM)
+                                        // - conversation.last_message (con tutti i dati del messaggio)
+                                        if let Ok(txt) = serde_json::to_string(&val) {
+                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                                warn!("Failed to send conversation_created_complete to user {}", user_id);
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            } else {
+                                                info!("Sent conversation_created_complete to user {} (with last_message)", user_id);
+
+                                                // Log del contenuto per debug
+                                                if let Some(last_msg) = val.get("conversation")
+                                                    .and_then(|c| c.get("last_message")) {
+                                                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
+                                                        debug!("  Last message content: '{}'",
+                                                               content.chars().take(50).collect::<String>());
+                                                    }
+                                                }
+                                            }
+                                        }
 
                                         // Reset contatori
                                         empty_backoff_seconds = 30;
                                         consecutive_none_count = 0;
                                     }
+
                                     "conversation_created" => {
                                         // Vecchio formato - mantieni per retrocompatibilità
                                         debug!("Received legacy conversation_created for user {}", user_id);

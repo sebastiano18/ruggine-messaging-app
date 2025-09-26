@@ -563,7 +563,86 @@ impl EventDispatcher {
                 }
             }
 
+            
+
             // ===== CONVERSATION EVENTS =====
+
+            // Circa riga 666 nel tuo mod.rs
+            UiEvent::ConversationConfirmed { conversation, messages, client_temp_id } => {
+                info!("Processing conversation confirmation for {} (temp_id: {:?})",
+          conversation.id, client_temp_id);
+
+                // CRITICO: Controlla se lo stub era la conversazione attiva
+                let mut was_active_stub = false;
+                let mut stub_to_remove = None;
+
+                if let Some(ref temp_id) = client_temp_id {
+                    if let Ok(stub_uuid) = Uuid::parse_str(temp_id) {
+                        if state.cid == Some(stub_uuid) {
+                            was_active_stub = true;
+                            info!("Active stub {} will be replaced with real conversation {}",
+                      stub_uuid, conversation.id);
+                        }
+
+                        if state.dm_stubs.contains_key(&stub_uuid) {
+                            stub_to_remove = Some(stub_uuid);
+                        }
+                    }
+                }
+
+                // Rimuovi lo stub
+                if let Some(stub_id) = stub_to_remove {
+                    if let Some(target) = state.dm_stubs.remove(&stub_id) {
+                        info!("Removed DM stub {} (target: {}) after confirmation", stub_id, target);
+                    }
+
+                    // NUOVO: Rimuovi anche le sequence dello stub
+                    state.conversation_sequences.remove(&stub_id);
+                    state.conversation_sequences_confirmed.remove(&stub_id);
+                }
+
+                // Aggiungi/aggiorna la conversazione reale
+                if let Some(ref mut conversations) = state.conversations {
+                    conversations.retain(|c| c.id != conversation.id);
+                    conversations.push(conversation.clone());
+                    conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                } else {
+                    state.conversations = Some(vec![conversation.clone()]);
+                }
+
+                // Aggiungi messaggi se presenti
+                if !messages.is_empty() {
+                    state.conversation_messages.insert(conversation.id, messages.clone());
+
+                    // NUOVO: Imposta le sequence basandosi sui messaggi ricevuti
+                    if let Some(last_msg) = messages.last() {
+                        if let Some(seq) = last_msg.sequence_num {
+                            state.conversation_sequences.insert(conversation.id, seq);
+                            state.conversation_sequences_confirmed.insert(conversation.id, seq);
+                            info!("Set conversation {} sequence to {} from messages",
+                      conversation.id, seq);
+                        }
+                    }
+                }
+
+                // CRITICO: Se lo stub era attivo, AGGIORNA alla conversazione reale
+                if was_active_stub {
+                    state.cid = Some(conversation.id);  // Aggiorna ID attivo
+                    state.conv_title = conversation.title.clone();
+                    state.messages = messages;
+                    info!("Updated active conversation from stub {} to real {}",
+              stub_to_remove.unwrap_or(Uuid::nil()), conversation.id);
+                } else if state.cid == Some(conversation.id) {
+                    state.messages = messages;
+                }
+
+                // Notifica utente
+                helpers::add_system_message(
+                    state,
+                    format!("Conversazione '{}' confermata", conversation.title)
+                );
+            }
+
             UiEvent::OlderMessagesLoaded(new_messages) => {
                 state.is_loading_more = false;
 
