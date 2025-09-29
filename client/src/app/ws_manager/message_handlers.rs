@@ -693,6 +693,20 @@ fn handle_conversation_deleted(
     match cid_opt {
         Some(conversation_id) => {
             debug!("Handling conversation_deleted for {}", conversation_id);
+
+            // Se presente, inoltra anche come UserNotification per aggiornare la user_sequence
+            if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
+                let _ = tx.send(UiEvent::UserNotification {
+                    sequence: seq,
+                    event_type: "conversation_deleted".to_string(),
+                    event_data: value.clone(),
+                    conversation_id: Some(conversation_id),
+                    recovery: false,
+                });
+            } else {
+                debug!("conversation_deleted arrived without sequence; not updating user_sequence");
+            }
+
             let _ = tx.send(UiEvent::ConversationDeleted(conversation_id));
         }
         None => {

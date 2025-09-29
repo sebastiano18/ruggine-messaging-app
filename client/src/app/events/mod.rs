@@ -1055,12 +1055,21 @@ impl EventDispatcher {
                             }
                         }
                     }
-                    // Nella sezione UserNotification, aggiungi questo case:
+                    "conversation_deleted" => {
+                        // Applica anche da resume/offline: rimuovi la conversazione
+                        if let Some(cid) = conversation_id {
+                            info!("Applying conversation_deleted from UserNotification for {}", cid);
+                            let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
+                        } else {
+                            warn!("conversation_deleted notification without conversation_id");
+                        }
+                    }
+                    
                     "conversation_created_complete" => {
-                        info!(
-        "Processing conversation_created_complete with sequence {}",
-        sequence
-    );
+                                    info!(
+                    "Processing conversation_created_complete with sequence {}",
+                    sequence
+                );
 
                         // Estrai la conversazione completa dai dati
                         if let Some(conv_obj) = event_data.get("conversation") {
