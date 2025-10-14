@@ -19,6 +19,11 @@ pub struct SequenceStats {
     pub last_gap_time: Option<Instant>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingDeletion {
+    pub conversation: ConversationDto,
+}
+
 pub struct AppState {
     pub rt: Runtime,
     pub base: String,
@@ -37,6 +42,7 @@ pub struct AppState {
     // Conversations
     pub conversations: Option<Vec<ConversationDto>>,
     pub request_conversations_refresh: bool,
+    pub pending_deletion: Option<PendingDeletion>,
 
     // Group management
     pub group_name: String,
@@ -122,6 +128,7 @@ impl AppState {
 
             conversations: None,
             request_conversations_refresh: false,
+            pending_deletion: None,
             group_name: String::new(),
             dm_user_username_input: String::new(),
             last_invite_token: None,
@@ -191,6 +198,56 @@ impl AppState {
         DataLoader::load_single_conversation_messages(self, cid);
     }
 
+    pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
+        self.pending_deletion = Some(PendingDeletion {
+            conversation: conversation.clone(),
+        });
+    }
+
+    pub fn cancel_delete_confirmation(&mut self) {
+        self.pending_deletion = None;
+    }
+
+    pub fn execute_pending_deletion(&mut self) {
+        let Some(pending) = self.pending_deletion.take() else {
+            return;
+        };
+
+        let conversation = pending.conversation;
+        let cid = conversation.id;
+
+        if self.is_dm_stub(cid) {
+            self.remove_dm_stub(cid);
+            if let Some(ref mut list) = self.conversations {
+                list.retain(|c| c.id != cid);
+            }
+            self.conversation_messages.remove(&cid);
+
+            if self.cid == Some(cid) {
+                self.cid = None;
+                self.conv_title.clear();
+                self.messages.clear();
+                self.page = Page::Conversations;
+            }
+
+            let _ = self
+                .ui_tx
+                .send(UiEvent::Info("Chat privata rimossa (locale)".into()));
+        } else {
+            if self.ws_status == WsStatus::Connected {
+                self.send_via_websocket(Outgoing::DeleteConversation { cid });
+
+                let _ = self
+                    .ui_tx
+                    .send(UiEvent::Info("Eliminazione conversazione...".into()));
+            } else {
+                let _ = self
+                    .ui_tx
+                    .send(UiEvent::Error("Errore di connessione".into()));
+            }
+        }
+    }
+
     // === WebSocket helpers ===
 
     pub fn send_via_websocket(&self, outgoing: Outgoing) {
@@ -248,7 +305,7 @@ impl AppState {
 
                 // Notifica l'utente
                 let _ = self.ui_tx.send(UiEvent::Info(
-                    "⚠️ Messaggio potrebbe non essere stato inviato".into()
+                    "⚠️ Messaggio potrebbe non essere stato inviato".into(),
                 ));
             }
         }

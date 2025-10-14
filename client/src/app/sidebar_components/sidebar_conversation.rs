@@ -1,8 +1,8 @@
 use crate::api;
-use crate::models::{Outgoing, Page, UiEvent, WsStatus};
+use crate::models::{Page, UiEvent};
 use crate::state::AppState;
 use eframe::egui;
-use egui::{Align, Frame, Layout, RichText, Stroke, TextEdit};
+use egui::{Align, Align2, Frame, Layout, RichText, Stroke, TextEdit};
 
 pub struct ConversationsSidebar {
     search_query: String,
@@ -39,6 +39,8 @@ impl ConversationsSidebar {
         // Sezione ricerca
         self.show_search_section(ui, state, &token);
         ui.add_space(8.0);
+
+        self.show_delete_confirmation_popup(ui, state);
 
         // Lista conversazioni
         self.show_filtered_conversations(ui, state);
@@ -154,10 +156,10 @@ impl ConversationsSidebar {
             .filter(|conv| {
                 conv.title.to_lowercase().contains(&query)
                     || match conv.kind.as_str() {
-                    "group" => "gruppo".contains(&query),
-                    "dm" => "privata".contains(&query) || "dm".contains(&query),
-                    _ => false,
-                }
+                        "group" => "gruppo".contains(&query),
+                        "dm" => "privata".contains(&query) || "dm".contains(&query),
+                        _ => false,
+                    }
             })
             .collect()
     }
@@ -212,7 +214,6 @@ impl ConversationsSidebar {
 
         // Mostra il bottone elimina SOLO se l'utente corrente è l'owner (for groups-only)
         let show_delete_button = state.user_id.map_or(false, |uid| uid == conv.owner_id);
-        let mut delete_clicked = false;
 
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
@@ -238,7 +239,6 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    
                     if conv.kind == "group" {
                         // Destra: bottone elimina (solo se owner del gruppo)
                         if show_delete_button {
@@ -256,18 +256,15 @@ impl ConversationsSidebar {
                                 ))
                                 .rounding(egui::Rounding::same(4.0));
 
-                            let del_resp = ui
-                                .add(delete_button)
-                                .on_hover_text("Elimina gruppo");
+                            let del_resp = ui.add(delete_button).on_hover_text("Elimina gruppo");
 
                             if del_resp.clicked() {
-                                delete_clicked = true;
+                                state.request_delete_confirmation(conv);
                             }
 
                             ui.add_space(8.0);
                         }
-                    }
-                    else{
+                    } else {
                         let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
                             .small()
                             .fill(egui::Color32::TRANSPARENT)
@@ -281,12 +278,10 @@ impl ConversationsSidebar {
                             ))
                             .rounding(egui::Rounding::same(4.0));
 
-                        let del_resp = ui
-                            .add(delete_button)
-                            .on_hover_text("Elimina conversazione");
+                        let del_resp = ui.add(delete_button).on_hover_text("Elimina conversazione");
 
                         if del_resp.clicked() {
-                            delete_clicked = true;
+                            state.request_delete_confirmation(conv);
                         }
 
                         ui.add_space(8.0);
@@ -295,45 +290,88 @@ impl ConversationsSidebar {
             });
         });
 
-        // Gestione click "Elimina"
-        if delete_clicked {
-            let cid = conv.id;
-
-            // Caso A: DM locale/stub
-            if state.is_dm_stub(cid) {
-                state.remove_dm_stub(cid);
-                if let Some(ref mut list) = state.conversations {
-                    list.retain(|c| c.id != cid);
-                }
-                state.conversation_messages.remove(&cid);
-
-                if state.cid == Some(cid) {
-                    state.cid = None;
-                    state.conv_title.clear();
-                    state.messages.clear();
-                    state.page = Page::Conversations;
-                }
-
-                let _ = state.ui_tx.send(UiEvent::Info("Chat privata rimossa (locale)".into()));
-            } else {
-                // Caso B: conversazione reale
-                if state.ws_status == WsStatus::Connected {
-                    // Invio comando di delete via WebSocket
-                    state.send_via_websocket(Outgoing::DeleteConversation { cid });
-
-                    let _ = state.ui_tx.send(UiEvent::Info("Eliminazione conversazione...".into()));
-                } else {
-                    let _ = state.ui_tx.send(UiEvent::Error("Errore di connessione".into()));
-                }
-            }
-
-            // Non aprire la chat se si è cliccato "Elimina"
-            return;
-        }
-         // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
+        // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
         if response.clicked() {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;
+        }
+    }
+
+    // Gestione pop-up di eliminazione dm/group
+    fn show_delete_confirmation_popup(&self, ui: &mut egui::Ui, state: &mut AppState) {
+        let Some(pending) = state.pending_deletion.clone() else {
+            return;
+        };
+
+        let conversation = pending.conversation;
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+
+        let is_stub = state.is_dm_stub(conversation.id);
+        let kind_label = match conversation.kind.as_str() {
+            "group" => "gruppo",
+            "dm" => "chat privata",
+            _ => "conversazione",
+        };
+
+        let detail_message = if is_stub {
+            "Si tratta di uno stub locale: verrà semplicemente rimosso dalla tua lista."
+        } else if conversation.kind == "group" {
+            "L'eliminazione rimuoverà il gruppo per tutti i partecipanti. L'azione è irreversibile."
+        } else {
+            "L'eliminazione rimuoverà definitivamente la conversazione. L'azione è irreversibile."
+        };
+
+        egui::Window::new("Conferma eliminazione")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(320.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Sei sicuro di voler eliminare la {} \"{}\"?",
+                            kind_label, conversation.title
+                        ))
+                        .strong(),
+                    );
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(detail_message)
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(210, 200, 200)),
+                    );
+
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("❌ Annulla").clicked() {
+                            cancel = true;
+                        }
+
+                        ui.add_space(8.0);
+
+                        let confirm_button = egui::Button::new(
+                            RichText::new("🗑️ Elimina").color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(200, 100, 40))
+                        .rounding(egui::Rounding::same(6.0));
+
+                        if ui.add(confirm_button).clicked() {
+                            confirm = true;
+                        }
+                    });
+                });
+            });
+
+        if confirm {
+            state.execute_pending_deletion();
+        } else if cancel || !open {
+            state.cancel_delete_confirmation();
         }
     }
 
@@ -410,8 +448,8 @@ impl ConversationsSidebar {
                     "Nessuna conversazione trovata per '{}'",
                     self.search_query
                 ))
-                    .size(12.0)
-                    .color(egui::Color32::GRAY),
+                .size(12.0)
+                .color(egui::Color32::GRAY),
             );
         });
     }
