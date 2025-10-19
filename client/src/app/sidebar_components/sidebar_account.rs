@@ -25,6 +25,8 @@ impl AccountSidebar {
             ui.add_space(12.0);
 
             self.show_logout_button(ui, state);
+            ui.add_space(12.0);
+            self.show_delete_account(ui, state);
         }
     }
 
@@ -122,5 +124,48 @@ impl AccountSidebar {
                 });
             }
         }
+    }
+
+    fn show_delete_account(&self, ui: &mut egui::Ui, state: &mut AppState) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Elimina account").strong());
+            ui.separator();
+
+            if !state.confirm_delete_account {
+                let confirm_style = egui::Button::new("Elimina account")
+                    .fill(egui::Color32::from_rgb(180, 30, 30))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .min_size(egui::vec2(200.0, 32.0));
+
+                if ui.add(confirm_style).clicked() {
+                    let _ = state.ui_tx.send(UiEvent::DeleteAccountStart);
+                }
+
+                ui.small("Questa azione è irreversibile. Ti verrà chiesta conferma.");
+                return;
+            }
+
+            ui.horizontal(|ui| {
+                let confirm_style = egui::Button::new("Conferma eliminazione")
+                    .fill(egui::Color32::from_rgb(220, 20, 20))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .min_size(egui::vec2(220.0, 32.0));
+
+                if ui.add(confirm_style).clicked() {
+                    let _ = state.ui_tx.send(UiEvent::DeleteAccountConfirm);
+                }
+
+                let cancel_style = egui::Button::new("Annulla")
+                    .fill(egui::Color32::from_rgb(80, 80, 80))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                    .min_size(egui::vec2(120.0, 32.0));
+
+                if ui.add(cancel_style).clicked() {
+                    let _ = state.ui_tx.send(UiEvent::DeleteAccountCancel);
+                }
+            });
+
+            ui.small("Se confermi, l'account verrà eliminato e verrai disconnesso.");
+        });
     }
 }

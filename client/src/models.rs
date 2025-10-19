@@ -177,6 +177,9 @@ pub enum UiEvent {
     Logged(String, Uuid, u64),
     LoggedOut,
     LoadingError,
+    DeleteAccountStart,    // primo click -> chiede conferma
+    DeleteAccountConfirm,  // secondo click -> esegue davvero
+    DeleteAccountCancel,   // annulla la conferma
 
     // WebSocket events
     WsConnected,

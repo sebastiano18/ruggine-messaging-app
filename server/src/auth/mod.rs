@@ -43,6 +43,17 @@ where
             &Validation::new(Algorithm::HS256),
         ).map_err(|_| AppError::Unauthorized)?;
 
+        // Verifica che l'utente esista ancora
+        let uid = data.claims.uid;
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM users WHERE id = ? LIMIT 1")
+            .bind(uid.to_string())
+            .fetch_optional(&app_state.pool)
+            .await
+            .map_err(|_| AppError::Unauthorized)?;
+        if exists.is_none() {
+            return Err(AppError::Unauthorized);
+        }
+
         Ok(AuthUser { id: data.claims.uid, username: data.claims.sub })
     }
 }

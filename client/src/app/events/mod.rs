@@ -13,6 +13,7 @@ use crate::state::AppState;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use reqwest::StatusCode;
 
 pub struct EventDispatcher;
 
@@ -92,6 +93,54 @@ impl EventDispatcher {
                 state.conversation_sequences_confirmed.clear();
                 state.sequence_stats = Default::default();
             }
+
+            UiEvent::DeleteAccountStart => {
+                // Abilita modalità "doppia conferma"
+                state.confirm_delete_account = true;
+            },
+
+            UiEvent::DeleteAccountCancel => {
+                // Disabilita modalità "doppia conferma"
+                state.confirm_delete_account = false;
+                let _ = state.ui_tx.send(UiEvent::Info("Eliminazione annullata".into()));
+            },
+
+            UiEvent::DeleteAccountConfirm => {
+                // Disabilita sempre il flag di conferma (per evitare UI bloccate)
+                state.confirm_delete_account = false;
+
+                // Se non c'è token, tratta come logout
+                let Some(token) = state.token.clone() else {
+                    let _ = state.ui_tx.send(UiEvent::LoggedOut);
+                    return;
+                };
+
+                let base = state.base.clone();
+                let tx = state.ui_tx.clone();
+
+                // Esegui la chiamata HTTP in background
+                state.rt.spawn(async move {
+                    match crate::api::auth::delete_account(&base, &token).await {
+                        Ok(()) => {
+                            // Successo -> logout
+                            let _ = tx.send(UiEvent::LoggedOut);
+                        }
+                        Err(e) => {
+                            // 401 => token non valido -> logout
+                            if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
+                                if req_err.status() == Some(StatusCode::UNAUTHORIZED) {
+                                    let _ = tx.send(UiEvent::LoggedOut);
+                                    return;
+                                }
+                            }
+                            // Altri errori => mostra errore
+                            let _ = tx.send(UiEvent::Error(format!(
+                                "Eliminazione account fallita: {e}"
+                            )));
+                        }
+                    }
+                });
+            },
 
             // ===== WEBSOCKET EVENTS =====
             UiEvent::WsConnected => {
