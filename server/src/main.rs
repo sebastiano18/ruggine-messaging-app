@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     let state = state::AppState::new(pool, cfg.jwt_secret.clone());
-
+    cpu_logger::spawn_cpu_logger();
     // Router principale con TraceLayer
     let app: Router = routers::build_router(state).layer(TraceLayer::new_for_http());
 
