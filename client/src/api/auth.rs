@@ -53,3 +53,13 @@ pub async fn logout(base: &str, token: &str) -> Result<()> {
         .error_for_status()?;
     Ok(())
 }
+
+pub async fn delete_account(base: &str, token: &str) -> Result<()> {
+    Client::new()
+        .delete(format!("{base}/api/users/deleteMe"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}

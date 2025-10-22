@@ -64,8 +64,16 @@ pub struct MessageDto {
     pub author_username: String,
     pub content: String,
     pub created_at: i64,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sequence_num: Option<u64>,
+
+    // Campi per il tracking delle conferme messaggi
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_msg_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_confirmed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -92,7 +100,7 @@ pub struct MessageResponse {
     pub content: String,
     pub created_at: i64,
     #[serde(default)]
-    pub sequence_num: Option<i64>,  // Nome campo dal server: sequence_num
+    pub sequence_num: Option<i64>, // Nome campo dal server: sequence_num
 }
 
 // === ENUMS ===
@@ -125,6 +133,7 @@ pub enum Outgoing {
         cid: Uuid,
         content: String,
         target_username: Option<String>,
+        client_msg_id: Option<String>,
     },
     InviteUser {
         cid: Uuid,
@@ -152,6 +161,9 @@ pub enum Outgoing {
         user_sequence: Option<u64>,
         conversation_sequences: Option<HashMap<Uuid, u64>>,
     },
+    DeleteConversation {
+        cid: Uuid,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===
@@ -164,6 +176,10 @@ pub enum UiEvent {
     RegisterStarted,
     Logged(String, Uuid, u64),
     LoggedOut,
+    LoadingError,
+    DeleteAccountStart,    // primo click -> chiede conferma
+    DeleteAccountConfirm,  // secondo click -> esegue davvero
+    DeleteAccountCancel,   // annulla la conferma
 
     // WebSocket events
     WsConnected,
@@ -176,9 +192,7 @@ pub enum UiEvent {
     Opened(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
-    //DeleteConversation(Uuid),
     ConversationDeleted(Uuid),
-    //RequestConversationsRefresh,
 
     // Data loading events
     ConversationsLoaded(Vec<ConversationDto>),
@@ -190,6 +204,12 @@ pub enum UiEvent {
 
     // Message events
     MessageSendFailed(Uuid),
+    MessageConfirmation {
+        client_msg_id: String,
+        server_msg_id: Uuid,
+        sequence: Option<u64>,
+        status: String,
+    },
 
     // General events
     InviteCreated(String),
@@ -225,7 +245,7 @@ pub enum UiEvent {
         recovery: bool,
     },
 
-    // NUOVI EVENTI per initial_state e conversation_messages
+    // Eventi per initial_state e conversation_messages
     InitialStateReceived {
         conversations: Vec<ConversationDto>,
         user_sequence: u64,
@@ -238,6 +258,14 @@ pub enum UiEvent {
         conversation_id: Uuid,
         messages: Vec<MessageDto>,
         has_more: bool,
+    },
+
+    OlderMessagesLoaded(Vec<MessageDto>),
+
+    ConversationConfirmed {
+        conversation: ConversationDto,
+        messages: Vec<MessageDto>,
+        client_temp_id: Option<String>,
     },
 }
 
@@ -258,6 +286,7 @@ pub struct UserEventData {
     pub created_at: i64,
 }
 
+// === IMPLEMENTAZIONI PER MessageDto ===
 impl MessageDto {
     pub fn system_message(content: String) -> Self {
         Self {
@@ -268,6 +297,8 @@ impl MessageDto {
             content,
             created_at: chrono::Utc::now().timestamp(),
             sequence_num: None,
+            client_msg_id: None,
+            is_confirmed: None,
         }
     }
 
@@ -284,6 +315,39 @@ impl MessageDto {
             content: format!("Sincronizzati {} messaggi ({})", message_count, reason),
             created_at: chrono::Utc::now().timestamp(),
             sequence_num: None,
+            client_msg_id: None,
+            is_confirmed: None,
         }
+    }
+
+    /// Crea un messaggio ottimistico con client_msg_id per tracking
+    pub fn optimistic_message(
+        author_id: Uuid,
+        author_username: String,
+        conversation_id: Uuid,
+        content: String,
+        client_msg_id: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(), // ID temporaneo, verrà sostituito con server_msg_id
+            author_id,
+            author_username,
+            conversation_id,
+            content,
+            created_at: chrono::Utc::now().timestamp(),
+            sequence_num: None, // Verrà impostato quando confermato
+            client_msg_id: Some(client_msg_id),
+            is_confirmed: Some(false), // Non ancora confermato dal server
+        }
+    }
+
+    /// Verifica se il messaggio è stato confermato dal server
+    pub fn is_pending(&self) -> bool {
+        self.client_msg_id.is_some() && self.is_confirmed == Some(false)
+    }
+
+    /// Verifica se il messaggio è stato confermato dal server
+    pub fn is_server_confirmed(&self) -> bool {
+        self.is_confirmed == Some(true)
     }
 }

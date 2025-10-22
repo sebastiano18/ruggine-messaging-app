@@ -7,9 +7,6 @@ pub fn router() -> Router<AppState> {
         // Gestione conversazioni unificate
         .route("/conversations", get(c::mine))
 
-        // Singola conversazione per fetch mirata e cancellazione
-        .route("/conversations/:id", get(c::get_conversation).delete(c::delete_conversation))
-
         // NUOVO: Conversazione con messaggi in una sola chiamata
         .route("/conversations/:id/with-messages", get(c::get_conversation_with_messages))
 
