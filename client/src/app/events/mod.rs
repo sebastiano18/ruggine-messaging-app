@@ -6,14 +6,12 @@ mod helpers;
 mod message_handler;
 mod websocket_handler;
 
-use crate::api::ws::WsControl;
+
 use crate::models::*;
-use crate::state::data_loader::DataLoader;
 use crate::state::AppState;
-use std::collections::HashMap;
+use reqwest::StatusCode;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use reqwest::StatusCode;
 
 pub struct EventDispatcher;
 
@@ -97,13 +95,15 @@ impl EventDispatcher {
             UiEvent::DeleteAccountStart => {
                 // Abilita modalità "doppia conferma"
                 state.confirm_delete_account = true;
-            },
+            }
 
             UiEvent::DeleteAccountCancel => {
                 // Disabilita modalità "doppia conferma"
                 state.confirm_delete_account = false;
-                let _ = state.ui_tx.send(UiEvent::Info("Eliminazione annullata".into()));
-            },
+                let _ = state
+                    .ui_tx
+                    .send(UiEvent::Info("Eliminazione annullata".into()));
+            }
 
             UiEvent::DeleteAccountConfirm => {
                 // Disabilita sempre il flag di conferma (per evitare UI bloccate)
@@ -134,13 +134,12 @@ impl EventDispatcher {
                                 }
                             }
                             // Altri errori => mostra errore
-                            let _ = tx.send(UiEvent::Error(format!(
-                                "Eliminazione account fallita: {e}"
-                            )));
+                            let _ = tx
+                                .send(UiEvent::Error(format!("Eliminazione account fallita: {e}")));
                         }
                     }
                 });
-            },
+            }
 
             // ===== WEBSOCKET EVENTS =====
             UiEvent::WsConnected => {
@@ -447,32 +446,48 @@ impl EventDispatcher {
                 conversation_id,
                 messages,
             } => {
-                info!("Processing {} resumed messages for {}", messages.len(), conversation_id);
+                info!(
+                    "Processing {} resumed messages for {}",
+                    messages.len(),
+                    conversation_id
+                );
 
                 // LOG dettagliato dei messaggi ottimistici attuali nell'UI
                 info!("Current UI messages for conversation {}:", conversation_id);
                 if state.cid == Some(conversation_id) {
                     for (idx, msg) in state.messages.iter().enumerate() {
-                        info!("  UI[{}]: id={}, client_msg_id={:?}, content_preview={}...",
-                  idx, msg.id, msg.client_msg_id,
-                  msg.content.chars().take(20).collect::<String>());
+                        info!(
+                            "  UI[{}]: id={}, client_msg_id={:?}, content_preview={}...",
+                            idx,
+                            msg.id,
+                            msg.client_msg_id,
+                            msg.content.chars().take(20).collect::<String>()
+                        );
                     }
                 }
 
                 // LOG dettagliato dei pending confirmations
                 info!("Current pending confirmations:");
                 for (client_id, pending_msg) in &state.pending_confirmations {
-                    info!("  Pending: client_id={}, msg_id={}, conv_id={}, content_preview={}...",
-              client_id, pending_msg.id, pending_msg.conversation_id,
-              pending_msg.content.chars().take(20).collect::<String>());
+                    info!(
+                        "  Pending: client_id={}, msg_id={}, conv_id={}, content_preview={}...",
+                        client_id,
+                        pending_msg.id,
+                        pending_msg.conversation_id,
+                        pending_msg.content.chars().take(20).collect::<String>()
+                    );
                 }
 
                 // LOG dettagliato dei messaggi in arrivo dal resume
                 info!("Incoming resume messages:");
                 for (idx, msg) in messages.iter().enumerate() {
-                    info!("  Resume[{}]: id={}, client_msg_id={:?}, content_preview={}...",
-              idx, msg.id, msg.client_msg_id,
-              msg.content.chars().take(20).collect::<String>());
+                    info!(
+                        "  Resume[{}]: id={}, client_msg_id={:?}, content_preview={}...",
+                        idx,
+                        msg.id,
+                        msg.client_msg_id,
+                        msg.content.chars().take(20).collect::<String>()
+                    );
                 }
 
                 state.is_recovering_messages.insert(conversation_id, false);
@@ -480,9 +495,16 @@ impl EventDispatcher {
 
                 // Aggiorna le sequenze
                 if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
-                    state.conversation_sequences.insert(conversation_id, max_seq);
-                    state.conversation_sequences_confirmed.insert(conversation_id, max_seq);
-                    info!("Updated conversation {} sequences to {}", conversation_id, max_seq);
+                    state
+                        .conversation_sequences
+                        .insert(conversation_id, max_seq);
+                    state
+                        .conversation_sequences_confirmed
+                        .insert(conversation_id, max_seq);
+                    info!(
+                        "Updated conversation {} sequences to {}",
+                        conversation_id, max_seq
+                    );
                 }
 
                 // Raccogli ID esistenti
@@ -505,11 +527,17 @@ impl EventDispatcher {
                 let mut truly_new_messages = Vec::new();
 
                 for new_msg in messages {
-                    info!("Processing resume message id={}, client_msg_id={:?}", new_msg.id, new_msg.client_msg_id);
+                    info!(
+                        "Processing resume message id={}, client_msg_id={:?}",
+                        new_msg.id, new_msg.client_msg_id
+                    );
 
                     // Check se già esiste per server ID
                     if existing_ids.contains(&new_msg.id) {
-                        info!("  -> Message {} already exists by server ID, skipping", new_msg.id);
+                        info!(
+                            "  -> Message {} already exists by server ID, skipping",
+                            new_msg.id
+                        );
                         continue;
                     }
 
@@ -517,10 +545,14 @@ impl EventDispatcher {
 
                     // Se ha un client_msg_id, cerca di matchare con pending
                     if let Some(ref server_client_id) = new_msg.client_msg_id {
-                        info!("  -> Checking for pending with client_id: {}", server_client_id);
+                        info!(
+                            "  -> Checking for pending with client_id: {}",
+                            server_client_id
+                        );
 
                         // Cerca nei pending confirmations
-                        if let Some(pending_msg) = state.pending_confirmations.get(server_client_id) {
+                        if let Some(pending_msg) = state.pending_confirmations.get(server_client_id)
+                        {
                             info!("    FOUND in pending! Pending msg_id={}, will replace with server msg",
                       pending_msg.id);
                             pending_to_remove.push(server_client_id.clone());
@@ -533,8 +565,12 @@ impl EventDispatcher {
                             if state.cid == Some(conversation_id) {
                                 for ui_msg in &state.messages {
                                     if ui_msg.client_msg_id.as_ref() == Some(server_client_id) {
-                                        info!("    FOUND in UI messages! UI msg_id={}, will replace", ui_msg.id);
-                                        optimistic_to_remove.push((ui_msg.id, server_client_id.clone()));
+                                        info!(
+                                            "    FOUND in UI messages! UI msg_id={}, will replace",
+                                            ui_msg.id
+                                        );
+                                        optimistic_to_remove
+                                            .push((ui_msg.id, server_client_id.clone()));
                                         should_add = true; // Dobbiamo aggiungere il messaggio del server
                                         break;
                                     }
@@ -559,7 +595,10 @@ impl EventDispatcher {
 
                 // Rimuovi i messaggi ottimistici dall'UI e dalla cache
                 for (optimistic_id, client_id) in &optimistic_to_remove {
-                    info!("Removing optimistic message id={} with client_id={}", optimistic_id, client_id);
+                    info!(
+                        "Removing optimistic message id={} with client_id={}",
+                        optimistic_id, client_id
+                    );
 
                     // Rimuovi dall'UI
                     if state.cid == Some(conversation_id) {
@@ -598,28 +637,36 @@ impl EventDispatcher {
                         _ => a.created_at.cmp(&b.created_at),
                     });
                 } else {
-                    state.conversation_messages.insert(conversation_id, truly_new_messages.clone());
+                    state
+                        .conversation_messages
+                        .insert(conversation_id, truly_new_messages.clone());
                 }
 
                 if state.cid == Some(conversation_id) {
                     state.messages.extend(truly_new_messages);
-                    state.messages.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
-                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
-                        _ => a.created_at.cmp(&b.created_at),
-                    });
+                    state
+                        .messages
+                        .sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                            (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                            _ => a.created_at.cmp(&b.created_at),
+                        });
 
                     info!("Final UI message count: {}", state.messages.len());
                 }
             }
 
-            
-
             // ===== CONVERSATION EVENTS =====
 
             // Circa riga 666 nel tuo mod.rs
-            UiEvent::ConversationConfirmed { conversation, messages, client_temp_id } => {
-                info!("Processing conversation confirmation for {} (temp_id: {:?})",
-          conversation.id, client_temp_id);
+            UiEvent::ConversationConfirmed {
+                conversation,
+                messages,
+                client_temp_id,
+            } => {
+                info!(
+                    "Processing conversation confirmation for {} (temp_id: {:?})",
+                    conversation.id, client_temp_id
+                );
 
                 // CRITICO: Controlla se lo stub era la conversazione attiva
                 let mut was_active_stub = false;
@@ -629,8 +676,10 @@ impl EventDispatcher {
                     if let Ok(stub_uuid) = Uuid::parse_str(temp_id) {
                         if state.cid == Some(stub_uuid) {
                             was_active_stub = true;
-                            info!("Active stub {} will be replaced with real conversation {}",
-                      stub_uuid, conversation.id);
+                            info!(
+                                "Active stub {} will be replaced with real conversation {}",
+                                stub_uuid, conversation.id
+                            );
                         }
 
                         if state.dm_stubs.contains_key(&stub_uuid) {
@@ -642,7 +691,10 @@ impl EventDispatcher {
                 // Rimuovi lo stub
                 if let Some(stub_id) = stub_to_remove {
                     if let Some(target) = state.dm_stubs.remove(&stub_id) {
-                        info!("Removed DM stub {} (target: {}) after confirmation", stub_id, target);
+                        info!(
+                            "Removed DM stub {} (target: {}) after confirmation",
+                            stub_id, target
+                        );
                     }
 
                     // NUOVO: Rimuovi anche le sequence dello stub
@@ -661,26 +713,35 @@ impl EventDispatcher {
 
                 // Aggiungi messaggi se presenti
                 if !messages.is_empty() {
-                    state.conversation_messages.insert(conversation.id, messages.clone());
+                    state
+                        .conversation_messages
+                        .insert(conversation.id, messages.clone());
 
                     // NUOVO: Imposta le sequence basandosi sui messaggi ricevuti
                     if let Some(last_msg) = messages.last() {
                         if let Some(seq) = last_msg.sequence_num {
                             state.conversation_sequences.insert(conversation.id, seq);
-                            state.conversation_sequences_confirmed.insert(conversation.id, seq);
-                            info!("Set conversation {} sequence to {} from messages",
-                      conversation.id, seq);
+                            state
+                                .conversation_sequences_confirmed
+                                .insert(conversation.id, seq);
+                            info!(
+                                "Set conversation {} sequence to {} from messages",
+                                conversation.id, seq
+                            );
                         }
                     }
                 }
 
                 // CRITICO: Se lo stub era attivo, AGGIORNA alla conversazione reale
                 if was_active_stub {
-                    state.cid = Some(conversation.id);  // Aggiorna ID attivo
+                    state.cid = Some(conversation.id); // Aggiorna ID attivo
                     state.conv_title = conversation.title.clone();
                     state.messages = messages;
-                    info!("Updated active conversation from stub {} to real {}",
-              stub_to_remove.unwrap_or(Uuid::nil()), conversation.id);
+                    info!(
+                        "Updated active conversation from stub {} to real {}",
+                        stub_to_remove.unwrap_or(Uuid::nil()),
+                        conversation.id
+                    );
                 } else if state.cid == Some(conversation.id) {
                     state.messages = messages;
                 }
@@ -688,7 +749,7 @@ impl EventDispatcher {
                 // Notifica utente
                 helpers::add_system_message(
                     state,
-                    format!("Conversazione '{}' confermata", conversation.title)
+                    format!("Conversazione '{}' confermata", conversation.title),
                 );
             }
 
@@ -1058,226 +1119,75 @@ impl EventDispatcher {
                 conversation_id,
                 recovery,
             } => {
-                debug!(
-                    "User notification - seq: {}, type: {}, recovery: {}",
-                    sequence, event_type, recovery
-                );
+                let expected = state.user_sequence_confirmed + 1;
 
-                if sequence > 0 && sequence <= state.user_sequence_confirmed {
+                // NUOVO: Gestione buffer di riordino
+                if sequence > expected {
+                    warn!(
+                        "User event seq {} out of order (expected {}), buffering",
+                        sequence, expected
+                    );
+                    state.buffer_user_event_for_reorder(sequence, event_data);
+                    return;
+                } else if sequence < expected && sequence > 0 {
                     debug!(
-                        "Ignoring duplicate event with sequence {} (already confirmed up to {})",
-                        sequence, state.user_sequence_confirmed
+                        "User event seq {} already processed (expected {}), skipping",
+                        sequence, expected
                     );
                     return;
                 }
 
-                state.update_user_sequence(sequence);
-
-                if recovery {
-                    state.sequence_stats.events_recovered += 1;
-                    info!(
-                        "Processing recovery event: seq {} type {}",
-                        sequence, event_type
-                    );
+                // sequence == expected o sequence == 0, processa normalmente
+                if sequence > 0 {
+                    state.user_sequence_confirmed = sequence;
                 }
 
-                match event_type.as_str() {
-                    "new_message" => {
-                        if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
-                            if state.cid == Some(msg.conversation_id) {
-                                if !state.messages.iter().any(|m| m.id == msg.id) {
-                                    state.messages.push(msg.clone());
-                                    debug!("Added new message to UI");
-                                } else {
-                                    debug!("Ignoring duplicate message {}", msg.id);
-                                }
-                            }
-
-                            let messages = state
-                                .conversation_messages
-                                .entry(msg.conversation_id)
-                                .or_insert_with(Vec::new);
-
-                            if !messages.iter().any(|m| m.id == msg.id) {
-                                messages.push(msg);
-                                debug!("Added message to cache");
-                            }
-                        }
-                    }
-                    "conversation_deleted" => {
-                        // Applica anche da resume/offline: rimuovi la conversazione
-                        if let Some(cid) = conversation_id {
-                            info!("Applying conversation_deleted from UserNotification for {}", cid);
-                            let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
-                        } else {
-                            warn!("conversation_deleted notification without conversation_id");
-                        }
-                    }
-                    
-                    "conversation_created_complete" => {
-                                    info!(
-                    "Processing conversation_created_complete with sequence {}",
-                    sequence
+                process_user_notification(
+                    state,
+                    sequence,
+                    event_type,
+                    event_data,
+                    conversation_id,
+                    recovery,
                 );
 
-                        // Estrai la conversazione completa dai dati
-                        if let Some(conv_obj) = event_data.get("conversation") {
-                            // Parse della conversazione
-                            let id = conv_obj
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok())
-                                .unwrap_or_else(|| {
-                                    warn!(
-                    "Invalid conversation ID in conversation_created_complete"
-                );
-                                    Uuid::nil()
-                                });
+                debug!("User event seq {} processed normally", sequence);
 
-                            if id == Uuid::nil() {
-                                return; // Skip invalid conversation
-                            }
+                // NUOVO: Controlla buffer dopo processing
+                let buffered_events = state.try_deliver_buffered_user_events();
+                if !buffered_events.is_empty() {
+                    info!(
+                        "Delivering {} buffered user events after processing seq {}",
+                        buffered_events.len(),
+                        sequence
+                    );
 
-                            let kind = conv_obj
-                                .get("kind")
-                                .and_then(|v| v.as_str())
+                    for buffered_event in buffered_events {
+                        if let Some(event_seq) =
+                            buffered_event.get("sequence").and_then(|s| s.as_u64())
+                        {
+                            state.user_sequence_confirmed = event_seq;
+
+                            let evt_type = buffered_event
+                                .get("event_type")
+                                .and_then(|t| t.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            let owner_id = conv_obj
-                                .get("owner_id")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok())
-                                .unwrap_or_else(|| Uuid::nil());
+                            let conv_id = buffered_event
+                                .get("conversation_id")
+                                .and_then(|id| id.as_str())
+                                .and_then(|s| Uuid::parse_str(s).ok());
 
-                            let created_at = conv_obj
-                                .get("created_at")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0);
-
-                            // Usa display_title se presente, altrimenti title
-                            let title = conv_obj
-                                .get("display_title")
-                                .and_then(|t| t.as_str())
-                                .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
-                                .unwrap_or("")
-                                .to_string();
-
-                            let conversation = ConversationDto {
-                                id,
-                                kind,
-                                title,
-                                owner_id,
-                                created_at,
-                            };
-
-                            // Parse dell'ultimo messaggio se presente
-                            let mut messages = Vec::new();
-                            if let Some(last_msg) = conv_obj.get("last_message") {
-                                let msg_id = last_msg
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .and_then(|s| Uuid::parse_str(s).ok())
-                                    .unwrap_or_else(|| Uuid::new_v4());
-
-                                let msg_author_id = last_msg
-                                    .get("author_id")
-                                    .and_then(|v| v.as_str())
-                                    .and_then(|s| Uuid::parse_str(s).ok())
-                                    .unwrap_or_else(|| Uuid::nil());
-
-                                let msg_author_username = last_msg
-                                    .get("author_username")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-
-                                let msg_content = last_msg
-                                    .get("content")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-
-                                let msg_created_at = last_msg
-                                    .get("created_at")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-
-                                let msg_sequence =
-                                    last_msg.get("sequence_num").and_then(|v| v.as_u64());
-
-                                // AGGIUNGI QUESTI NUOVI CAMPI
-                                messages.push(MessageDto {
-                                    id: msg_id,
-                                    author_id: msg_author_id,
-                                    author_username: msg_author_username,
-                                    conversation_id: id,
-                                    content: msg_content,
-                                    created_at: msg_created_at,
-                                    sequence_num: msg_sequence,
-                                    client_msg_id: None,        // Aggiungi questo
-                                    is_confirmed: Some(true),   // Aggiungi questo - messaggio dal server è confermato
-                                });
-                            }
-
-                            // Rimuovi eventuali DM stub
-                            if state.dm_stubs.contains_key(&id) {
-                                state.remove_dm_stub(id);
-                                info!(
-                "Removed DM stub {} after receiving complete conversation",
-                id
-            );
-                            }
-
-                            // Aggiungi la conversazione
-                            if let Some(ref mut conversations) = state.conversations {
-                                conversations.retain(|c| c.id != id); // Rimuovi duplicati
-                                conversations.push(conversation.clone());
-                                conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                            } else {
-                                state.conversations = Some(vec![conversation.clone()]);
-                            }
-
-                            // Aggiungi messaggi alla cache
-                            if !messages.is_empty() {
-                                state.conversation_messages.insert(id, messages.clone());
-
-                                // Se è la conversazione corrente, aggiorna UI
-                                if state.cid == Some(id) {
-                                    state.messages = messages;
-                                }
-                            }
-
-                            // Se siamo in chat view con questa conversazione, assicurati che sia selezionata
-                            if state.page == Page::Chat
-                                && (state.cid == Some(id) || state.cid.is_none())
-                            {
-                                state.cid = Some(id);
-                                state.conv_title = conversation.title.clone();
-
-                                if let Some(cached) = state.conversation_messages.get(&id) {
-                                    state.messages = cached.clone();
-                                }
-                            }
-
-                            helpers::add_system_message(
+                            process_user_notification(
                                 state,
-                                format!(
-                                    "Nuova conversazione '{}' creata e sincronizzata",
-                                    conversation.title
-                                ),
+                                event_seq,
+                                evt_type,
+                                buffered_event.clone(),
+                                conv_id,
+                                false,
                             );
-
-                            info!(
-            "Successfully processed conversation_created_complete for {}",
-            id
-        );
-                        } else {
-                            warn!("conversation_created_complete missing conversation object");
                         }
-                    }
-                    _ => {
-                        debug!("Unhandled notification type: {}", event_type);
                     }
                 }
             }
@@ -1298,7 +1208,9 @@ impl EventDispatcher {
 
         if already_exists {
             // Il messaggio è già arrivato via resume, rimuovi solo l'ottimistico se ancora presente
-            state.messages.retain(|m| m.client_msg_id.as_ref() != Some(&client_msg_id));
+            state
+                .messages
+                .retain(|m| m.client_msg_id.as_ref() != Some(&client_msg_id));
             state.pending_confirmations.remove(&client_msg_id);
 
             // Aggiorna anche nella cache
@@ -1308,12 +1220,15 @@ impl EventDispatcher {
                 }
             }
 
-            info!("Message {} already received via resume, cleaned optimistic", server_msg_id);
+            info!(
+                "Message {} already received via resume, cleaned optimistic",
+                server_msg_id
+            );
             return;
         }
 
         // Trova e aggiorna il messaggio pending
-        if let Some(mut pending_msg) = state.pending_confirmations.remove(&client_msg_id) {
+        if let Some(pending_msg) = state.pending_confirmations.remove(&client_msg_id) {
             let old_id = pending_msg.id;
             let conversation_id = pending_msg.conversation_id;
 
@@ -1332,7 +1247,10 @@ impl EventDispatcher {
 
             // Se non trovato nell'UI, potrebbe essere stato già processato via resume
             if !updated {
-                debug!("Message {} not found in UI, likely processed via resume", client_msg_id);
+                debug!(
+                    "Message {} not found in UI, likely processed via resume",
+                    client_msg_id
+                );
                 return;
             }
 
@@ -1349,11 +1267,9 @@ impl EventDispatcher {
 
                 // Riordina se necessario
                 if sequence.is_some() {
-                    cache.sort_by(|a, b| {
-                        match (a.sequence_num, b.sequence_num) {
-                            (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
-                            _ => a.created_at.cmp(&b.created_at),
-                        }
+                    cache.sort_by(|a, b| match (a.sequence_num, b.sequence_num) {
+                        (Some(seq_a), Some(seq_b)) => seq_a.cmp(&seq_b),
+                        _ => a.created_at.cmp(&b.created_at),
                     });
                 }
             }
@@ -1363,10 +1279,15 @@ impl EventDispatcher {
                 state.update_conversation_sequence(conversation_id, seq);
             }
 
-            info!("Message confirmed: {} -> {} (seq: {:?})",
-              client_msg_id, server_msg_id, sequence);
+            info!(
+                "Message confirmed: {} -> {} (seq: {:?})",
+                client_msg_id, server_msg_id, sequence
+            );
         } else {
-            warn!("Received confirmation for unknown message: {}", client_msg_id);
+            warn!(
+                "Received confirmation for unknown message: {}",
+                client_msg_id
+            );
         }
     }
 
@@ -1391,6 +1312,215 @@ impl EventDispatcher {
             }
         } else {
             warn!("Cannot request messages: WebSocket not connected");
+        }
+    }
+}
+
+fn process_user_notification(
+    state: &mut AppState,
+    sequence: u64,
+    event_type: String,
+    event_data: serde_json::Value,
+    conversation_id: Option<Uuid>,
+    recovery: bool,
+) {
+    debug!(
+        "User notification - seq: {}, type: {}, recovery: {}",
+        sequence, event_type, recovery
+    );
+
+    if recovery {
+        state.sequence_stats.events_recovered += 1;
+        info!(
+            "Processing recovery event: seq {} type {}",
+            sequence, event_type
+        );
+    }
+
+    match event_type.as_str() {
+        "new_message" => {
+            if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
+                if state.cid == Some(msg.conversation_id) {
+                    if !state.messages.iter().any(|m| m.id == msg.id) {
+                        state.messages.push(msg.clone());
+                        debug!("Added new message to UI");
+                    } else {
+                        debug!("Ignoring duplicate message {}", msg.id);
+                    }
+                }
+
+                let messages = state
+                    .conversation_messages
+                    .entry(msg.conversation_id)
+                    .or_insert_with(Vec::new);
+
+                if !messages.iter().any(|m| m.id == msg.id) {
+                    messages.push(msg);
+                    debug!("Added message to cache");
+                }
+            }
+        }
+        "conversation_deleted" => {
+            if let Some(cid) = conversation_id {
+                info!(
+                    "Applying conversation_deleted from UserNotification for {}",
+                    cid
+                );
+                let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
+            } else {
+                warn!("conversation_deleted notification without conversation_id");
+            }
+        }
+
+        "conversation_created_complete" => {
+            info!(
+                "Processing conversation_created_complete with sequence {}",
+                sequence
+            );
+
+            if let Some(conv_obj) = event_data.get("conversation") {
+                let id = conv_obj
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .unwrap_or_else(|| {
+                        warn!("Invalid conversation ID in conversation_created_complete");
+                        Uuid::nil()
+                    });
+
+                if id == Uuid::nil() {
+                    return;
+                }
+
+                let kind = conv_obj
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let owner_id = conv_obj
+                    .get("owner_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .unwrap_or_else(|| Uuid::nil());
+
+                let created_at = conv_obj
+                    .get("created_at")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                let title = conv_obj
+                    .get("display_title")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+
+                let conversation = ConversationDto {
+                    id,
+                    kind,
+                    title,
+                    owner_id,
+                    created_at,
+                };
+
+                let mut messages = Vec::new();
+                if let Some(last_msg) = conv_obj.get("last_message") {
+                    let msg_id = last_msg
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .unwrap_or_else(|| Uuid::new_v4());
+
+                    let msg_author_id = last_msg
+                        .get("author_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .unwrap_or_else(|| Uuid::nil());
+
+                    let msg_author_username = last_msg
+                        .get("author_username")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let msg_content = last_msg
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let msg_created_at = last_msg
+                        .get("created_at")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+
+                    let msg_sequence = last_msg.get("sequence_num").and_then(|v| v.as_u64());
+
+                    messages.push(MessageDto {
+                        id: msg_id,
+                        author_id: msg_author_id,
+                        author_username: msg_author_username,
+                        conversation_id: id,
+                        content: msg_content,
+                        created_at: msg_created_at,
+                        sequence_num: msg_sequence,
+                        client_msg_id: None,
+                        is_confirmed: Some(true),
+                    });
+                }
+
+                if state.dm_stubs.contains_key(&id) {
+                    state.remove_dm_stub(id);
+                    info!(
+                        "Removed DM stub {} after receiving complete conversation",
+                        id
+                    );
+                }
+
+                if let Some(ref mut conversations) = state.conversations {
+                    conversations.retain(|c| c.id != id);
+                    conversations.push(conversation.clone());
+                    conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                } else {
+                    state.conversations = Some(vec![conversation.clone()]);
+                }
+
+                if !messages.is_empty() {
+                    state.conversation_messages.insert(id, messages.clone());
+
+                    if state.cid == Some(id) {
+                        state.messages = messages;
+                    }
+                }
+
+                if state.page == Page::Chat && (state.cid == Some(id) || state.cid.is_none()) {
+                    state.cid = Some(id);
+                    state.conv_title = conversation.title.clone();
+
+                    if let Some(cached) = state.conversation_messages.get(&id) {
+                        state.messages = cached.clone();
+                    }
+                }
+
+                helpers::add_system_message(
+                    state,
+                    format!(
+                        "Nuova conversazione '{}' creata e sincronizzata",
+                        conversation.title
+                    ),
+                );
+
+                info!(
+                    "Successfully processed conversation_created_complete for {}",
+                    id
+                );
+            } else {
+                warn!("conversation_created_complete missing conversation object");
+            }
+        }
+        _ => {
+            debug!("Unhandled notification type: {}", event_type);
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::api::ws::WsControl;
 use crate::models::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
@@ -107,6 +107,10 @@ pub struct AppState {
 
     // User Manag
     pub confirm_delete_account: bool,
+
+    // Reorder Buffers for messages and events
+    pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
+    pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
 }
 
 impl AppState {
@@ -183,6 +187,9 @@ impl AppState {
             is_loading_more: false,
             has_more_messages: HashMap::new(),
             pending_conversations: HashMap::new(),
+
+            message_reorder_buffer: BTreeMap::new(),
+            user_event_reorder_buffer: BTreeMap::new(),
         }
     }
 
@@ -545,12 +552,18 @@ impl AppState {
     }
 
     pub fn reset_sequence_system(&mut self) {
-        self.missed_pings = 0;
         self.is_recovering_user_events = false;
         self.is_recovering_messages.clear();
         self.pending_resume_requests = 0;
-        self.last_ping_time = Instant::now();
-        debug!("Sequence system reset");
+        self.sequence_stats = Default::default();
+        self.message_reorder_buffer.clear();
+        self.user_event_reorder_buffer.clear();
+
+        info!(
+            "Sequence system reset - user_seq: {}, conv_seqs: {}",
+            self.user_sequence_confirmed,
+            self.conversation_sequences.len()
+        );
     }
 
     pub fn reset_sequence_on_disconnect(&mut self) {
@@ -743,5 +756,85 @@ impl AppState {
                 }
             }
         });
+    }
+
+    pub fn try_deliver_buffered_messages(&mut self, conversation_id: Uuid) -> Vec<MessageDto> {
+        let mut messages_to_deliver = Vec::new();
+
+        if let Some(buffer) = self.message_reorder_buffer.get_mut(&conversation_id) {
+            let mut current_expected = self.conversation_sequences_confirmed
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or(0) + 1;
+
+            let mut sequences_to_remove = Vec::new();
+
+            while let Some(msg) = buffer.get(&current_expected) {
+                messages_to_deliver.push(msg.clone());
+                sequences_to_remove.push(current_expected);
+                current_expected += 1;
+            }
+
+            for seq in sequences_to_remove {
+                buffer.remove(&seq);
+            }
+
+            if buffer.is_empty() {
+                self.message_reorder_buffer.remove(&conversation_id);
+            }
+        }
+
+        messages_to_deliver
+    }
+
+    pub fn try_deliver_buffered_user_events(&mut self) -> Vec<serde_json::Value> {
+        let mut events_to_deliver = Vec::new();
+
+        let mut current_expected = self.user_sequence_confirmed + 1;
+        let mut sequences_to_remove = Vec::new();
+
+        while let Some(events) = self.user_event_reorder_buffer.get(&current_expected) {
+            events_to_deliver.extend(events.clone());
+            sequences_to_remove.push(current_expected);
+            current_expected += 1;
+        }
+
+        for seq in sequences_to_remove {
+            self.user_event_reorder_buffer.remove(&seq);
+        }
+
+        events_to_deliver
+    }
+
+    pub fn buffer_message_for_reorder(&mut self, msg: MessageDto) {
+        if let Some(seq) = msg.sequence_num {
+            let expected = self.conversation_sequences_confirmed
+                .get(&msg.conversation_id)
+                .copied()
+                .unwrap_or(0) + 1;
+
+            if seq > expected {
+                debug!("Buffering message seq {} for conversation {} (expected {})", 
+                seq, msg.conversation_id, expected);
+
+                self.message_reorder_buffer
+                    .entry(msg.conversation_id)
+                    .or_insert_with(BTreeMap::new)
+                    .insert(seq, msg);
+            }
+        }
+    }
+
+    pub fn buffer_user_event_for_reorder(&mut self, seq: u64, event: serde_json::Value) {
+        let expected = self.user_sequence_confirmed + 1;
+
+        if seq > expected {
+            debug!("Buffering user event seq {} (expected {})", seq, expected);
+
+            self.user_event_reorder_buffer
+                .entry(seq)
+                .or_insert_with(Vec::new)
+                .push(event);
+        }
     }
 }

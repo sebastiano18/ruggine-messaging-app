@@ -61,46 +61,37 @@ impl WebSocketHandler {
         }
 
         debug!(
-            "Processing incoming message: {} from {} in conversation {} (seq: {:?})",
-            msg.content.chars().take(50).collect::<String>(),
-            msg.author_username,
-            message_conversation_id,
-            msg.sequence_num
-        );
+        "Processing incoming message: {} from {} in conversation {} (seq: {:?})",
+        msg.content.chars().take(50).collect::<String>(),
+        msg.author_username,
+        message_conversation_id,
+        msg.sequence_num
+    );
 
-        // IMPORTANTE: Aggiorna la sequence della conversazione se presente
+        // NUOVO: Gestione buffer di riordino
         if let Some(seq) = msg.sequence_num {
-            state.update_conversation_sequence(message_conversation_id, seq);
-
-            // Aggiorna anche la sequenza confermata se è consecutiva
-            let confirmed = state.conversation_sequences_confirmed
+            let expected = state.conversation_sequences_confirmed
                 .get(&message_conversation_id)
                 .copied()
-                .unwrap_or(0);
+                .unwrap_or(0) + 1;
 
-            if seq == confirmed + 1 {
-                state.conversation_sequences_confirmed.insert(message_conversation_id, seq);
-                debug!("Conversation {} sequence {} confirmed (continuous)", message_conversation_id, seq);
-            } else if seq > confirmed + 1 {
-                let gap = seq - confirmed - 1;
-                warn!("Gap detected in conversation {} messages: expected {}, got {} (missing {} messages)",
-                      message_conversation_id, confirmed + 1, seq, gap);
-
-                // Incrementa statistiche gap
-                state.sequence_stats.gaps_detected += 1;
-                state.sequence_stats.last_gap_time = Some(std::time::Instant::now());
-
-                // Aggiorna media gap size
-                let total_gaps = state.sequence_stats.gaps_detected as f64;
-                state.sequence_stats.average_gap_size =
-                    (state.sequence_stats.average_gap_size * (total_gaps - 1.0) + gap as f64) / total_gaps;
+            if seq > expected {
+                warn!("Message seq {} out of order (expected {}), buffering", seq, expected);
+                state.buffer_message_for_reorder(msg);
+                return;
+            } else if seq < expected {
+                debug!("Message seq {} already processed, skipping", seq);
+                return;
             }
+
+            state.update_conversation_sequence(message_conversation_id, seq);
+            state.conversation_sequences_confirmed.insert(message_conversation_id, seq);
+
+            debug!("Message seq {} matches expected, processing normally", seq);
         }
 
-        // Update stats
         state.sequence_stats.total_events_received += 1;
 
-        // 1. CONTROLLO DUPLICATI PREVENTIVO
         if let Some(ref conversations) = state.conversations {
             let count = conversations
                 .iter()
@@ -108,9 +99,9 @@ impl WebSocketHandler {
                 .count();
             if count > 1 {
                 error!(
-                    "DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
-                    message_conversation_id, count
-                );
+                "DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
+                message_conversation_id, count
+            );
 
                 let mut deduped_conversations = Vec::new();
                 let mut seen_ids = std::collections::HashSet::new();
@@ -120,9 +111,9 @@ impl WebSocketHandler {
                         deduped_conversations.push(conv.clone());
                     } else {
                         warn!(
-                            "Removing duplicate conversation: {} ({})",
-                            conv.id, conv.title
-                        );
+                        "Removing duplicate conversation: {} ({})",
+                        conv.id, conv.title
+                    );
                     }
                 }
 
@@ -134,14 +125,13 @@ impl WebSocketHandler {
             }
         }
 
-        // 2. GESTIONE DM STUB: Solo conversione, mai creazione
         let is_stub_conversion = state.dm_stubs.contains_key(&message_conversation_id);
 
         if is_stub_conversion {
             info!(
-                "Converting DM stub {} to real conversation",
-                message_conversation_id
-            );
+            "Converting DM stub {} to real conversation",
+            message_conversation_id
+        );
 
             let target_username = state.dm_stubs.remove(&message_conversation_id).unwrap();
 
@@ -166,16 +156,16 @@ impl WebSocketHandler {
 
                 if removed > 0 {
                     info!(
-                        "Removed {} stub instances for conversation {}",
-                        removed, message_conversation_id
-                    );
+                    "Removed {} stub instances for conversation {}",
+                    removed, message_conversation_id
+                );
                 }
 
                 conversations.push(real_conversation);
                 info!(
-                    "Converted DM stub to real conversation: {}",
-                    message_conversation_id
-                );
+                "Converted DM stub to real conversation: {}",
+                message_conversation_id
+            );
             } else {
                 state.conversations = Some(vec![real_conversation]);
             }
@@ -186,19 +176,17 @@ impl WebSocketHandler {
             );
         }
 
-        // 3. VERIFICA ESISTENZA CONVERSAZIONE (solo se non è una conversione stub)
         let conversation_exists = state
             .conversations
             .as_ref()
             .map(|convs| convs.iter().any(|c| c.id == message_conversation_id))
             .unwrap_or(false);
 
-        // 4. GESTIONE CONVERSAZIONE SCONOSCIUTA - UNIFICATA
         if !is_stub_conversion && !conversation_exists {
             info!(
-                "Message for unknown conversation {} - triggering unified fetch",
-                message_conversation_id
-            );
+            "Message for unknown conversation {} - triggering unified fetch",
+            message_conversation_id
+        );
 
             crate::app::events::helpers::add_system_message(
                 state,
@@ -208,7 +196,6 @@ impl WebSocketHandler {
                 ),
             );
 
-            // UNIFICATO: Usa TriggerConversationFetch per conversazioni sconosciute
             let _ = state
                 .ui_tx
                 .send(UiEvent::TriggerConversationFetch(
@@ -217,20 +204,34 @@ impl WebSocketHandler {
                 ));
         }
 
-        // 5. AGGIORNA CACHE MESSAGGI (sempre) - con gestione sequence
         if !Self::update_message_cache_improved(state, &msg) {
             debug!("Message already exists in cache, skipping: {}", msg.id);
             return;
         }
 
-        // 6. AGGIORNA UI SOLO SE È LA CONVERSAZIONE CORRENTE
         if Some(message_conversation_id) == state.cid {
-            Self::update_ui_messages_improved(state, msg);
+            Self::update_ui_messages_improved(state, msg.clone());
         } else {
             debug!(
-                "Message cached for different conversation: {} -> {} (current: {:?})",
-                msg.author_username, message_conversation_id, state.cid
-            );
+            "Message cached for different conversation: {} -> {} (current: {:?})",
+            msg.author_username, message_conversation_id, state.cid
+        );
+        }
+
+        // NUOVO: Controlla buffer dopo processing
+        let buffered_messages = state.try_deliver_buffered_messages(message_conversation_id);
+        if !buffered_messages.is_empty() {
+            info!("Delivering {} buffered messages for conversation {}", 
+            buffered_messages.len(), message_conversation_id);
+
+            for buffered_msg in buffered_messages {
+                if let Some(seq) = buffered_msg.sequence_num {
+                    state.update_conversation_sequence(message_conversation_id, seq);
+                    state.conversation_sequences_confirmed.insert(message_conversation_id, seq);
+                }
+
+                let _ = state.ui_tx.send(UiEvent::WsIncoming(buffered_msg));
+            }
         }
     }
 
