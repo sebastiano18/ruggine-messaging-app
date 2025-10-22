@@ -16,15 +16,18 @@ impl DataLoader {
             state.rt.spawn(async move {
                 match crate::api::conversation::get_conversation_with_messages(&base, &token, cid).await {
                     Ok(conv_with_msgs) => {
-                        info!("Loaded {} messages for conversation {}", 
-                              conv_with_msgs.messages.len(), cid);
+                        info!(
+                            "Loaded {} messages for conversation {}",
+                            conv_with_msgs.messages.len(),
+                            cid
+                        );
 
                         // DEBUG: Stampa le sequence dei messaggi
                         for (i, msg) in conv_with_msgs.messages.iter().enumerate() {
                             debug!(
-                                "Message {}: id={}, content='{}', sequence={:?}", 
-                                i, 
-                                msg.id, 
+                                "Message {}: id={}, content='{}', sequence={:?}",
+                                i,
+                                msg.id,
                                 msg.content.chars().take(50).collect::<String>(),
                                 msg.sequence_num
                             );
@@ -68,7 +71,7 @@ impl DataLoader {
             tokio::time::Duration::from_secs(30),
             crate::api::conversation::get_conversations(&base, &token),
         )
-            .await
+        .await
         {
             Ok(Ok(convs)) => {
                 let _ = tx.send(UiEvent::ConversationsLoaded(convs.clone()));
@@ -129,7 +132,7 @@ impl DataLoader {
                     tokio::time::Duration::from_secs(20),
                     Self::load_conversation_with_messages(&base_clone, &token_clone, conv.id),
                 )
-                    .await
+                .await
                 {
                     Ok(Ok(msgs)) => {
                         // DEBUG: Log delle sequence per ogni conversazione caricata
@@ -138,7 +141,10 @@ impl DataLoader {
 
                         warn!(
                             "Loaded conversation {}: {} messages ({} with seq, {} without)",
-                            conv.id, msgs.len(), with_seq, without_seq
+                            conv.id,
+                            msgs.len(),
+                            with_seq,
+                            without_seq
                         );
 
                         if without_seq > 0 && with_seq == 0 {
@@ -187,16 +193,21 @@ impl DataLoader {
 
                 // DEBUG: Stampa riassunto finale
                 let total_msgs: usize = all_messages.values().map(|v| v.len()).sum();
-                let msgs_with_seq: usize = all_messages.values()
+                let msgs_with_seq: usize = all_messages
+                    .values()
                     .flat_map(|v| v.iter())
                     .filter(|m| m.sequence_num.is_some())
                     .count();
 
                 warn!(
                     "FINAL LOAD SUMMARY: {} total messages, {} with sequences ({:.1}%)",
-                    total_msgs, 
+                    total_msgs,
                     msgs_with_seq,
-                    if total_msgs > 0 { (msgs_with_seq as f64 / total_msgs as f64) * 100.0 } else { 0.0 }
+                    if total_msgs > 0 {
+                        (msgs_with_seq as f64 / total_msgs as f64) * 100.0
+                    } else {
+                        0.0
+                    }
                 );
             }
             Err(_) => {
@@ -216,14 +227,22 @@ impl DataLoader {
         token: &str,
         conversation_id: Uuid,
     ) -> Result<Vec<MessageDto>, Box<dyn std::error::Error + Send + Sync>> {
-        info!("Calling get_conversation_with_messages for {}", conversation_id);
+        info!(
+            "Calling get_conversation_with_messages for {}",
+            conversation_id
+        );
 
-        let conversation_with_messages = crate::api::conversation::get_conversation_with_messages(base, token, conversation_id).await?;
+        let conversation_with_messages =
+            crate::api::conversation::get_conversation_with_messages(base, token, conversation_id)
+                .await?;
 
         // DEBUG: Verifica le sequence
         for msg in &conversation_with_messages.messages {
             if msg.sequence_num.is_none() {
-                warn!("Message {} in conversation {} has NO sequence!", msg.id, conversation_id);
+                warn!(
+                    "Message {} in conversation {} has NO sequence!",
+                    msg.id, conversation_id
+                );
             } else {
                 debug!("Message {} has sequence: {:?}", msg.id, msg.sequence_num);
             }

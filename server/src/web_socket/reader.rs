@@ -6,8 +6,16 @@ use sqlx::{Row, SqlitePool};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use crate::services::conversation_service::ConversationService;
 
-use super::{actor::OutboundMsg, helpers::handle_chat_message};
+use super::{
+    actor::OutboundMsg,
+    helpers::{
+        handle_chat_message,
+        handle_create_conversation,
+        handle_incoming_message
+    }
+};
 use crate::state::AppState;
 
 pub fn spawn_reader(
@@ -145,114 +153,6 @@ pub fn spawn_reader(
                                     if let Ok(txt) = serde_json::to_string(&error_msg) {
                                         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                                     }
-                                }
-                            }
-                        }
-
-                        "open_conversation" => {
-                            let conversation_id = value
-                                .get("conversation_id")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok());
-
-                            if let Some(conv_id) = conversation_id {
-                                info!("User {} opening conversation {}", username, conv_id);
-
-                                let user_id_str = user_id.to_string();
-                                let conv_id_str = conv_id.to_string();
-
-                                let is_participant: i64 = sqlx::query_scalar(
-                                    "SELECT COUNT(*) FROM participants WHERE user_id = ? AND conversation_id = ?"
-                                )
-                                    .bind(&user_id_str)
-                                    .bind(&conv_id_str)
-                                    .fetch_one(&state.pool)
-                                    .await
-                                    .unwrap_or(0);
-
-                                if is_participant == 0 {
-                                    let error_msg = json!({
-                                        "type": "error",
-                                        "message": "Not authorized to view this conversation",
-                                        "error_code": "UNAUTHORIZED_CONVERSATION"
-                                    });
-                                    if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                    }
-                                    continue;
-                                }
-
-                                // Ottieni info conversazione con titolo corretto per DM
-                                let conv_info = sqlx::query(
-                                    r#"
-                                    SELECT
-                                        c.kind,
-                                        c.title,
-                                        CASE
-                                            WHEN c.kind = 'dm' AND c.title IS NULL THEN (
-                                                SELECT u.username
-                                                FROM participants p2
-                                                INNER JOIN users u ON p2.user_id = u.id
-                                                WHERE p2.conversation_id = c.id
-                                                AND p2.user_id != ?
-                                                LIMIT 1
-                                            )
-                                            ELSE c.title
-                                        END as display_title
-                                    FROM conversations c
-                                    WHERE c.id = ?
-                                    "#
-                                )
-                                    .bind(&user_id_str)
-                                    .bind(&conv_id_str)
-                                    .fetch_optional(&state.pool)
-                                    .await;
-
-                                match get_conversation_messages(&state.pool, conv_id, 50).await {
-                                    Ok(messages) => {
-                                        let mut msg = json!({
-                                            "type": "conversation_messages",
-                                            "conversation_id": conv_id,
-                                            "messages": messages,
-                                            "has_more": messages.len() >= 50,
-                                            "timestamp": chrono::Utc::now().timestamp()
-                                        });
-
-                                        // Aggiungi il titolo corretto se disponibile
-                                        if let Ok(Some(info)) = conv_info {
-                                            if let Ok(display_title) = info.try_get::<Option<String>, _>("display_title") {
-                                                if let Some(title) = display_title {
-                                                    msg["conversation_title"] = json!(title);
-                                                }
-                                            }
-                                        }
-
-                                        if let Ok(txt) = serde_json::to_string(&msg) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                            debug!("Sent {} messages for conversation {} to user {}",
-                                                   messages.len(), conv_id, username);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to get messages for conversation {}: {}", conv_id, e);
-                                        let error_msg = json!({
-                                            "type": "error",
-                                            "message": "Failed to load conversation messages",
-                                            "error_code": "MESSAGES_LOAD_ERROR"
-                                        });
-                                        if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        }
-                                    }
-                                }
-                            } else {
-                                let error_msg = json!({
-                                    "type": "error",
-                                    "message": "Invalid conversation_id",
-                                    "error_code": "INVALID_CONVERSATION_ID"
-                                });
-                                if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                                 }
                             }
                         }
@@ -509,17 +409,40 @@ pub fn spawn_reader(
                             continue;
                         }
 
+                        "create_conversation" => {
+                            debug!("Create conversation request from user {}", user_id);
+                            last_heartbeat = Instant::now();
+
+                            match handle_create_conversation(&state, &mut value, user_id, &username).await {
+                                Ok(()) => {
+                                    debug!("Successfully created conversation for user {}", user_id);
+                                    total_messages_processed += 1;
+                                }
+                                Err(e) => {
+                                    error!("Failed to create conversation: {}", e);
+                                    let error_response = json!({
+                                        "type": "error",
+                                        "message": e.to_string(),
+                                        "error_code": "CONVERSATION_CREATE_FAILED",
+                                        "client_temp_id": value.get("client_temp_id")
+                                    });
+                                    if let Ok(txt) = serde_json::to_string(&error_response) {
+                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    }
+                                }
+                            }
+                        }
+
                         "chat_message" => {
                             total_messages_processed += 1;
                             last_heartbeat = Instant::now();
 
-                            match handle_chat_message(&state, &mut value, user_id, &username).await
-                            {
+                            // Usa il router per gestire messaggi e conversazioni
+                            match handle_incoming_message(&state, &mut value, user_id, &username).await {
                                 Ok(()) => {
-                                    debug!(
-                                        "Successfully processed chat message from user {}",
-                                        user_id
-                                    );
+                                    debug!("Successfully processed message from user {}", user_id);
+
+                                    // Gestione ack se presente client_msg_id
                                     if let Some(msg_id) = value.get("client_msg_id") {
                                         let ack = json!({
                                             "type": "message_ack",
@@ -532,52 +455,38 @@ pub fn spawn_reader(
                                     }
                                 }
                                 Err(e) => {
-                                    error!(
-                                        "Failed to save chat message from user {}: {}",
-                                        user_id, e
-                                    );
+                                    error!("Failed to process message from user {}: {}", user_id, e);
                                     let error_response = json!({
                                         "type": "error",
-                                        "message": "Failed to save message",
-                                        "error_code": "MESSAGE_SAVE_FAILED",
-                                        "client_msg_id": value.get("client_msg_id")
+                                        "message": e.to_string(),
+                                        "error_code": "MESSAGE_PROCESSING_FAILED",
+                                        "client_msg_id": value.get("client_msg_id"),
+                                        "client_temp_id": value.get("client_temp_id")
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
                                         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                                     }
 
+                                    // Gestione errori critici
                                     match &e {
                                         crate::error::AppError::Forbidden => {
-                                            warn!(
-                                                "User {} attempted unauthorized action, closing connection",
-                                                user_id
-                                            );
+                                            warn!("User {} attempted unauthorized action, closing connection", user_id);
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
                                         crate::error::AppError::Sqlx(_) => {
-                                            error!(
-                                                "Database error for user {}, closing connection",
-                                                user_id
-                                            );
+                                            error!("Database error for user {}, closing connection", user_id);
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                        if msg.contains("database") || msg.contains("sql") =>
-                                            {
-                                                error!(
-                                                "Database-related internal error for user {}, closing connection",
-                                                user_id
-                                            );
-                                                let _ = stop_tx.send(true);
-                                                break;
-                                            }
+                                        if msg.contains("database") || msg.contains("sql") => {
+                                            error!("Database-related internal error for user {}, closing connection", user_id);
+                                            let _ = stop_tx.send(true);
+                                            break;
+                                        }
                                         crate::error::AppError::Unauthorized => {
-                                            warn!(
-                                                "Unauthorized action by user {}, closing connection",
-                                                user_id
-                                            );
+                                            warn!("Unauthorized action by user {}, closing connection", user_id);
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
@@ -587,6 +496,82 @@ pub fn spawn_reader(
                                     }
                                 }
                             }
+                        }
+                        "delete_conversation" => {
+                            last_heartbeat = Instant::now();
+
+                            let cid_opt = value
+                                .get("conversation_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+                            if cid_opt.is_none() {
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code":"INVALID_REQUEST",
+                                    "message":"Missing or invalid conversation_id",
+                                    "op":"delete_conversation"
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            let conversation_id = cid_opt.unwrap();
+
+                            // Recupera i partecipanti per broadcast (non usato per autorizzazione)
+                            let participants_res = crate::services::conversation_service::ConversationService::list_participant_ids(&state.pool, conversation_id).await;
+
+                            // Esegui delete: l'autorizzazione viene validata nel service
+                            let delete_res = crate::services::conversation_service::ConversationService::delete_conversation(
+                                &state.pool,
+                                conversation_id,
+                                user_id
+                            ).await;
+
+                            if let Err(e) = delete_res {
+                                // Mantieni semantica più specifica per gli errori comuni
+                                let (code, message) = match &e {
+                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
+                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    _ => ("DELETE_FAILED", format!("Delete failed: {}", e)),
+                                };
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code": code,
+                                    "message": message,
+                                    "op":"delete_conversation",
+                                    "conversation_id": conversation_id
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            // Broadcast a tutti, incluso autore (se disponibile la lista partecipanti)
+                            if let Ok(participants) = participants_res {
+                                ConversationService::broadcast_conversation_deleted(
+                                    &state,
+                                    conversation_id,
+                                    user_id,
+                                    participants.clone(),
+                                    true
+                                ).await;
+                            }
+
+                            // (Opzionale) ack esplicito
+                            let ack = json!({
+                                "type":"delete_conversation_ack",
+                                "conversation_id": conversation_id,
+                                "status":"ok"
+                            });
+                            if let Ok(txt) = serde_json::to_string(&ack) {
+                                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                            }
+                            
+                            continue;
                         }
 
                         _ => {
@@ -787,36 +772,37 @@ async fn get_initial_state(
         let mut conv = json!({
             "id": id,
             "kind": kind,
-            "title": display_title,  // Usa sempre display_title
+            "title": display_title,
             "owner_id": owner_id,
             "created_at": created_at,
             "message_count": message_count
         });
 
-        // Aggiungi ultimo messaggio se presente
-        if let Ok(content) = row.try_get::<String, _>("last_content") {
-            if let Ok(author) = row.try_get::<String, _>("last_author") {
-                let mut last_message = json!({
-                    "content": content,
-                    "author_username": author
-                });
+        // Aggiungi ultimo messaggio SOLO se esiste veramente
+        if let Ok(Some(content)) = row.try_get::<Option<String>, _>("last_content") {
+            if !content.is_empty() {
+                if let Ok(Some(author)) = row.try_get::<Option<String>, _>("last_author") {
+                    let mut last_message = json!({
+                        "content": content,
+                        "author_username": author
+                    });
 
-                // Includi author_id nel last_message
-                if let Ok(author_id) = row.try_get::<String, _>("last_author_id") {
-                    last_message["author_id"] = json!(author_id);
-                }
+                    // Includi author_id nel last_message
+                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id") {
+                        last_message["author_id"] = json!(author_id);
+                    }
 
-                if let Ok(msg_time) = row.try_get::<i64, _>("last_msg_time") {
-                    last_message["created_at"] = json!(msg_time);
-                }
+                    if let Ok(Some(msg_time)) = row.try_get::<Option<i64>, _>("last_msg_time") {
+                        last_message["created_at"] = json!(msg_time);
+                    }
 
-                if let Ok(seq) = row.try_get::<Option<i64>, _>("last_sequence") {
-                    if let Some(s) = seq {
-                        last_message["sequence"] = json!(s);
+                    if let Ok(Some(seq)) = row.try_get::<Option<i64>, _>("last_sequence") {
+                        last_message["sequence_num"] = json!(seq);
+                        conv["last_message"] = last_message;
+                    } else {
+                        debug!("Message without sequence for conversation {}, not including in initial state", id);
                     }
                 }
-
-                conv["last_message"] = last_message;
             }
         }
 
@@ -832,7 +818,7 @@ async fn get_initial_state(
         .await
         .unwrap_or(0);
 
-    info!("Loaded {} conversations for user {} (all with proper titles and author_ids)",
+    info!("Loaded {} conversations for user {} (only including last_message where messages exist)",
           conversations.len(), user_id_str);
 
     Ok(InitialState {
@@ -840,56 +826,4 @@ async fn get_initial_state(
         user_sequence: user_sequence as u64,
         pending_events: Vec::new(),
     })
-}
-
-async fn get_conversation_messages(
-    pool: &SqlitePool,
-    conversation_id: Uuid,
-    limit: i64,
-) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
-    let conv_id_str = conversation_id.to_string();
-
-    let query = r#"
-        SELECT
-            m.id as message_id,
-            m.author_id as author_id,
-            u.username as author_username,
-            m.content as content,
-            m.created_at as created_at,
-            m.sequence_num as sequence_num
-        FROM messages m
-        INNER JOIN users u ON m.author_id = u.id
-        WHERE m.conversation_id = ?
-        ORDER BY m.created_at DESC
-        LIMIT ?
-    "#;
-
-    let messages = sqlx::query(query)
-        .bind(&conv_id_str)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
-
-    let messages_json: Vec<Value> = messages
-        .into_iter()
-        .map(|msg| {
-            let mut message = json!({
-                "id": msg.try_get::<String, _>("message_id").unwrap_or_default(),
-                "author_id": msg.try_get::<String, _>("author_id").unwrap_or_default(),
-                "author_username": msg.try_get::<String, _>("author_username").unwrap_or_default(),
-                "content": msg.try_get::<String, _>("content").unwrap_or_default(),
-                "created_at": msg.try_get::<i64, _>("created_at").unwrap_or(0),
-                "conversation_id": conversation_id.to_string()
-            });
-
-            if let Ok(Some(seq)) = msg.try_get::<Option<i64>, _>("sequence_num") {
-                message["sequence_num"] = json!(seq);
-            }
-
-            message
-        })
-        .rev() // Inverti per ordine cronologico
-        .collect();
-
-    Ok(messages_json)
 }

@@ -4,7 +4,6 @@ use crate::{
     error::Result,
     services::message_service::MessageService,
     state::AppState,
-    web_socket::helpers::{get_conversation_messages_api, MessageResponse},
 };
 use axum::{
     Json,
@@ -26,6 +25,12 @@ pub struct CreatedId {
 }
 
 #[derive(Deserialize)]
+pub struct ListQuery {
+    pub limit: Option<i64>,
+    pub before_sequence: Option<i64>,
+}
+
+#[derive(Deserialize)]
 pub struct MessageQuery {
     pub limit: Option<i64>,
 }
@@ -33,26 +38,35 @@ pub struct MessageQuery {
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn list(
     Path(conversation_id): Path<Uuid>,
+    Query(params): Query<ListQuery>,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<Message>>> {
-    // Ora list ritorna 6 elementi, incluso sequence_num
-    let rows = MessageService::list(&st.pool, conversation_id, 50).await?;
-    let out = rows
-        .into_iter()
-        .map(
-            |(id, author_id, author_username, content, created_at, sequence_num)| Message {
+    // Usa il metodo con paginazione se c'è before_sequence
+    let messages = if params.before_sequence.is_some() {
+        MessageService::list_with_pagination(
+            &st.pool,
+            conversation_id,
+            params.limit.unwrap_or(50),
+            params.before_sequence,
+        ).await?
+    } else {
+        // Comportamento originale per compatibilità
+        let rows = MessageService::list(&st.pool, conversation_id, params.limit.unwrap_or(50)).await?;
+        rows.into_iter()
+            .map(|(id, author_id, author_username, content, created_at, sequence_num)| Message {
                 id,
                 author_id,
                 conversation_id,
                 author_username,
                 content,
                 created_at,
-                sequence_num, // AGGIUNTO
-            },
-        )
-        .rev()
-        .collect();
-    Ok(Json(out))
+                sequence_num,
+            })
+            .rev()
+            .collect()
+    };
+
+    Ok(Json(messages))
 }
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
@@ -74,14 +88,3 @@ pub async fn post(
     Ok(Json(CreatedId { id: message_id }))
 }
 
-/// Endpoint per fetch messaggi (usato dal sistema fetch-on-subscribe)
-#[cfg_attr(debug_assertions, axum::debug_handler)]
-pub async fn fetch_messages(
-    user: AuthUser,
-    Path(conversation_id): Path<Uuid>,
-    Query(params): Query<MessageQuery>,
-    State(st): State<AppState>,
-) -> Result<Json<Vec<MessageResponse>>> {
-    let messages = get_conversation_messages_api(&st, conversation_id, user.id, params.limit).await?;
-    Ok(Json(messages))
-}

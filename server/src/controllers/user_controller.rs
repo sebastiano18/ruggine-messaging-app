@@ -1,10 +1,12 @@
 // controllers/users_controller.rs
 // controllers/users_controller.rs
 use crate::{error::Result, services::user_service::UserService, state::AppState};
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use tracing::{debug, warn};
+use crate::auth::AuthUser;
+
 
 #[derive(Deserialize)]
 pub struct RegisterReq {
@@ -81,4 +83,14 @@ pub async fn login(
 #[axum::debug_handler]
 pub async fn logout(Json(_req): Json<LogoutReq>) -> Result<()> {
     Ok(()) // stateless
+}
+
+// Nuovo: elimina l'account dell'utente autenticato
+#[axum::debug_handler]
+pub async fn delete_self(
+    user: AuthUser,
+    State(st): State<AppState>,
+) -> Result<StatusCode> {
+    UserService::delete_user(&st.pool, user.id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

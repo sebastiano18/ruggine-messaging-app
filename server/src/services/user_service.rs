@@ -59,4 +59,12 @@ impl UserService {
         };
         Ok(uid)
     }
+
+    pub async fn delete_user(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<()> {
+        // Esegue una transazione che:
+        // 1) Pulisce user_events e user_sequences
+        // 2) Pulisce message_sequences delle conversazioni che saranno eliminate (owner_id = user_id)
+        // 3) Elimina l'utente (le FK con CASCADE faranno il resto)
+        UserRepo::delete_user_cascade(pool, user_id).await
+    }
 }

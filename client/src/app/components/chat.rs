@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::api;
 use eframe::egui::{self, Frame, RichText, Stroke, TextEdit};
 use uuid::Uuid;
-use tracing::info;
+use tracing::{debug, info};
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.heading("💬 Chat");
@@ -13,24 +13,23 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
         ui.colored_label(egui::Color32::RED, "Login richiesto");
         return;
     }
-    let token = s.token.clone().unwrap();
 
     if let Some(cid) = s.cid {
-        show_chat_interface(ui, s, cid, &token);
+        show_chat_interface(ui, s, cid);
     } else {
         show_empty_state(ui);
     }
 }
 
-fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str) {
+fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     // Header conversazione
     show_conversation_header(ui, s);
 
-    // Se gruppo, mostra opzioni invito
+    // Se gruppo, mostra opzioni invito (senza passare token come parametro)
     if let Some(ref conversations) = s.conversations {
         if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
             if conv.kind == "group" {
-                show_invite_options(ui, s, cid, token);
+                show_invite_options(ui, s, cid);
             }
         }
     }
@@ -39,66 +38,152 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
 
     // === Split manuale: messaggi (in alto, cresce) + input (in basso, fisso) ===
     let total_h = ui.available_height();
-    let total_w = ui.available_width();
     let input_h: f32 = 60.0;
+    let separator_space: f32 = 13.0;
+    let messages_h = (total_h - input_h - separator_space).max(120.0);
 
-    // "cromatura" fra messaggi e input: spazio + separatore + spazio
-    let chrome_h: f32 = 6.0 + 1.0 + 6.0;
+    // Stati persistenti
+    let anchor_state_id = ui.id().with("anchor_state").with(cid);
+    let last_offset_id = ui.id().with("last_offset").with(cid);
+    let messages_count_id = ui.id().with("msg_count").with(cid);
 
-    // L'area messaggi prende tutto lo spazio restante
-    let messages_h = (total_h - input_h - chrome_h).max(120.0);
-
-    // 1) Messaggi: occupano lo spazio superiore
-    ui.allocate_ui_with_layout(
-        egui::vec2(total_w, messages_h),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            // Frame opzionale per garantire minimo e isolare lo scroll
-            Frame::none()
-                .fill(ui.visuals().panel_fill) // stesso colore del pannello
-                .show(ui, |ui| {
-                    ui.set_min_height(messages_h);
-                    show_messages_area(ui, s);
-                });
-        },
+    // Recupera l'ancora salvata
+    let anchor_message_id: Option<Uuid> = ui.data_mut(|d|
+        d.get_temp(anchor_state_id).unwrap_or(None)
     );
 
-    // Separatore "cromatura"
+    // Recupera il numero di messaggi dall'ultimo frame
+    let last_message_count: usize = ui.data_mut(|d|
+        d.get_temp(messages_count_id).unwrap_or(0)
+    );
+
+    // 1) Area messaggi con ScrollArea
+    let scroll = egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .max_height(messages_h)
+        .id_source("chat_messages_scroll");
+
+    let output = scroll.show(ui, |ui| {
+        // Se abbiamo solo 0-1 messaggi (vuoto o solo anteprima)
+        if s.messages.len() <= 1 && *s.has_more_messages.get(&cid).unwrap_or(&true) {
+            if !s.is_loading_more {
+                s.load_older_messages();
+            }
+
+            ui.vertical_centered(|ui| {
+                ui.add_space(messages_h / 2.0 - 20.0);
+                ui.spinner();
+                ui.label("Caricamento chat...");
+            });
+            return;
+        }
+
+        // Se non ci sono messaggi, chat vuota
+        if s.messages.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(messages_h / 2.0 - 40.0);
+                ui.label("— Chat vuota —");
+                ui.add_space(10.0);
+                ui.label("Invia il primo messaggio per iniziare!");
+            });
+            return;
+        }
+
+        // === Mostra i messaggi ===
+
+        // Indicatore inizio conversazione
+        if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
+            ui.vertical_centered(|ui| {
+                ui.label("— Inizio conversazione —");
+            });
+            ui.add_space(10.0);
+        }
+
+        // Spinner se sta caricando
+        if s.is_loading_more {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Caricamento messaggi precedenti...");
+            });
+            ui.separator();
+        }
+
+        // Renderizza tutti i messaggi, cercando l'ancora
+        for (i, message) in s.messages.iter().enumerate() {
+            // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
+            if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
+                // Scrolla a questo messaggio
+                ui.scroll_to_cursor(Some(egui::Align::TOP));
+                // Reset ancora
+                ui.data_mut(|d| d.insert_temp(anchor_state_id, None::<Uuid>));
+            }
+
+            show_message(ui, s, message);
+
+            if i < s.messages.len() - 1 {
+                ui.add_space(6.0);
+            }
+        }
+    });
+
+    // Salva il numero di messaggi corrente
+    ui.data_mut(|d| d.insert_temp(messages_count_id, s.messages.len()));
+
+    // === Gestione scroll per trigger fetch ===
+
+    // Recupera l'ultimo offset
+    let last_offset: f32 = ui.data_mut(|d|
+        d.get_temp(last_offset_id).unwrap_or(f32::MAX)
+    );
+
+    // Detecta quando sei nei 3/4 superiori
+    let trigger_threshold = messages_h * 0.75;
+    let near_top = output.state.offset.y <= trigger_threshold;
+
+    // Controlla TUTTI i modi di scrollare
+    let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+    let scrolling_up_with_wheel = scroll_delta > 0.0;
+
+    // Controlla se l'offset è diminuito (scroll verso l'alto in qualsiasi modo)
+    let scrolled_up = output.state.offset.y < last_offset - 5.0; // 5px di tolleranza
+
+    // Salva l'offset corrente
+    ui.data_mut(|d| d.insert_temp(last_offset_id, output.state.offset.y));
+
+    // Triggera se: sei nei 3/4 superiori E hai scrollato verso l'alto
+    if near_top && (scrolling_up_with_wheel || scrolled_up) && !s.is_loading_more && !s.messages.is_empty() {
+        if *s.has_more_messages.get(&cid).unwrap_or(&true) {
+            // Trova quale messaggio salvare come ancora
+            // Prendiamo il terzo messaggio visibile per sicurezza
+            if s.messages.len() > 3 {
+                if let Some(anchor_msg) = s.messages.get(3) {
+                    ui.data_mut(|d| d.insert_temp(anchor_state_id, Some(anchor_msg.id)));
+                }
+            } else if let Some(first_msg) = s.messages.first() {
+                ui.data_mut(|d| d.insert_temp(anchor_state_id, Some(first_msg.id)));
+            }
+
+            s.load_older_messages();
+        }
+    }
+
+    // Separatore tra messaggi e input
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
 
-    // 2) Input: altezza fissa in basso
-    show_input_area(ui, s, cid, token, input_h);
+    // 2) Input area
+    show_input_area(ui, s, cid, input_h);
 }
 
-fn show_messages_area(ui: &mut egui::Ui, s: &AppState) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            for message in &s.messages {
-                let row_width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(row_width, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |row| {
-                        show_message(row, s, message);
-                    },
-                );
-                ui.add_space(6.0);
-            }
-        });
-}
-
-fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, height: f32) {
+fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) {
     // Contenitore con altezza fissa per la barra dei messaggi
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), height),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             // Campo di testo
-            // Calcolo una larghezza "prudente" per lasciare spazio ai bottoni a destra
             let mut input_width = ui.available_width();
             // spazio stimato per bottoni e stato a destra
             input_width = (input_width - 110.0).max(120.0);
@@ -111,12 +196,12 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str, 
 
             // Invio con Enter
             if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                send_message(s, cid, token);
+                send_message(s, cid);
             }
 
             // Pulsante invio
             if ui.button("📤").on_hover_text("Invia").clicked() {
-                send_message(s, cid, token);
+                send_message(s, cid);
             }
 
             // Stato/azioni (a destra)
@@ -148,7 +233,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
                 let icon = match conv.kind.as_str() {
                     "group" => "👥",
                     "dm" => "💬",
-                    _ => "👭",
+                    _ => "💭",
                 };
                 ui.label(format!("{} {}", icon, conv.title));
             } else if s.is_dm_stub(cid) {
@@ -162,7 +247,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
     }
 }
 
-fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &str) {
+fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     Frame::group(ui.style())
         .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.1))
         .stroke(Stroke::new(
@@ -188,23 +273,25 @@ fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, token: &s
                         .on_hover_text("Crea un token di invito per questo gruppo")
                         .clicked()
                     {
-                        let base = s.base.clone();
-                        let token2 = token.to_string();
-                        let tx = s.ui_tx.clone();
+                        // Accedi al token di autenticazione quando serve
+                        if let Some(token) = s.token.clone() {
+                            let base = s.base.clone();
+                            let tx = s.ui_tx.clone();
 
-                        s.rt.spawn(async move {
-                            match api::conversation::create_invite(&base, &token2, cid).await {
-                                Ok(invite_token) => {
-                                    let _ = tx.send(UiEvent::InviteCreated(invite_token));
+                            s.rt.spawn(async move {
+                                match api::conversation::create_invite(&base, &token, cid).await {
+                                    Ok(invite_token) => {
+                                        let _ = tx.send(UiEvent::InviteCreated(invite_token));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiEvent::Error(format!(
+                                            "Creazione invito fallita: {}",
+                                            e
+                                        )));
+                                    }
                                 }
-                                Err(e) => {
-                                    let _ = tx.send(UiEvent::Error(format!(
-                                        "Creazione invito fallita: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     ui.add_space(8.0);
@@ -253,78 +340,97 @@ fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
 }
 
 fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-        ui.add_space(8.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::TOP),
+        |ui| {
+            ui.add_space(8.0);
 
-        let row_w = ui.available_size_before_wrap().x;
-        let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
-        let inner_pad_x = 20.0;
+            let row_w = ui.available_size_before_wrap().x;
+            let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
+            let inner_pad_x = 20.0;
+            let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
 
-        let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
+            Frame::none()
+                .fill(egui::Color32::from_rgb(200, 100, 40))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(bw);
 
-        Frame::none()
-            .fill(egui::Color32::from_rgb(200, 100, 40))
-            .rounding(egui::Rounding::same(12.0))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(bw);
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message.content).color(egui::Color32::WHITE),
+                            )
+                                .wrap(true),
+                        );
+                        ui.add_space(3.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Stato conferma
+                            let status_icon = match message.is_confirmed {
+                                Some(true) => "✔✔",  // Confermato
+                                Some(false) => "✔",   // Non confermato/in attesa
+                                None => "⏳",         // Sconosciuto/in invio
+                            };
 
-                ui.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&message.content).color(egui::Color32::WHITE),
-                        )
-                            .wrap(true),
-                    );
-                    ui.add_space(3.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(egui::Color32::from_rgb(255, 220, 180), "✔✔");
-                        ui.add_space(4.0);
-                        let time = format_time(message.created_at);
-                        ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
+                            let status_color = match message.is_confirmed {
+                                Some(true) => egui::Color32::from_rgb(255, 220, 180),
+                                Some(false) => egui::Color32::from_rgb(255, 150, 100),
+                                None => egui::Color32::from_rgb(200, 200, 200),
+                            };
+
+                            ui.colored_label(status_color, status_icon);
+                            ui.add_space(4.0);
+                            let time = format_time(message.created_at);
+                            ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);
+                        });
                     });
                 });
-            });
-    });
+        }
+    );
 }
 
 fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-        ui.add_space(8.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::TOP),
+        |ui| {
+            ui.add_space(8.0);
 
-        let row_w = ui.available_size_before_wrap().x;
-        let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
-        let inner_pad_x = 20.0;
+            let row_w = ui.available_size_before_wrap().x;
+            let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
+            let inner_pad_x = 20.0;
+            let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
 
-        let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
+            Frame::none()
+                .fill(egui::Color32::from_rgb(60, 60, 60))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(bw);
 
-        Frame::none()
-            .fill(egui::Color32::from_rgb(60, 60, 60))
-            .rounding(egui::Rounding::same(12.0))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(bw);
-
-                ui.vertical(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 180, 100),
-                        &message.author_username,
-                    );
-                    ui.add_space(2.0);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&message.content).color(egui::Color32::WHITE),
-                        )
-                            .wrap(true),
-                    );
-                    ui.add_space(3.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let time = format_time(message.created_at);
-                        ui.colored_label(egui::Color32::from_rgb(180, 180, 180), time);
+                    ui.vertical(|ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 180, 100),
+                            &message.author_username,
+                        );
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message.content).color(egui::Color32::WHITE),
+                            )
+                                .wrap(true),
+                        );
+                        ui.add_space(3.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let time = format_time(message.created_at);
+                            ui.colored_label(egui::Color32::from_rgb(180, 180, 180), time);
+                        });
                     });
                 });
-            });
-    });
+        }
+    );
 }
 
 fn show_empty_state(ui: &mut egui::Ui) {
@@ -336,58 +442,50 @@ fn show_empty_state(ui: &mut egui::Ui) {
     });
 }
 
-fn send_message(s: &mut AppState, cid: Uuid, token: &str) {
+fn send_message(s: &mut AppState, cid: Uuid) {
     let content = s.input.trim().to_string();
     if content.is_empty() {
         return;
     }
     s.input.clear();
 
-    // Messaggio ottimistico (appare subito)
-    if let Some(user_id) = s.user_id {
-        let optimistic_msg = MessageDto {
-            id: Uuid::new_v4(),
-            author_id: user_id,
-            conversation_id: cid,
-            author_username: s.username.clone(),
-            content: content.clone(),
-            created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None,  // AGGIUNTO: campo sequence per compatibilità
-        };
+    // Genera client_msg_id per tracking
+    let client_msg_id = Uuid::new_v4().to_string();
+    info!("Sending message with client_msg_id: {}", client_msg_id);
 
+    // Messaggio ottimistico con tracking
+    if let Some(user_id) = s.user_id {
+        let optimistic_msg = MessageDto::optimistic_message(
+            user_id,
+            s.username.clone(),
+            cid,
+            content.clone(),
+            client_msg_id.clone(),
+        );
+
+        // IMPORTANTE: Salva nei pending per tracking conferma
+        s.pending_confirmations.insert(client_msg_id.clone(), optimistic_msg.clone());
+        info!("Added pending confirmation for client_id: {}", client_msg_id);
+
+        // Aggiungi alla UI
         s.messages.push(optimistic_msg.clone());
 
+        // Aggiungi alla cache
         if let Some(msgs) = s.conversation_messages.get_mut(&cid) {
             msgs.push(optimistic_msg);
         }
     }
 
-    // Usa WebSocket - PRIMA di rimuovere lo stub!
-    s.send_chat_message_ws(content);
+    // Controlla se è un DM stub PRIMA di inviare
+    let is_dm_stub = s.dm_stubs.contains_key(&cid);
 
-    // DOPO l'invio, se era uno stub DM, convertilo in conversazione reale
-    if s.dm_stubs.contains_key(&cid) {
-        let target_username = s.dm_stubs.remove(&cid).unwrap();
+    // Usa WebSocket con client_msg_id
+    s.send_chat_message_ws(content, Some(client_msg_id));
 
-        // Crea la conversazione reale e aggiungila alla lista
-        let real_conversation = ConversationDto {
-            id: cid,
-            kind: "dm".to_string(),
-            title: target_username.clone(),
-            owner_id: s.user_id.unwrap_or(Uuid::nil()),
-            created_at: chrono::Utc::now().timestamp(),
-        };
-
-        if let Some(ref mut conversations) = s.conversations {
-            // Verifica che non esista già (safety check)
-            if !conversations.iter().any(|c| c.id == cid) {
-                conversations.insert(0, real_conversation);
-            }
-        } else {
-            s.conversations = Some(vec![real_conversation]);
-        }
-
-        info!("DM stub converted to real conversation on message send");
+    // NON rimuovere lo stub qui - aspetta la conferma dal server
+    if is_dm_stub {
+        info!("Message sent to DM stub {}, waiting for server confirmation", cid);
+        // Lo stub verrà rimosso quando riceveremo conversation_confirmation dal server
     }
 }
 

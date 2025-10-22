@@ -19,6 +19,11 @@ pub struct SequenceStats {
     pub last_gap_time: Option<Instant>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingDeletion {
+    pub conversation: ConversationDto,
+}
+
 pub struct AppState {
     pub rt: Runtime,
     pub base: String,
@@ -37,6 +42,7 @@ pub struct AppState {
     // Conversations
     pub conversations: Option<Vec<ConversationDto>>,
     pub request_conversations_refresh: bool,
+    pub pending_deletion: Option<PendingDeletion>,
 
     // Group management
     pub group_name: String,
@@ -69,6 +75,11 @@ pub struct AppState {
     // DM stub tracking - conversation_id -> target_username
     pub dm_stubs: HashMap<Uuid, String>,
 
+    // Message confirmation tracking
+    pub pending_confirmations: HashMap<String, MessageDto>, // client_msg_id -> messaggio ottimistico
+    pub confirmation_timeout: Duration,
+    pub last_confirmation_cleanup: Instant,
+
     // Dual sequence system
     pub user_sequence_confirmed: u64,
     pub user_sequence_received: u64,
@@ -89,6 +100,13 @@ pub struct AppState {
 
     // Statistics
     pub sequence_stats: SequenceStats,
+
+    pub is_loading_more: bool,
+    pub has_more_messages: HashMap<Uuid, bool>,
+    pub pending_conversations: HashMap<String, ConversationDto>,
+
+    // User Manag
+    pub confirm_delete_account: bool,
 }
 
 impl AppState {
@@ -113,6 +131,7 @@ impl AppState {
 
             conversations: None,
             request_conversations_refresh: false,
+            pending_deletion: None,
             group_name: String::new(),
             dm_user_username_input: String::new(),
             last_invite_token: None,
@@ -125,6 +144,7 @@ impl AppState {
             ws_ctrl: None,
 
             login_state: LoginState::Idle,
+            confirm_delete_account: false,
 
             ui_tx: tx,
             ui_rx: rx,
@@ -136,6 +156,11 @@ impl AppState {
             is_loading: false,
 
             dm_stubs: HashMap::new(),
+
+            // Message confirmation
+            pending_confirmations: HashMap::new(),
+            confirmation_timeout: Duration::from_secs(10),
+            last_confirmation_cleanup: Instant::now(),
 
             // Dual sequence system
             user_sequence_confirmed: 0,
@@ -154,6 +179,10 @@ impl AppState {
             pending_resume_requests: 0,
 
             sequence_stats: SequenceStats::default(),
+
+            is_loading_more: false,
+            has_more_messages: HashMap::new(),
+            pending_conversations: HashMap::new(),
         }
     }
 
@@ -161,10 +190,66 @@ impl AppState {
         while let Ok(ev) = self.ui_rx.try_recv() {
             crate::app::events::EventDispatcher::handle_event(self, ev);
         }
+
+        // Cleanup periodico delle conferme
+        if self.last_confirmation_cleanup.elapsed() > Duration::from_secs(5) {
+            self.cleanup_pending_confirmations();
+            self.last_confirmation_cleanup = Instant::now();
+        }
     }
 
     pub fn load_single_conversation_messages(&self, cid: Uuid) {
         DataLoader::load_single_conversation_messages(self, cid);
+    }
+
+    pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
+        self.pending_deletion = Some(PendingDeletion {
+            conversation: conversation.clone(),
+        });
+    }
+
+    pub fn cancel_delete_confirmation(&mut self) {
+        self.pending_deletion = None;
+    }
+
+    pub fn execute_pending_deletion(&mut self) {
+        let Some(pending) = self.pending_deletion.take() else {
+            return;
+        };
+
+        let conversation = pending.conversation;
+        let cid = conversation.id;
+
+        if self.is_dm_stub(cid) {
+            self.remove_dm_stub(cid);
+            if let Some(ref mut list) = self.conversations {
+                list.retain(|c| c.id != cid);
+            }
+            self.conversation_messages.remove(&cid);
+
+            if self.cid == Some(cid) {
+                self.cid = None;
+                self.conv_title.clear();
+                self.messages.clear();
+                self.page = Page::Conversations;
+            }
+
+            let _ = self
+                .ui_tx
+                .send(UiEvent::Info("Chat privata rimossa (locale)".into()));
+        } else {
+            if self.ws_status == WsStatus::Connected {
+                self.send_via_websocket(Outgoing::DeleteConversation { cid });
+
+                let _ = self
+                    .ui_tx
+                    .send(UiEvent::Info("Eliminazione conversazione...".into()));
+            } else {
+                let _ = self
+                    .ui_tx
+                    .send(UiEvent::Error("Errore di connessione".into()));
+            }
+        }
     }
 
     // === WebSocket helpers ===
@@ -177,7 +262,7 @@ impl AppState {
         }
     }
 
-    pub fn send_chat_message_ws(&self, content: String) {
+    pub fn send_chat_message_ws(&self, content: String, client_msg_id: Option<String>) {
         if let Some(cid) = self.cid {
             let target_username = self.dm_stubs.get(&cid).cloned();
 
@@ -192,7 +277,41 @@ impl AppState {
                 cid,
                 content,
                 target_username,
+                client_msg_id,
             });
+        }
+    }
+
+    // === Message Confirmation Methods ===
+
+    pub fn cleanup_pending_confirmations(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        let timeout_secs = self.confirmation_timeout.as_secs() as i64;
+
+        let mut expired = Vec::new();
+        for (client_id, msg) in &self.pending_confirmations {
+            if now - msg.created_at > timeout_secs {
+                expired.push(client_id.clone());
+            }
+        }
+
+        for client_id in expired {
+            if let Some(msg) = self.pending_confirmations.remove(&client_id) {
+                warn!("Message confirmation timeout for {}", client_id);
+
+                // Marca il messaggio come fallito nell'UI
+                for ui_msg in &mut self.messages {
+                    if ui_msg.client_msg_id == Some(client_id.clone()) {
+                        ui_msg.is_confirmed = Some(false);
+                        break;
+                    }
+                }
+
+                // Notifica l'utente
+                let _ = self.ui_tx.send(UiEvent::Info(
+                    "⚠️ Messaggio potrebbe non essere stato inviato".into(),
+                ));
+            }
         }
     }
 
@@ -200,8 +319,14 @@ impl AppState {
 
     pub fn send_enhanced_ping(&mut self) {
         let user_seq = {
-            let seq = self.user_sequence_confirmed.max(self.user_sequence_received);
-            if seq > 0 { Some(seq) } else { None }
+            let seq = self
+                .user_sequence_confirmed
+                .max(self.user_sequence_received);
+            if seq > 0 {
+                Some(seq)
+            } else {
+                None
+            }
         };
 
         let (conv_seq, active_conv) = if let Some(cid) = self.cid {
@@ -209,7 +334,7 @@ impl AppState {
 
             debug!(
                 "Conversation {} sequences - confirmed: {:?}, received: {:?}, sending: {:?}",
-                cid, 
+                cid,
                 self.conversation_sequences_confirmed.get(&cid),
                 self.conversation_sequences.get(&cid),
                 seq
@@ -234,31 +359,36 @@ impl AppState {
         });
     }
 
-    // === Sequence Update Methods con RILEVAMENTO GAP IMMEDIATO ===
+    // ... resto dei metodi esistenti rimangono invariati ...
 
     pub fn update_user_sequence(&mut self, sequence: u64) {
         let current = self.user_sequence_received;
 
-        // Rileva gap IMMEDIATAMENTE
         if sequence > current + 1 {
             let gap_size = sequence - current - 1;
             warn!(
                 "User events gap detected! Expected {}, got {} (missing {} events)",
-                current + 1, sequence, gap_size
+                current + 1,
+                sequence,
+                gap_size
             );
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
-            // Resume IMMEDIATO per gap >= 3 eventi utente
             if gap_size >= 3 {
-                warn!("Large user events gap ({}), requesting immediate resume", gap_size);
+                warn!(
+                    "Large user events gap ({}), requesting immediate resume",
+                    gap_size
+                );
                 self.request_user_events_resume(current);
             } else {
-                debug!("Small user events gap ({}), will handle at next ping", gap_size);
+                debug!(
+                    "Small user events gap ({}), will handle at next ping",
+                    gap_size
+                );
             }
         }
 
-        // Aggiorna sequence
         if sequence > self.user_sequence_received {
             self.user_sequence_received = sequence;
             self.sequence_stats.total_events_received += 1;
@@ -271,42 +401,57 @@ impl AppState {
     }
 
     pub fn update_conversation_sequence(&mut self, conversation_id: Uuid, sequence: u64) {
-        let current = self.conversation_sequences.get(&conversation_id).copied().unwrap_or(0);
+        let current = self
+            .conversation_sequences
+            .get(&conversation_id)
+            .copied()
+            .unwrap_or(0);
 
-        // Rileva gap IMMEDIATAMENTE
         if sequence > current + 1 {
             let gap_size = sequence - current - 1;
             warn!(
                 "Messages gap in conversation {}! Expected {}, got {} (missing {} messages)",
-                conversation_id, current + 1, sequence, gap_size
+                conversation_id,
+                current + 1,
+                sequence,
+                gap_size
             );
             self.sequence_stats.gaps_detected += 1;
             self.sequence_stats.last_gap_time = Some(Instant::now());
 
-            // Resume IMMEDIATO per gap >= 5 messaggi
             if gap_size >= 5 {
-                warn!("Large messages gap ({}) in conversation {}, requesting immediate resume", 
-                      gap_size, conversation_id);
+                warn!(
+                    "Large messages gap ({}) in conversation {}, requesting immediate resume",
+                    gap_size, conversation_id
+                );
                 self.request_messages_resume(conversation_id, current);
             } else {
-                debug!("Small messages gap ({}) in conversation {}, will handle at next ping", 
-                       gap_size, conversation_id);
+                debug!(
+                    "Small messages gap ({}) in conversation {}, will handle at next ping",
+                    gap_size, conversation_id
+                );
             }
         }
 
-        // Aggiorna sequence
         if sequence > current {
-            self.conversation_sequences.insert(conversation_id, sequence);
+            self.conversation_sequences
+                .insert(conversation_id, sequence);
         }
 
-        let confirmed = self.conversation_sequences_confirmed.get(&conversation_id).copied().unwrap_or(0);
+        let confirmed = self
+            .conversation_sequences_confirmed
+            .get(&conversation_id)
+            .copied()
+            .unwrap_or(0);
         if sequence == confirmed + 1 {
-            self.conversation_sequences_confirmed.insert(conversation_id, sequence);
-            debug!("Conversation {} sequence {} confirmed", conversation_id, sequence);
+            self.conversation_sequences_confirmed
+                .insert(conversation_id, sequence);
+            debug!(
+                "Conversation {} sequence {} confirmed",
+                conversation_id, sequence
+            );
         }
     }
-
-    // === Resume Request Methods ===
 
     pub fn request_user_events_resume(&mut self, from_sequence: u64) {
         if self.is_recovering_user_events {
@@ -322,12 +467,22 @@ impl AppState {
             limit: 100,
         });
 
-        info!("Requested user events resume from sequence {}", from_sequence);
+        info!(
+            "Requested user events resume from sequence {}",
+            from_sequence
+        );
     }
 
     pub fn request_messages_resume(&mut self, conversation_id: Uuid, from_sequence: u64) {
-        if *self.is_recovering_messages.get(&conversation_id).unwrap_or(&false) {
-            debug!("Messages resume already in progress for {}", conversation_id);
+        if *self
+            .is_recovering_messages
+            .get(&conversation_id)
+            .unwrap_or(&false)
+        {
+            debug!(
+                "Messages resume already in progress for {}",
+                conversation_id
+            );
             return;
         }
 
@@ -340,17 +495,22 @@ impl AppState {
             limit: 100,
         });
 
-        info!("Requested messages resume for {} from sequence {}", conversation_id, from_sequence);
+        info!(
+            "Requested messages resume for {} from sequence {}",
+            conversation_id, from_sequence
+        );
     }
-
-    // === Gap Detection ===
 
     pub fn check_for_gaps(&mut self) -> (bool, bool) {
         let user_gap = self.user_sequence_received > self.user_sequence_confirmed;
 
         let conversation_gap = if let Some(cid) = self.cid {
             let received = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            let confirmed = self
+                .conversation_sequences_confirmed
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
             received > confirmed
         } else {
             false
@@ -358,8 +518,6 @@ impl AppState {
 
         (user_gap, conversation_gap)
     }
-
-    // === Ping/Pong Management ===
 
     pub fn should_send_ping(&self) -> bool {
         self.ws_status == WsStatus::Connected && self.last_ping_time.elapsed() >= self.ping_interval
@@ -404,14 +562,13 @@ impl AppState {
         self.reset_sequence_system();
     }
 
-    // === Health and Statistics ===
-
     pub fn get_sequence_health(&self) -> f64 {
         if self.sequence_stats.ping_count == 0 {
             return 1.0;
         }
 
-        let pong_rate = self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
+        let pong_rate =
+            self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
         let gap_penalty = (self.sequence_stats.gaps_detected as f64 * 0.1).min(0.5);
         let missed_penalty = (self.missed_pings as f64 / self.max_missed_pings as f64) * 0.3;
 
@@ -426,49 +583,80 @@ impl AppState {
         let mut info = HashMap::new();
 
         info.insert("ws_status".to_string(), format!("{:?}", self.ws_status));
-        info.insert("user_seq_confirmed".to_string(), self.user_sequence_confirmed.to_string());
-        info.insert("user_seq_received".to_string(), self.user_sequence_received.to_string());
-        info.insert("active_conversation".to_string(), self.cid.map_or("none".to_string(), |id| id.to_string()));
+        info.insert(
+            "user_seq_confirmed".to_string(),
+            self.user_sequence_confirmed.to_string(),
+        );
+        info.insert(
+            "user_seq_received".to_string(),
+            self.user_sequence_received.to_string(),
+        );
+        info.insert(
+            "active_conversation".to_string(),
+            self.cid.map_or("none".to_string(), |id| id.to_string()),
+        );
+        info.insert(
+            "pending_confirmations".to_string(),
+            self.pending_confirmations.len().to_string(),
+        );
 
         if let Some(cid) = self.cid {
             let conv_seq = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let conv_seq_confirmed = self.conversation_sequences_confirmed.get(&cid).copied().unwrap_or(0);
+            let conv_seq_confirmed = self
+                .conversation_sequences_confirmed
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
             info.insert("conv_seq".to_string(), conv_seq.to_string());
-            info.insert("conv_seq_confirmed".to_string(), conv_seq_confirmed.to_string());
+            info.insert(
+                "conv_seq_confirmed".to_string(),
+                conv_seq_confirmed.to_string(),
+            );
         }
 
-        info.insert("sequence_health".to_string(), format!("{:.2}", self.get_sequence_health()));
-        info.insert("ping_count".to_string(), self.sequence_stats.ping_count.to_string());
-        info.insert("pong_count".to_string(), self.sequence_stats.pong_count.to_string());
-        info.insert("missed_pings".to_string(), format!("{}/{}", self.missed_pings, self.max_missed_pings));
-        info.insert("gaps_detected".to_string(), self.sequence_stats.gaps_detected.to_string());
-        info.insert("pending_resume".to_string(), self.pending_resume_requests.to_string());
+        info.insert(
+            "sequence_health".to_string(),
+            format!("{:.2}", self.get_sequence_health()),
+        );
+        info.insert(
+            "ping_count".to_string(),
+            self.sequence_stats.ping_count.to_string(),
+        );
+        info.insert(
+            "pong_count".to_string(),
+            self.sequence_stats.pong_count.to_string(),
+        );
+        info.insert(
+            "missed_pings".to_string(),
+            format!("{}/{}", self.missed_pings, self.max_missed_pings),
+        );
+        info.insert(
+            "gaps_detected".to_string(),
+            self.sequence_stats.gaps_detected.to_string(),
+        );
+        info.insert(
+            "pending_resume".to_string(),
+            self.pending_resume_requests.to_string(),
+        );
 
         info
     }
-
-    // === Authentication ===
 
     pub fn is_authenticated(&self) -> bool {
         self.token.is_some() && self.user_id.is_some()
     }
 
-    // === DM stub management ===
-
     pub fn add_dm_stub(&mut self, conversation_id: Uuid, target_username: String) {
         debug!("Adding DM stub: {} -> {}", conversation_id, target_username);
 
-        // Verifica duplicati prima di aggiungere
         if self.dm_stubs.contains_key(&conversation_id) {
-            warn!("DM stub already exists for conversation {}", conversation_id);
+            warn!(
+                "DM stub already exists for conversation {}",
+                conversation_id
+            );
             return;
         }
-        println!("aaaaaaaa{:?}", self.conversations);
-        if let Some(convs) = &mut self.conversations {
-    // remove the first record (index 0)
-    convs.remove(0);
-}
-        println!("eeeeeeee{:?}", self.conversations);
+
         self.dm_stubs.insert(conversation_id, target_username);
     }
 
@@ -482,12 +670,13 @@ impl AppState {
         self.dm_stubs.contains_key(&conversation_id)
     }
 
-    // === Cleanup Methods ===
-
     pub fn cleanup_old_data(&self) {
         let total_messages = self.get_total_cached_messages();
         if total_messages > 50000 {
-            warn!("High memory usage detected: {} cached messages", total_messages);
+            warn!(
+                "High memory usage detected: {} cached messages",
+                total_messages
+            );
         }
     }
 
@@ -505,5 +694,54 @@ impl AppState {
         for id in to_remove {
             self.dm_stubs.remove(&id);
         }
+    }
+
+    pub fn load_older_messages(&mut self) {
+        let Some(cid) = self.cid else { return };
+        let Some(ref token) = self.token else { return };
+
+        if self.is_loading_more {
+            return;
+        }
+
+        if !*self.has_more_messages.get(&cid).unwrap_or(&true) {
+            return;
+        }
+
+        let before_seq = self
+            .messages
+            .first()
+            .and_then(|m| m.sequence_num)
+            .map(|seq| seq as i64);
+
+        if let Some(seq) = before_seq {
+            if seq <= 1 {
+                self.has_more_messages.insert(cid, false);
+                info!("First message has sequence 1, no older messages to load");
+                return;
+            }
+        }
+
+        self.is_loading_more = true;
+
+        let base = self.base.clone();
+        let token = token.clone();
+        let tx = self.ui_tx.clone();
+
+        self.rt.spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+            match crate::api::chat::get_messages_paginated(&base, &token, cid, Some(30), before_seq)
+                .await
+            {
+                Ok(messages) => {
+                    let _ = tx.send(UiEvent::OlderMessagesLoaded(messages));
+                }
+                Err(e) => {
+                    error!("Failed to load messages: {}", e);
+                    let _ = tx.send(UiEvent::LoadingError);
+                }
+            }
+        });
     }
 }
