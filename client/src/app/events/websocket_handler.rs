@@ -14,8 +14,6 @@ impl WebSocketHandler {
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
 
-                // Reset sequence system per nuova connessione (mantiene i valori)
-                state.reset_sequence_system();
 
                 crate::app::events::helpers::add_system_message(state, "WebSocket connesso - sincronizzazione attiva".into());
                 info!("WebSocket connected, dual sequence system active - user_seq: {}", state.user_sequence_confirmed);
@@ -24,8 +22,6 @@ impl WebSocketHandler {
                 state.ws_status = WsStatus::Disconnected;
                 state.ws_ctrl = None;
 
-                // Mantieni sequences per riconnessione
-                state.reset_sequence_on_disconnect();
 
                 crate::app::events::helpers::add_system_message(
                     state,

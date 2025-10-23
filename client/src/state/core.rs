@@ -322,47 +322,18 @@ impl AppState {
         }
     }
 
-    // === Enhanced Ping System ===
+    // ===Ping System ===
 
-    pub fn send_enhanced_ping(&mut self) {
-        let user_seq = {
-            let seq = self
-                .user_sequence_confirmed
-                .max(self.user_sequence_received);
-            if seq > 0 {
-                Some(seq)
-            } else {
-                None
-            }
-        };
-
-        let (conv_seq, active_conv) = if let Some(cid) = self.cid {
-            let seq = self.conversation_sequences.get(&cid).copied();
-
-            debug!(
-                "Conversation {} sequences - confirmed: {:?}, received: {:?}, sending: {:?}",
-                cid,
-                self.conversation_sequences_confirmed.get(&cid),
-                self.conversation_sequences.get(&cid),
-                seq
-            );
-
-            (seq, Some(cid))
+    pub fn send_ping(&mut self) {
+        let user_seq = if self.user_sequence_confirmed > 0 {
+            Some(self.user_sequence_confirmed)
         } else {
-            (None, None)
+            None
         };
-
-        debug!(
-            "Sending enhanced ping - user_seq: {:?}, conv_seq: {:?}, active_conv: {:?}",
-            user_seq, conv_seq, active_conv
-        );
-
+        debug!("Sending ping - user_seq: {:?}", user_seq);
         self.sequence_stats.ping_count += 1;
-
-        self.send_via_websocket(Outgoing::EnhancedPing {
+        self.send_via_websocket(Outgoing::Ping {
             user_sequence: user_seq,
-            conversation_sequence: conv_seq,
-            active_conversation_id: active_conv,
         });
     }
 
@@ -762,10 +733,12 @@ impl AppState {
         let mut messages_to_deliver = Vec::new();
 
         if let Some(buffer) = self.message_reorder_buffer.get_mut(&conversation_id) {
-            let mut current_expected = self.conversation_sequences_confirmed
+            let mut current_expected = self
+                .conversation_sequences_confirmed
                 .get(&conversation_id)
                 .copied()
-                .unwrap_or(0) + 1;
+                .unwrap_or(0)
+                + 1;
 
             let mut sequences_to_remove = Vec::new();
 
@@ -808,14 +781,18 @@ impl AppState {
 
     pub fn buffer_message_for_reorder(&mut self, msg: MessageDto) {
         if let Some(seq) = msg.sequence_num {
-            let expected = self.conversation_sequences_confirmed
+            let expected = self
+                .conversation_sequences_confirmed
                 .get(&msg.conversation_id)
                 .copied()
-                .unwrap_or(0) + 1;
+                .unwrap_or(0)
+                + 1;
 
             if seq > expected {
-                debug!("Buffering message seq {} for conversation {} (expected {})", 
-                seq, msg.conversation_id, expected);
+                debug!(
+                    "Buffering message seq {} for conversation {} (expected {})",
+                    seq, msg.conversation_id, expected
+                );
 
                 self.message_reorder_buffer
                     .entry(msg.conversation_id)

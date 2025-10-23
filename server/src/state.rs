@@ -564,103 +564,43 @@ impl AppState {
         Ok(messages)
     }
 
-    // === Enhanced Ping Handlers ===
+    // === Ping Handlers ===
 
-    /// Gestisce ping con sequence legacy (retrocompatibilità)
-    pub async fn handle_ping_with_sequence(
-        &self,
-        user_id: Uuid,
-        client_last_sequence: u64,
-        out_tx: &mpsc::Sender<OutboundMsg>,
-    ) -> Result<()> {
-        // Usa il sistema enhanced ma solo con user sequence
-        self.handle_enhanced_ping(user_id, Some(client_last_sequence), None, None, out_tx)
-            .await
-    }
-
-    /// Gestisce ping avanzato - SOLO DETECTION, NO AUTO-RESUME
-    pub async fn handle_enhanced_ping(
+    pub async fn handle_ping(
         &self,
         user_id: Uuid,
         client_user_seq: Option<u64>,
-        client_conv_seq: Option<u64>,
-        active_conversation_id: Option<Uuid>,
         out_tx: &mpsc::Sender<OutboundMsg>,
     ) -> Result<()> {
-        let mut response = json!({
-            "type": "pong_with_sequences",
-            "timestamp": chrono::Utc::now().timestamp(),
-        });
-
-        // 1. Includi sempre la sequenza corrente degli user events
         let current_user_seq = self.get_current_user_sequence(user_id).await?;
-        response["current_user_sequence"] = json!(current_user_seq);
 
-        // 2. Se c'è una conversazione attiva, includi la sua sequenza corrente
-        if let Some(conv_id) = active_conversation_id {
-            let current_conv_seq = self.get_current_message_sequence(conv_id).await?;
-            response["conversation_sequences"] = json!({
-                conv_id.to_string(): current_conv_seq
-            });
-        }
+        let mut response = json!({
+        "type": "pong",
+        "timestamp": chrono::Utc::now().timestamp(),
+        "current_user_sequence": current_user_seq,
+    });
 
-        // 3. Opzionale: includi informazioni sui gap rilevati (solo per info)
-        let mut gaps_detected = false;
+        let mut gap_detected = false;
 
         if let Some(client_seq) = client_user_seq {
             if client_seq < current_user_seq {
-                gaps_detected = true;
+                gap_detected = true;
                 response["user_events_gap"] = json!({
-                    "detected": true,
-                    "client_seq": client_seq,
-                    "server_seq": current_user_seq,
-                    "gap_size": current_user_seq - client_seq
-                });
-                info!(
-                    "User {} has gap in user events: client={}, server={}",
-                    user_id, client_seq, current_user_seq
-                );
+                "detected": true,
+                "client_seq": client_seq,
+                "server_seq": current_user_seq,
+                "gap_size": current_user_seq - client_seq
+            });
             }
-
-            // Aggiorna tracking del ping
             self.update_user_ping_tracking(user_id, client_seq).await?;
         }
 
-        if let Some(conv_id) = active_conversation_id {
-            if let Some(client_seq) = client_conv_seq {
-                let current_conv_seq = self.get_current_message_sequence(conv_id).await?;
-                if client_seq < current_conv_seq {
-                    gaps_detected = true;
-                    response["message_gap"] = json!({
-                        "detected": true,
-                        "conversation_id": conv_id,
-                        "client_seq": client_seq,
-                        "server_seq": current_conv_seq,
-                        "gap_size": current_conv_seq - client_seq
-                    });
-                    info!(
-                        "User {} has gap in conversation {}: client={}, server={}",
-                        user_id, conv_id, client_seq, current_conv_seq
-                    );
-                }
-            }
-        }
+        response["gaps_detected"] = json!(gap_detected);
 
-        // Aggiungi flag generale per indicare se ci sono gap
-        response["gaps_detected"] = json!(gaps_detected);
-
-        // 4. Invia SOLO la risposta pong (NO AUTO-RESUME)
         if let Ok(txt) = serde_json::to_string(&response) {
-            out_tx
-                .send(OutboundMsg::Text(txt))
-                .await
+            out_tx.send(OutboundMsg::Text(txt)).await
                 .map_err(|e| AppError::Internal(format!("Failed to send pong: {}", e)))?;
         }
-
-        debug!(
-            "Sent pong to user {} with sequences (gaps_detected={})",
-            user_id, gaps_detected
-        );
 
         Ok(())
     }

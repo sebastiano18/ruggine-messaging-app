@@ -344,80 +344,34 @@ impl EventDispatcher {
                 }
             }
 
-            // ===== ENHANCED PONG EVENT =====
-            UiEvent::EnhancedPongReceived {
+            // ===== PONG EVENT =====
+            UiEvent::PongReceived {
                 current_user_sequence,
-                conversation_sequences,
                 gaps_detected,
                 user_events_gap,
-                message_gap,
             } => {
                 debug!(
-                    "Enhanced pong - server_user_seq: {}, gaps_detected: {}",
-                    current_user_sequence, gaps_detected
-                );
+        "Pong - server_user_seq: {}, gaps_detected: {}",
+        current_user_sequence, gaps_detected
+    );
 
                 state.sequence_stats.pong_count += 1;
                 state.missed_pings = 0;
 
-                // Il pong serve SOLO per decidere se fare resume
-                // NON aggiorniamo MAI le sequence locali dal pong!
-
-                // Conta i gap prima di consumare le Option
-                let gap_count = (if user_events_gap.as_ref().map_or(false, |g| g.detected) {
-                    1
-                } else {
-                    0
-                }) + (if message_gap.as_ref().map_or(false, |g| g.detected) {
-                    1
-                } else {
-                    0
-                });
-
                 // Check for user events gap
                 if let Some(gap) = user_events_gap {
                     if gap.detected {
-                        warn!("User events gap detected by server: {} events missing (client_seq: {}, server_seq: {})",
-                              gap.gap_size, gap.client_seq, gap.server_seq);
+                        warn!(
+                "User events gap detected: {} events missing (client: {}, server: {})",
+                gap.gap_size, gap.client_seq, gap.server_seq
+            );
                         state.sequence_stats.gaps_detected += 1;
                         state.request_user_events_resume(gap.client_seq);
                     }
                 }
 
-                // Check for message gap nella conversazione corrente
-                if let Some(gap) = message_gap {
-                    if gap.detected {
-                        if let Some(cid) = state.cid {
-                            warn!("Messages gap detected by server for {}: {} messages missing (client_seq: {}, server_seq: {})",
-                                  cid, gap.gap_size, gap.client_seq, gap.server_seq);
-                            state.request_messages_resume(cid, gap.client_seq);
-                        }
-                    }
-                }
-
-                // Debug logging per sequenze conversazioni
-                if let Some(conv_seqs) = conversation_sequences {
-                    for (conv_id_str, server_seq) in conv_seqs {
-                        if let Ok(conv_id) = Uuid::parse_str(&conv_id_str) {
-                            let local_seq = state
-                                .conversation_sequences
-                                .get(&conv_id)
-                                .copied()
-                                .unwrap_or(0);
-
-                            if server_seq != local_seq {
-                                debug!(
-                                    "Sequence mismatch detected for conversation {}: server={}, local={} (gap: {})",
-                                    conv_id, server_seq, local_seq,
-                                    if server_seq > local_seq { server_seq - local_seq } else { 0 }
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if gaps_detected && gap_count > 0 {
-                    info!("Pong reported {} gap(s), resume requests sent", gap_count);
+                if gaps_detected {
+                    info!("Pong reported gap, resume request sent");
                 }
             }
 
@@ -1108,7 +1062,7 @@ impl EventDispatcher {
             // ===== MANUAL PING =====
             UiEvent::SendPing => {
                 debug!("Manual ping requested");
-                state.send_enhanced_ping();
+                state.send_ping();
             }
 
             // ===== USER NOTIFICATIONS =====

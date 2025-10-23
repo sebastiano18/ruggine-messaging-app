@@ -164,95 +164,9 @@ pub fn spawn_reader(
                                 .get("user_sequence")
                                 .and_then(|s| s.as_u64());
 
-                            let client_conv_seq = value
-                                .get("conversation_sequence")
-                                .and_then(|s| s.as_u64());
-
-                            let active_conversation = value
-                                .get("active_conversation_id")
-                                .and_then(|s| s.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok());
-
-                            let legacy_sequence = value
-                                .get("last_sequence")
-                                .and_then(|s| s.as_u64());
-
-                            if client_user_seq.is_some() || client_conv_seq.is_some() {
-                                match state
-                                    .handle_enhanced_ping(
-                                        user_id,
-                                        client_user_seq,
-                                        client_conv_seq,
-                                        active_conversation,
-                                        &out_tx,
-                                    )
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        debug!(
-                                            "Handled enhanced ping for user {} (user_seq={:?}, conv_seq={:?}, active_conv={:?})",
-                                            user_id, client_user_seq, client_conv_seq, active_conversation
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to handle enhanced ping for user {}: {}",
-                                            user_id, e
-                                        );
-                                        let error_response = json!({
-                                            "type": "error",
-                                            "message": "Sequence handling failed",
-                                            "error_code": "SEQUENCE_ERROR",
-                                            "details": e.to_string()
-                                        });
-                                        if let Ok(txt) = serde_json::to_string(&error_response) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        }
-                                    }
-                                }
-                            } else if let Some(seq) = legacy_sequence {
-                                match state
-                                    .handle_ping_with_sequence(
-                                        user_id,
-                                        seq,
-                                        &out_tx,
-                                    )
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        debug!(
-                                            "Handled legacy ping with sequence {} for user {}",
-                                            seq, user_id
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to handle legacy ping for user {}: {}",
-                                            user_id, e
-                                        );
-                                        let error_response = json!({
-                                            "type": "error",
-                                            "message": "Legacy sequence handling failed",
-                                            "error_code": "SEQUENCE_ERROR",
-                                            "details": e.to_string()
-                                        });
-                                        if let Ok(txt) = serde_json::to_string(&error_response) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        }
-                                    }
-                                }
-                            } else {
-                                let current_user_seq = state.get_current_user_sequence(user_id).await.unwrap_or(0);
-                                let pong_response = json!({
-                                    "type": "pong",
-                                    "timestamp": chrono::Utc::now().timestamp(),
-                                    "current_user_sequence": current_user_seq,
-                                    "message": "Use enhanced ping with sequences for gap detection"
-                                });
-
-                                if let Ok(txt) = serde_json::to_string(&pong_response) {
-                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                }
+                            match state.handle_ping(user_id, client_user_seq, &out_tx).await {
+                                Ok(_) => debug!("Handled ping for user {}", user_id),
+                                Err(e) => error!("Failed to handle ping: {}", e),
                             }
 
                             last_heartbeat = Instant::now();
@@ -710,6 +624,11 @@ async fn get_initial_state(
                 WHEN c.title IS NULL OR c.title = '' THEN 'Untitled'
                 ELSE c.title
             END as display_title,
+            -- ✅ MODIFICA 1: Aggiunta query per UUID del messaggio
+            (SELECT m.id
+             FROM messages m
+             WHERE m.conversation_id = c.id
+             ORDER BY m.created_at DESC LIMIT 1) as last_msg_id,
             (SELECT m.content
              FROM messages m
              WHERE m.conversation_id = c.id
@@ -786,6 +705,11 @@ async fn get_initial_state(
                         "content": content,
                         "author_username": author
                     });
+
+                    // ✅ MODIFICA 2: Includi l'UUID del messaggio per il controllo duplicati lato client
+                    if let Ok(Some(msg_id)) = row.try_get::<Option<String>, _>("last_msg_id") {
+                        last_message["id"] = json!(msg_id);
+                    }
 
                     // Includi author_id nel last_message
                     if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id") {

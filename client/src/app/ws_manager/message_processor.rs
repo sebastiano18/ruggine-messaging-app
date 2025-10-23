@@ -72,7 +72,11 @@ impl MessageProcessor {
     }
 
     /// Formatta i messaggi in uscita
-    fn format_outgoing_message(&self, outgoing: &Outgoing, state: &AppState) -> Result<String, String> {
+    fn format_outgoing_message(
+        &self,
+        outgoing: &Outgoing,
+        state: &AppState,
+    ) -> Result<String, String> {
         let json_obj = match outgoing {
             Outgoing::ChatMessage {
                 cid,
@@ -92,10 +96,10 @@ impl MessageProcessor {
                 };
 
                 let mut json_obj = serde_json::json!({
-                "type": "chat_message",
-                "content": content,
-                "client_timestamp": chrono::Utc::now().timestamp()
-            });
+                    "type": "chat_message",
+                    "content": content,
+                    "client_timestamp": chrono::Utc::now().timestamp()
+                });
 
                 // Gestione speciale per DM stubs vs conversazioni esistenti
                 if let Some(ref username) = target_username {
@@ -128,7 +132,10 @@ impl MessageProcessor {
                 // Includi sempre client_msg_id per tracking conferma messaggi
                 if let Some(ref msg_id) = client_msg_id {
                     json_obj["client_msg_id"] = serde_json::Value::String(msg_id.clone());
-                    debug!("Including client_msg_id: {} for message confirmation tracking", msg_id);
+                    debug!(
+                        "Including client_msg_id: {} for message confirmation tracking",
+                        msg_id
+                    );
                 }
 
                 json_obj
@@ -153,36 +160,17 @@ impl MessageProcessor {
                 })
             }
 
-            Outgoing::EnhancedPing {
-                user_sequence,
-                conversation_sequence,
-                active_conversation_id,
-            } => {
-                // SEMPRE invia type: "ping"
+            Outgoing::Ping { user_sequence } => {
                 let mut json_obj = serde_json::json!({
                     "type": "ping",
                     "timestamp": chrono::Utc::now().timestamp()
                 });
 
-                // Aggiungi user_sequence SOLO se presente
                 if let Some(user_seq) = user_sequence {
                     json_obj["user_sequence"] = serde_json::json!(user_seq);
                 }
 
-                // Aggiungi conversation_sequence SOLO se presente e c'è una conversazione attiva
-                if let Some(conv_seq) = conversation_sequence {
-                    json_obj["conversation_sequence"] = serde_json::json!(conv_seq);
-                }
-
-                // Aggiungi active_conversation_id SOLO se presente
-                if let Some(conv_id) = active_conversation_id {
-                    json_obj["active_conversation_id"] = serde_json::json!(conv_id.to_string());
-                }
-
-                debug!(
-                    "Formatted enhanced ping: user_seq={:?}, conv_seq={:?}, active_conv={:?}",
-                    user_sequence, conversation_sequence, active_conversation_id
-                );
+                debug!("Formatted ping: user_seq={:?}", user_sequence);
 
                 json_obj
             }

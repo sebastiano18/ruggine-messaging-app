@@ -143,10 +143,8 @@ pub enum Outgoing {
         cid: Uuid,
         is_typing: bool,
     },
-    EnhancedPing {
+    Ping {
         user_sequence: Option<u64>,
-        conversation_sequence: Option<u64>,
-        active_conversation_id: Option<Uuid>,
     },
     RequestUserResume {
         from_sequence: u64,
@@ -223,12 +221,10 @@ pub enum UiEvent {
 
     // Sistema di sequenze dual
     SendPing,
-    EnhancedPongReceived {
+    PongReceived {
         current_user_sequence: u64,
-        conversation_sequences: Option<HashMap<String, u64>>,
         gaps_detected: bool,
         user_events_gap: Option<GapInfo>,
-        message_gap: Option<GapInfo>,
     },
     UserEventsResume {
         events: Vec<UserEventData>,
