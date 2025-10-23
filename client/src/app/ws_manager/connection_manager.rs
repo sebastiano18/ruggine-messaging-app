@@ -144,8 +144,7 @@ impl ConnectionManager {
         if let Some(ctrl) = state.ws_ctrl.take() {
             let _ = ctrl.shutdown.send(());
         }
-
-        state.reset_sequence_system();
+        
         self.stats.disconnections += 1;
 
         if let Some(uptime_start) = self.stats.uptime_start.take() {

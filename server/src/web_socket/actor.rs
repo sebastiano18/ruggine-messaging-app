@@ -43,22 +43,20 @@ impl ConnectionActor {
         // Clone dedicato del receiver per il writer
         let mut stop_rx_writer = stop_rx.clone();
 
+        if !state.user_notification_channels.read().await.contains_key(&user_id) {
+            // Prima connessione - crea canale
+            let _user_tx = state.get_or_create_user_notification_channel(user_id).await;
+            info!("New channel for user {}", user_id);
+        } else {
+            // Riconnessione - canale già esiste
+            info!("Reconnection for user {} - channel exists", user_id);
+        }
+
         // NUOVO: Auto-subscribe al canale utente per notifiche
         // Questo assicura che l'utente riceva sempre le notifiche di nuove conversazioni
         let _user_tx = state.get_or_create_user_notification_channel(user_id).await;
         info!("Auto-subscribed user {} to their notification channel", user_id);
 
-        // Invia conferma di iscrizione al canale utente
-        let user_channel_ready = json!({
-            "type": "user_channel_ready",
-            "message": "Subscribed to user notification channel",
-            "user_id": user_id,
-            "timestamp": chrono::Utc::now().timestamp()
-        });
-
-        if let Ok(txt) = serde_json::to_string(&user_channel_ready) {
-            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-        }
 
         // Writer: unico proprietario di ws_tx con gestione degli errori migliorata
         let mut writer: JoinHandle<()> = tokio::spawn(async move {
@@ -218,14 +216,15 @@ impl ConnectionActor {
             }
         };
 
-        // Cleanup finale con timeout
-        let cleanup_future = cleanup_empty_channels(&state, user_id);
-        if timeout(Duration::from_secs(5), cleanup_future)
-            .await
-            .is_err()
-        {
-            warn!("Cleanup timeout for user {}", user_id);
-        }
+
+        // Cleanup finale con grace period di 5 minuti
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(300)).await; // 5 minuti di grace period
+            cleanup_empty_channels(&state_clone, user_id).await;
+            info!("Cleanup completed for user {} after 5min grace period", user_id);
+        });
+        info!("Scheduled cleanup for user {} (5min grace period)", user_id);
 
         // Log delle statistiche finali
         let (total_channels, total_receivers) = state.get_channel_stats().await;

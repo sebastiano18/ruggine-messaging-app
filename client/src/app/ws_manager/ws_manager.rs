@@ -49,14 +49,12 @@ impl WebSocketManager {
             state.handle_pong_timeout();
             return;
         }
-
-        // Invia enhanced ping
-        state.send_enhanced_ping();
+        
+        state.send_ping();
         state.update_ping_time();
 
-        tracing::debug!("Enhanced ping sent - user_seq: {}, conv_seqs: {}", 
-               state.user_sequence_confirmed, 
-               state.conversation_sequences.len());
+        tracing::debug!("Ping sent - user_seq: {}", 
+               state.user_sequence_confirmed);
     }
 
     pub fn get_connection_stats(&self) -> &connection_manager::ConnectionStats {

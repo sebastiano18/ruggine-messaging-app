@@ -244,8 +244,8 @@ impl App {
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        if ui.button("📡 Force Enhanced Ping").clicked() {
-                            self.state.send_enhanced_ping();
+                        if ui.button("📡 Force Ping").clicked() {
+                            self.state.send_ping();
                         }
 
                         if ui.button("🔌 Reconnect").clicked() {

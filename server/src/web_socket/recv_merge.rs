@@ -337,21 +337,6 @@ pub async fn spawn_receiver(
                                         consecutive_none_count = 0;
                                     }
 
-                                    "conversation_created" => {
-                                        // Vecchio formato - mantieni per retrocompatibilità
-                                        debug!("Received legacy conversation_created for user {}", user_id);
-
-                                        if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
-                                            warn!("Failed to handle conversation_created: {} {}", user_id, e);
-                                        }
-
-                                        // Refresh anche per il vecchio formato
-                                        stream_manager.refresh_conversation_streams(&state, user_id).await;
-
-                                        empty_backoff_seconds = 30;
-                                        consecutive_none_count = 0;
-                                    }
-
                                     "message_confirmation" => {
                                         // La conferma viene semplicemente forwardata al client
                                         debug!("Forwarding message confirmation to client");
