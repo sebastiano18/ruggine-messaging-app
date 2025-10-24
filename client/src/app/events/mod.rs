@@ -6,6 +6,11 @@ mod helpers;
 mod message_handler;
 mod websocket_handler;
 
+use auth_handler::AuthHandler;
+use conversation_handler::ConversationHandler;
+use data_handler::DataHandler;
+use message_handler::MessageHandler;
+use websocket_handler::WebSocketHandler;
 
 use crate::models::*;
 use crate::state::AppState;
@@ -142,65 +147,13 @@ impl EventDispatcher {
             }
 
             // ===== WEBSOCKET EVENTS =====
-            UiEvent::WsConnected => {
-                state.ws_status = WsStatus::Connected;
-                state.reset_sequence_system();
-                info!("WebSocket connected, sequence system active");
-            }
-
-            UiEvent::WsDisconnected => {
-                state.ws_status = WsStatus::Disconnected;
-                state.reset_sequence_on_disconnect();
-                warn!("WebSocket disconnected");
-            }
-
-            UiEvent::WsControlReady(ctrl) => {
-                state.ws_ctrl = Some(ctrl);
-                debug!("WebSocket control ready");
-            }
-
-            UiEvent::WsError(err) => {
-                error!("WebSocket error: {}", err);
-            }
-
-            UiEvent::WsIncoming(msg) => {
-                debug!(
-                    "Incoming message for conversation {} (seq: {:?})",
-                    msg.conversation_id, msg.sequence_num
-                );
-
-                // Update conversation sequence if present
-                if let Some(seq) = msg.sequence_num {
-                    state.update_conversation_sequence(msg.conversation_id, seq);
-                }
-
-                // Add to current conversation if active
-                if state.cid == Some(msg.conversation_id) {
-                    if !state.messages.iter().any(|m| m.id == msg.id) {
-                        state.messages.push(msg.clone());
-                    }
-                }
-
-                // Update cache
-                let cache = state
-                    .conversation_messages
-                    .entry(msg.conversation_id)
-                    .or_insert_with(Vec::new);
-
-                if !cache.iter().any(|m| m.id == msg.id) {
-                    cache.push(msg.clone());
-                }
-
-                // Request refresh if unknown conversation
-                if let Some(ref conversations) = state.conversations {
-                    if !conversations.iter().any(|c| c.id == msg.conversation_id) {
-                        debug!(
-                            "Message for unknown conversation {}, requesting refresh",
-                            msg.conversation_id
-                        );
-                        state.request_conversations_refresh = true;
-                    }
-                }
+            // All WebSocket events delegated to WebSocketHandler
+            UiEvent::WsConnected
+            | UiEvent::WsDisconnected
+            | UiEvent::WsControlReady(_)
+            | UiEvent::WsError(_)
+            | UiEvent::WsIncoming(_) => {
+                WebSocketHandler::handle(state, event);
             }
 
             // ===== NUOVI HANDLER PER INITIAL_STATE =====
@@ -990,7 +943,7 @@ impl EventDispatcher {
                         match crate::api::conversation::get_conversation_with_messages(
                             &base, &token, cid,
                         )
-                        .await
+                            .await
                         {
                             Ok(conv_with_msgs) => {
                                 let _ = tx.send(UiEvent::ConversationCompleteFetched(
@@ -1093,7 +1046,8 @@ impl EventDispatcher {
 
                 // sequence == expected o sequence == 0, processa normalmente
                 if sequence > 0 {
-                    state.user_sequence_confirmed = sequence;
+                    // COMMENTATO PER TEST RESUME - client rimane sempre a seq 0
+                     state.user_sequence_confirmed = sequence;
                 }
 
                 process_user_notification(
@@ -1120,7 +1074,8 @@ impl EventDispatcher {
                         if let Some(event_seq) =
                             buffered_event.get("sequence").and_then(|s| s.as_u64())
                         {
-                            state.user_sequence_confirmed = event_seq;
+                            // COMMENTATO PER TEST RESUME
+                            // state.user_sequence_confirmed = event_seq;
 
                             let evt_type = buffered_event
                                 .get("event_type")

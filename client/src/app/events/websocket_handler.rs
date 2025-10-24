@@ -11,40 +11,28 @@ impl WebSocketHandler {
                 state.ws_ctrl = Some(ctrl);
                 debug!("WebSocket control ready");
             }
+
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
-
-
-                crate::app::events::helpers::add_system_message(state, "WebSocket connesso - sincronizzazione attiva".into());
-                info!("WebSocket connected, dual sequence system active - user_seq: {}", state.user_sequence_confirmed);
+                state.reset_sequence_system();
+                info!("WebSocket connected, sequence system active");
             }
+
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
-                state.ws_ctrl = None;
-
-
-                crate::app::events::helpers::add_system_message(
-                    state,
-                    "WebSocket disconnesso - riconnessione automatica in corso...".into(),
-                );
-
-                info!("WebSocket disconnected, preserving sequences - user: {}, conversations: {}", 
-                      state.user_sequence_confirmed, state.conversation_sequences.len());
+                state.reset_sequence_on_disconnect();
+                warn!("WebSocket disconnected");
             }
+
             UiEvent::WsError(error) => {
-                state.ws_status = WsStatus::Disconnected;
-                state.ws_ctrl = None;
-
                 error!("WebSocket error: {}", error);
-                crate::app::events::helpers::add_system_message(
-                    state,
-                    format!("Errore WebSocket: {}", error),
-                );
             }
+
             UiEvent::WsIncoming(msg) => {
                 Self::handle_incoming_message(state, msg);
             }
-            _ => unreachable!("Invalid websocket event"),
+
+            _ => {}
         }
     }
 
@@ -79,7 +67,7 @@ impl WebSocketHandler {
                 debug!("Message seq {} already processed, skipping", seq);
                 return;
             }
-
+            //COMMENTARE PER DEBUG
             state.update_conversation_sequence(message_conversation_id, seq);
             state.conversation_sequences_confirmed.insert(message_conversation_id, seq);
 
