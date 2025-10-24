@@ -575,10 +575,10 @@ impl AppState {
         let current_user_seq = self.get_current_user_sequence(user_id).await?;
 
         let mut response = json!({
-        "type": "pong",
-        "timestamp": chrono::Utc::now().timestamp(),
-        "current_user_sequence": current_user_seq,
-    });
+            "type": "pong",
+            "timestamp": chrono::Utc::now().timestamp(),
+            "current_user_sequence": current_user_seq,
+        });
 
         let mut gap_detected = false;
 
@@ -586,11 +586,11 @@ impl AppState {
             if client_seq < current_user_seq {
                 gap_detected = true;
                 response["user_events_gap"] = json!({
-                "detected": true,
-                "client_seq": client_seq,
-                "server_seq": current_user_seq,
-                "gap_size": current_user_seq - client_seq
-            });
+                    "detected": true,
+                    "client_seq": client_seq,
+                    "server_seq": current_user_seq,
+                    "gap_size": current_user_seq - client_seq
+                });
             }
             self.update_user_ping_tracking(user_id, client_seq).await?;
         }
@@ -598,92 +598,10 @@ impl AppState {
         response["gaps_detected"] = json!(gap_detected);
 
         if let Ok(txt) = serde_json::to_string(&response) {
-            out_tx.send(OutboundMsg::Text(txt)).await
+            out_tx
+                .send(OutboundMsg::Text(txt))
+                .await
                 .map_err(|e| AppError::Internal(format!("Failed to send pong: {}", e)))?;
-        }
-
-        Ok(())
-    }
-
-    /// Gestisce richiesta esplicita di resume per user events
-    pub async fn handle_user_events_resume_request(
-        &self,
-        user_id: Uuid,
-        from_sequence: u64,
-        limit: i64,
-        out_tx: &mpsc::Sender<OutboundMsg>,
-    ) -> Result<()> {
-        let events = self
-            .get_user_events_since(user_id, from_sequence, limit)
-            .await?;
-
-        if !events.is_empty() {
-            self.send_user_events_resume(user_id, events, out_tx)
-                .await?;
-        } else {
-            let response = json!({
-                "type": "user_resume_complete",
-                "from_sequence": from_sequence,
-                "current_sequence": self.get_current_user_sequence(user_id).await?,
-                "events_count": 0
-            });
-
-            if let Ok(txt) = serde_json::to_string(&response) {
-                out_tx.send(OutboundMsg::Text(txt)).await.map_err(|e| {
-                    AppError::Internal(format!("Failed to send resume complete: {}", e))
-                })?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Gestisce richiesta esplicita di resume per messaggi
-    pub async fn handle_messages_resume_request(
-        &self,
-        user_id: Uuid,
-        conversation_id: Uuid,
-        from_sequence: u64,
-        limit: i64,
-        out_tx: &mpsc::Sender<OutboundMsg>,
-    ) -> Result<()> {
-        // Verifica autorizzazione
-        let user_id_str = user_id.to_string();
-        let conv_id_str = conversation_id.to_string();
-
-        let is_participant: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
-        )
-        .bind(&conv_id_str)
-        .bind(&user_id_str)
-        .fetch_one(&self.pool)
-        .await?;
-
-        if is_participant == 0 {
-            return Err(AppError::Forbidden);
-        }
-
-        let messages = self
-            .get_messages_since_sequence(conversation_id, from_sequence, limit)
-            .await?;
-
-        if !messages.is_empty() {
-            self.send_messages_resume(user_id, conversation_id, messages, out_tx)
-                .await?;
-        } else {
-            let response = json!({
-                "type": "messages_resume_complete",
-                "conversation_id": conversation_id,
-                "from_sequence": from_sequence,
-                "current_sequence": self.get_current_message_sequence(conversation_id).await?,
-                "messages_count": 0
-            });
-
-            if let Ok(txt) = serde_json::to_string(&response) {
-                out_tx.send(OutboundMsg::Text(txt)).await.map_err(|e| {
-                    AppError::Internal(format!("Failed to send resume complete: {}", e))
-                })?;
-            }
         }
 
         Ok(())
@@ -877,70 +795,6 @@ impl AppState {
         }
 
         Ok(())
-    }
-
-    /// Cleanup eventi vecchi (chiama periodicamente)
-    pub async fn cleanup_old_events(&self, older_than_days: i64) -> Result<u64> {
-        let cutoff = chrono::Utc::now().timestamp() - (older_than_days * 24 * 60 * 60);
-
-        let result = sqlx::query("DELETE FROM user_events WHERE created_at < ?")
-            .bind(cutoff)
-            .execute(&self.pool)
-            .await
-            .map_err(AppError::from)?;
-
-        if result.rows_affected() > 0 {
-            info!("Cleaned up {} old user events", result.rows_affected());
-        }
-
-        Ok(result.rows_affected())
-    }
-
-    // === Metodi per notifiche legacy (compatibilità) ===
-
-    pub async fn notify_conversation_created(
-        &self,
-        conversation_id: Uuid,
-        participant_ids: &[Uuid],
-        creator_id: Uuid,
-        conversation_kind: &str,
-        conversation_title: Option<&str>,
-    ) -> usize {
-        let notification = serde_json::json!({
-            "type": "conversation_created",
-            "conversation_id": conversation_id,
-            "creator_id": creator_id,
-            "kind": conversation_kind,
-            "title": conversation_title,
-            "timestamp": chrono::Utc::now().timestamp()
-        });
-
-        let mut total_notified = 0;
-        for &participant_id in participant_ids {
-            let user_tx = self
-                .get_or_create_user_notification_channel(participant_id)
-                .await;
-            match user_tx.send(notification.clone()) {
-                Ok(receivers) => {
-                    total_notified += receivers;
-                    info!(
-                        "Notified user {} of new conversation {} ({} active receivers)",
-                        participant_id, conversation_id, receivers
-                    );
-                }
-                Err(_) => {
-                    info!(
-                        "No active receivers for user {} notification",
-                        participant_id
-                    );
-                }
-            }
-        }
-        info!(
-            "Sent conversation creation notification to {} total receivers",
-            total_notified
-        );
-        total_notified
     }
 
     // Aggiungi questo metodo helper dopo gli altri metodi in AppState

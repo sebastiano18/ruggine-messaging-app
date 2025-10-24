@@ -1,20 +1,19 @@
+use crate::services::conversation_service::ConversationService;
 use axum::extract::ws::{Message, WebSocket};
 use futures::{StreamExt, stream::SplitStream};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 use sqlx::{Row, SqlitePool};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use crate::services::conversation_service::ConversationService;
 
 use super::{
     actor::OutboundMsg,
     helpers::{
-        handle_chat_message,
-        handle_create_conversation,
-        handle_incoming_message
-    }
+        handle_chat_message, handle_create_conversation, handle_incoming_message,
+        handle_user_events_resume_request,
+    },
 };
 use crate::state::AppState;
 
@@ -125,8 +124,11 @@ pub fn spawn_reader(
 
                                     if let Ok(txt) = serde_json::to_string(&msg) {
                                         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        info!("Sent initial state to user {} with {} conversations",
-                                              username, initial_state.conversations.len());
+                                        info!(
+                                            "Sent initial state to user {} with {} conversations",
+                                            username,
+                                            initial_state.conversations.len()
+                                        );
                                     }
 
                                     if initial_state.pending_events.len() > 0 {
@@ -138,13 +140,19 @@ pub fn spawn_reader(
 
                                         if let Ok(txt) = serde_json::to_string(&events_msg) {
                                             let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                            info!("Sent {} pending events to user {}",
-                                                  initial_state.pending_events.len(), username);
+                                            info!(
+                                                "Sent {} pending events to user {}",
+                                                initial_state.pending_events.len(),
+                                                username
+                                            );
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to get initial state for user {}: {}", username, e);
+                                    error!(
+                                        "Failed to get initial state for user {}: {}",
+                                        username, e
+                                    );
                                     let error_msg = json!({
                                         "type": "error",
                                         "message": "Failed to load initial state",
@@ -160,9 +168,8 @@ pub fn spawn_reader(
                         "ping" => {
                             debug!("Ping received from user {}", user_id);
 
-                            let client_user_seq = value
-                                .get("user_sequence")
-                                .and_then(|s| s.as_u64());
+                            let client_user_seq =
+                                value.get("user_sequence").and_then(|s| s.as_u64());
 
                             match state.handle_ping(user_id, client_user_seq, &out_tx).await {
                                 Ok(_) => debug!("Handled ping for user {}", user_id),
@@ -174,51 +181,11 @@ pub fn spawn_reader(
                         }
 
                         "request_user_resume" => {
-                            debug!("User resume request from user {}", user_id);
-
-                            let from_sequence = value
-                                .get("from_sequence")
-                                .and_then(|s| s.as_u64())
-                                .unwrap_or(0);
-
-                            let limit = value
-                                .get("limit")
-                                .and_then(|s| s.as_i64())
-                                .unwrap_or(100)
-                                .min(1000);
-
-                            match state.get_user_events_since(user_id, from_sequence, limit).await {
-                                Ok(events) => {
-                                    if !events.is_empty() {
-                                        info!("Sending {} user events in resume to user {}", events.len(), user_id);
-                                        if let Err(e) = state.send_user_events_resume(user_id, events, &out_tx).await {
-                                            error!("Failed to send user events resume: {}", e);
-                                        }
-                                    } else {
-                                        let response = json!({
-                                            "type": "user_resume_complete",
-                                            "from_sequence": from_sequence,
-                                            "current_sequence": state.get_current_user_sequence(user_id).await.unwrap_or(0),
-                                            "events_count": 0,
-                                            "message": "No events to resume"
-                                        });
-                                        if let Ok(txt) = serde_json::to_string(&response) {
-                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to get user events for resume: {}", e);
-                                    let error_response = json!({
-                                        "type": "error",
-                                        "message": "Failed to retrieve user events",
-                                        "error_code": "RESUME_ERROR",
-                                        "details": e.to_string()
-                                    });
-                                    if let Ok(txt) = serde_json::to_string(&error_response) {
-                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                    }
-                                }
+                            if let Err(e) =
+                                handle_user_events_resume_request(&state, &value, user_id, &out_tx)
+                                    .await
+                            {
+                                error!("Failed to handle user resume request: {}", e);
                             }
                             last_heartbeat = Instant::now();
                             continue;
@@ -273,16 +240,31 @@ pub fn spawn_reader(
                                     continue;
                                 }
 
-                                match state.get_messages_since_sequence(conv_id, from_sequence, limit).await {
+                                match state
+                                    .get_messages_since_sequence(conv_id, from_sequence, limit)
+                                    .await
+                                {
                                     Ok(messages) => {
                                         if !messages.is_empty() {
-                                            info!("Sending {} messages in resume for conversation {} to user {}",
-                                                  messages.len(), conv_id, user_id);
-                                            if let Err(e) = state.send_messages_resume(user_id, conv_id, messages, &out_tx).await {
+                                            info!(
+                                                "Sending {} messages in resume for conversation {} to user {}",
+                                                messages.len(),
+                                                conv_id,
+                                                user_id
+                                            );
+                                            if let Err(e) = state
+                                                .send_messages_resume(
+                                                    user_id, conv_id, messages, &out_tx,
+                                                )
+                                                .await
+                                            {
                                                 error!("Failed to send messages resume: {}", e);
                                             }
                                         } else {
-                                            let current_seq = state.get_current_message_sequence(conv_id).await.unwrap_or(0);
+                                            let current_seq = state
+                                                .get_current_message_sequence(conv_id)
+                                                .await
+                                                .unwrap_or(0);
                                             let response = json!({
                                                 "type": "messages_resume_complete",
                                                 "conversation_id": conv_id,
@@ -327,9 +309,14 @@ pub fn spawn_reader(
                             debug!("Create conversation request from user {}", user_id);
                             last_heartbeat = Instant::now();
 
-                            match handle_create_conversation(&state, &mut value, user_id, &username).await {
+                            match handle_create_conversation(&state, &mut value, user_id, &username)
+                                .await
+                            {
                                 Ok(()) => {
-                                    debug!("Successfully created conversation for user {}", user_id);
+                                    debug!(
+                                        "Successfully created conversation for user {}",
+                                        user_id
+                                    );
                                     total_messages_processed += 1;
                                 }
                                 Err(e) => {
@@ -352,7 +339,9 @@ pub fn spawn_reader(
                             last_heartbeat = Instant::now();
 
                             // Usa il router per gestire messaggi e conversazioni
-                            match handle_incoming_message(&state, &mut value, user_id, &username).await {
+                            match handle_incoming_message(&state, &mut value, user_id, &username)
+                                .await
+                            {
                                 Ok(()) => {
                                     debug!("Successfully processed message from user {}", user_id);
 
@@ -369,7 +358,10 @@ pub fn spawn_reader(
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to process message from user {}: {}", user_id, e);
+                                    error!(
+                                        "Failed to process message from user {}: {}",
+                                        user_id, e
+                                    );
                                     let error_response = json!({
                                         "type": "error",
                                         "message": e.to_string(),
@@ -384,23 +376,36 @@ pub fn spawn_reader(
                                     // Gestione errori critici
                                     match &e {
                                         crate::error::AppError::Forbidden => {
-                                            warn!("User {} attempted unauthorized action, closing connection", user_id);
+                                            warn!(
+                                                "User {} attempted unauthorized action, closing connection",
+                                                user_id
+                                            );
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
                                         crate::error::AppError::Sqlx(_) => {
-                                            error!("Database error for user {}, closing connection", user_id);
+                                            error!(
+                                                "Database error for user {}, closing connection",
+                                                user_id
+                                            );
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                        if msg.contains("database") || msg.contains("sql") => {
-                                            error!("Database-related internal error for user {}, closing connection", user_id);
+                                            if msg.contains("database") || msg.contains("sql") =>
+                                        {
+                                            error!(
+                                                "Database-related internal error for user {}, closing connection",
+                                                user_id
+                                            );
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
                                         crate::error::AppError::Unauthorized => {
-                                            warn!("Unauthorized action by user {}, closing connection", user_id);
+                                            warn!(
+                                                "Unauthorized action by user {}, closing connection",
+                                                user_id
+                                            );
                                             let _ = stop_tx.send(true);
                                             break;
                                         }
@@ -447,8 +452,12 @@ pub fn spawn_reader(
                             if let Err(e) = delete_res {
                                 // Mantieni semantica più specifica per gli errori comuni
                                 let (code, message) = match &e {
-                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
-                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    crate::error::AppError::Unauthorized => {
+                                        ("FORBIDDEN", "User not authorized".to_string())
+                                    }
+                                    crate::error::AppError::NotFound => {
+                                        ("NOT_FOUND", "Conversation not found".to_string())
+                                    }
                                     _ => ("DELETE_FAILED", format!("Delete failed: {}", e)),
                                 };
                                 let err = json!({
@@ -471,8 +480,9 @@ pub fn spawn_reader(
                                     conversation_id,
                                     user_id,
                                     participants.clone(),
-                                    true
-                                ).await;
+                                    true,
+                                )
+                                .await;
                             }
 
                             // (Opzionale) ack esplicito
@@ -484,7 +494,7 @@ pub fn spawn_reader(
                             if let Ok(txt) = serde_json::to_string(&ack) {
                                 let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                             }
-                            
+
                             continue;
                         }
 
@@ -664,8 +674,8 @@ async fn get_initial_state(
     "#;
 
     let rows = sqlx::query(query)
-        .bind(&user_id_str)  // Primo parametro per il CASE WHEN
-        .bind(&user_id_str)  // Secondo parametro per il WHERE principale
+        .bind(&user_id_str) // Primo parametro per il CASE WHEN
+        .bind(&user_id_str) // Secondo parametro per il WHERE principale
         .fetch_all(pool)
         .await?;
 
@@ -679,14 +689,13 @@ async fn get_initial_state(
         let message_count: i64 = row.try_get("message_count").unwrap_or(0);
 
         // Usa display_title che è già stato calcolato dalla query
-        let display_title: String = row.try_get("display_title")
-            .unwrap_or_else(|_| {
-                if kind == "dm" {
-                    "Direct Message".to_string()
-                } else {
-                    "Untitled Group".to_string()
-                }
-            });
+        let display_title: String = row.try_get("display_title").unwrap_or_else(|_| {
+            if kind == "dm" {
+                "Direct Message".to_string()
+            } else {
+                "Untitled Group".to_string()
+            }
+        });
 
         let mut conv = json!({
             "id": id,
@@ -712,7 +721,8 @@ async fn get_initial_state(
                     }
 
                     // Includi author_id nel last_message
-                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id") {
+                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id")
+                    {
                         last_message["author_id"] = json!(author_id);
                     }
 
@@ -724,7 +734,10 @@ async fn get_initial_state(
                         last_message["sequence_num"] = json!(seq);
                         conv["last_message"] = last_message;
                     } else {
-                        debug!("Message without sequence for conversation {}, not including in initial state", id);
+                        debug!(
+                            "Message without sequence for conversation {}, not including in initial state",
+                            id
+                        );
                     }
                 }
             }
@@ -735,15 +748,18 @@ async fn get_initial_state(
 
     // Recupera ultima user sequence
     let user_sequence: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(sequence_num), 0) FROM user_events WHERE user_id = ?"
+        "SELECT COALESCE(MAX(sequence_num), 0) FROM user_events WHERE user_id = ?",
     )
-        .bind(&user_id_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    .bind(&user_id_str)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
 
-    info!("Loaded {} conversations for user {} (only including last_message where messages exist)",
-          conversations.len(), user_id_str);
+    info!(
+        "Loaded {} conversations for user {} (only including last_message where messages exist)",
+        conversations.len(),
+        user_id_str
+    );
 
     Ok(InitialState {
         conversations,

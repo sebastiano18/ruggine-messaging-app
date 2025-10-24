@@ -437,26 +437,6 @@ fn handle_conversation_messages(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     });
 }
 
-fn handle_simple_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    let current_user_sequence = value
-        .get("current_user_sequence")
-        .and_then(|s| s.as_u64())
-        .unwrap_or(0);
-
-    let message = value.get("message").and_then(|m| m.as_str()).unwrap_or("");
-
-    debug!(
-        "Simple pong received - user_seq: {}, message: {}",
-        current_user_sequence, message
-    );
-
-    let _ = tx.send(UiEvent::PongReceived {
-        current_user_sequence,
-        gaps_detected: false,
-        user_events_gap: None,
-    });
-}
-
 fn handle_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let current_user_sequence = value
         .get("current_user_sequence")

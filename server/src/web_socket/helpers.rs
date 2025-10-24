@@ -73,41 +73,6 @@ pub async fn handle_incoming_message(
     }
 }
 
-/// Determina se un messaggio richiede la creazione di una nuova conversazione
-async fn should_create_conversation(state: &AppState, value: &Value) -> bool {
-    // Se c'è un target_username, probabilmente è una nuova conversazione
-    if value.get("target_username").is_some() {
-        // Ma verifica che la conversazione non esista già
-        if let Some(cid_str) = value
-            .get("cid")
-            .or_else(|| value.get("conversation_id"))
-            .and_then(|v| v.as_str())
-        {
-            // Se è un UUID valido, verifica che esista
-            if let Ok(uuid) = Uuid::parse_str(cid_str) {
-                let exists = verify_conversation_exists(state, uuid)
-                    .await
-                    .unwrap_or(false);
-                return !exists;
-            }
-
-            // Se è un temp_id, verifica nella cache
-            if state
-                .conversation_confirmation_cache
-                .get_by_temp_id(cid_str)
-                .await
-                .is_none()
-            {
-                return true; // È un nuovo temp_id
-            }
-        } else {
-            // Se non c'è un ID e c'è un target_username, è una nuova conversazione
-            return true;
-        }
-    }
-    false
-}
-
 /// Verifica se una conversazione esiste nel database
 async fn verify_conversation_exists(state: &AppState, conversation_id: Uuid) -> Result<bool> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE id = ?")
@@ -479,7 +444,6 @@ pub async fn handle_create_conversation(
     Ok(())
 }
 
-/// Gestisce l'invio di un messaggio in una conversazione esistente
 /// Gestisce l'invio di un messaggio in una conversazione esistente
 pub async fn handle_chat_message(
     state: &AppState,
@@ -971,12 +935,34 @@ async fn send_conversation_created_events(
 }
 
 /// Gestisce notifiche dal canale utente
+/// Gestisce notifiche dal canale utente
+///
+/// Ritorna `Ok(Some(conversation_id))` se è stata processata una notifica di creazione conversazione
+/// che richiede setup aggiuntivo (es. aggiungere stream al DynamicStreamManager).
+/// Ritorna `Ok(None)` per tutti gli altri tipi di notifiche.
+///
+/// # Esempi
+///
+/// Uso base:
+/// ```ignore
+/// let conv_id_opt = handle_user_notification(&state, &notification, user_id, &out_tx).await?;
+/// ```
+///
+/// Uso avanzato con stream manager (in recv_merge.rs):
+/// ```ignore
+/// let conv_id_opt = handle_user_notification(&state, &notification, user_id, &out_tx).await?;
+/// if let Some(conv_id) = conv_id_opt {
+///     let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
+///     let stream = BroadcastStream::new(conv_tx.subscribe());
+///     stream_manager.add_conversation_stream(conv_id, stream).await;
+/// }
+/// ```
 pub async fn handle_user_notification(
     state: &AppState,
     notification: &Value,
     user_id: Uuid,
     out_tx: &mpsc::Sender<OutboundMsg>,
-) -> Result<()> {
+) -> Result<Option<Uuid>> {
     let notification_type = notification
         .get("type")
         .and_then(|v| v.as_str())
@@ -1017,7 +1003,23 @@ pub async fn handle_user_notification(
                 }
             }
 
-            Ok(())
+            // Ritorna il conversation_id per permettere setup aggiuntivo (es. stream manager)
+            Ok(Some(conversation_id))
+        }
+        "conversation_deleted" => {
+            // Forward dell'evento al client
+            if let Ok(notification_txt) = serde_json::to_string(&notification) {
+                if out_tx
+                    .send(OutboundMsg::Text(notification_txt))
+                    .await
+                    .is_err()
+                {
+                    warn!("Failed to send {} to user {}", notification_type, user_id);
+                } else {
+                    debug!("Forwarded {} to user {}", notification_type, user_id);
+                }
+            }
+            Ok(None)
         }
         _ => {
             // Forward altre notifiche
@@ -1042,7 +1044,7 @@ pub async fn handle_user_notification(
                     let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                 }
             }
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -1114,4 +1116,74 @@ async fn get_conversation_participants(
     );
 
     Ok(participants)
+}
+
+/// Gestisce la richiesta di resume degli eventi utente
+pub async fn handle_user_events_resume_request(
+    state: &AppState,
+    value: &Value,
+    user_id: Uuid,
+    out_tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<()> {
+    debug!("User resume request from user {}", user_id);
+
+    let from_sequence = value
+        .get("from_sequence")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0);
+
+    let limit = value
+        .get("limit")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(100)
+        .min(1000);
+
+    match state
+        .get_user_events_since(user_id, from_sequence, limit)
+        .await
+    {
+        Ok(events) => {
+            if !events.is_empty() {
+                info!(
+                    "Sending {} user events in resume to user {}",
+                    events.len(),
+                    user_id
+                );
+                state
+                    .send_user_events_resume(user_id, events, out_tx)
+                    .await?;
+            } else {
+                let response = json!({
+                    "type": "user_resume_complete",
+                    "from_sequence": from_sequence,
+                    "current_sequence": state.get_current_user_sequence(user_id).await.unwrap_or(0),
+                    "events_count": 0,
+                    "message": "No events to resume"
+                });
+                if let Ok(txt) = serde_json::to_string(&response) {
+                    out_tx
+                        .send(OutboundMsg::Text(txt))
+                        .await
+                        .map_err(|_| AppError::Internal("Failed to send response".into()))?;
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to get user events for resume: {}", e);
+            let error_response = json!({
+                "type": "error",
+                "message": "Failed to retrieve user events",
+                "error_code": "RESUME_ERROR",
+                "details": e.to_string()
+            });
+            if let Ok(txt) = serde_json::to_string(&error_response) {
+                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+            }
+            Err(AppError::Internal(format!(
+                "Failed to get user events: {}",
+                e
+            )))
+        }
+    }
 }

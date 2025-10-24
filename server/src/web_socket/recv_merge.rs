@@ -1,5 +1,7 @@
 // recv_merge.rs - Complete rewrite with centralized notification handling
 // recv_merge.rs - Complete rewrite with centralized notification handling
+// recv_merge.rs - Complete rewrite with centralized notification handling
+// recv_merge.rs - Complete rewrite with centralized notification handling
 use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -240,40 +242,34 @@ pub async fn spawn_receiver(
                     break;
                 }
 
+
                 // Messaggi dal canale utente (notifiche, conversation_created, etc.)
                 user_msg = user_channel_stream.next() => {
                     match user_msg {
                         Some(Ok(val)) => {
                             if let Some(msg_type) = val.get("type").and_then(|t| t.as_str()) {
                                 match msg_type {
-                                    "conversation_confirmation" => {
-                                        debug!("Received conversation_confirmation for user {}", user_id);
+                                    "conversation_confirmation" | "conversation_created_complete" => {
+                                        // Usa handle_user_notification per gestire la notifica
+                                        match handle_user_notification(&state, &val, user_id, &out_tx).await {
+                                            Ok(Some(conv_id)) => {
+                                                // Setup stream manager per questa conversazione
+                                                info!("Adding stream for conversation {} to stream manager", conv_id);
+                                                let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
+                                                let receiver = conv_tx.subscribe();
+                                                let stream = BroadcastStream::new(receiver);
+                                                stream_manager.add_conversation_stream(conv_id, stream).await;
 
-                                        // Estrai l'ID della conversazione
-                                        let conversation_id = val.get("conversation")
-                                            .and_then(|c| c.get("id"))
-                                            .and_then(|v| v.as_str())
-                                            .and_then(|s| Uuid::parse_str(s).ok());
-
-                                        if let Some(conv_id) = conversation_id {
-                                            // Auto-iscrivi il creatore al canale broadcast
-                                            info!("Auto-subscribing creator {} to conversation {}", user_id, conv_id);
-
-                                            let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
-                                            let receiver = conv_tx.subscribe();
-                                            let stream = BroadcastStream::new(receiver);
-
-                                            stream_manager.add_conversation_stream(conv_id, stream).await;
-
-                                            let receiver_count = conv_tx.receiver_count();
-                                            info!("Creator {} subscribed to conversation {} ({} receivers)",
-                                                  user_id, conv_id, receiver_count);
-                                        }
-
-                                        // Forward l'evento al client
-                                        if let Ok(txt) = serde_json::to_string(&val) {
-                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                                warn!("Failed to send conversation_confirmation to user {}", user_id);
+                                                let receiver_count = conv_tx.receiver_count();
+                                                info!("User {} subscribed to conversation {} ({} receivers)",
+                                                     user_id, conv_id, receiver_count);
+                                            }
+                                            Ok(None) => {
+                                                // Notifica gestita ma nessun setup stream necessario
+                                                debug!("Notification handled without stream setup");
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to handle user notification for user {}: {}", user_id, e);
                                                 let _ = stop_tx.send(true);
                                                 break;
                                             }
@@ -282,61 +278,6 @@ pub async fn spawn_receiver(
                                         empty_backoff_seconds = 30;
                                         consecutive_none_count = 0;
                                     }
-                                    "conversation_created_complete" => {
-                                        debug!("Received conversation_created_complete for user {}", user_id);
-
-                                        // 1. PRIMA: Estrai l'ID della conversazione e iscriviti al canale
-                                        let conversation_id = val.get("conversation")
-                                            .and_then(|c| c.get("id"))
-                                            .and_then(|v| v.as_str())
-                                            .and_then(|s| Uuid::parse_str(s).ok());
-
-                                        if let Some(conv_id) = conversation_id {
-                                            // Iscrivi l'utente al canale broadcast PRIMA di inviare la notifica
-                                            info!("Auto-subscribing user {} to new conversation {}", user_id, conv_id);
-
-                                            // Ottieni il broadcast channel della conversazione
-                                            let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
-                                            let receiver = conv_tx.subscribe();
-                                            let stream = BroadcastStream::new(receiver);
-
-                                            // Aggiungi lo stream al manager
-                                            stream_manager.add_conversation_stream(conv_id, stream).await;
-
-                                            let receiver_count = conv_tx.receiver_count();
-                                            info!("User {} subscribed to conversation {} - now {} receivers (BEFORE sending notification)",
-                                                  user_id, conv_id, receiver_count);
-                                        }
-
-                                        // 2. DOPO: Invia l'evento completo al client
-                                        // L'evento contiene già:
-                                        // - conversation.id
-                                        // - conversation.display_title (username dell'altro utente per DM)
-                                        // - conversation.last_message (con tutti i dati del messaggio)
-                                        if let Ok(txt) = serde_json::to_string(&val) {
-                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                                warn!("Failed to send conversation_created_complete to user {}", user_id);
-                                                let _ = stop_tx.send(true);
-                                                break;
-                                            } else {
-                                                info!("Sent conversation_created_complete to user {} (with last_message)", user_id);
-
-                                                // Log del contenuto per debug
-                                                if let Some(last_msg) = val.get("conversation")
-                                                    .and_then(|c| c.get("last_message")) {
-                                                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
-                                                        debug!("  Last message content: '{}'",
-                                                               content.chars().take(50).collect::<String>());
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Reset contatori
-                                        empty_backoff_seconds = 30;
-                                        consecutive_none_count = 0;
-                                    }
-
                                     "message_confirmation" => {
                                         // La conferma viene semplicemente forwardata al client
                                         debug!("Forwarding message confirmation to client");
@@ -347,12 +288,14 @@ pub async fn spawn_receiver(
                                         }
                                     }
                                     "conversation_deleted" => {
-                                        stream_manager.refresh_conversation_streams(&state, user_id).await;
-
-                                        // Forward al client come testo
-                                        if let Ok(txt) = serde_json::to_string(&val) {
-                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                                warn!("Failed to send user notification to user {}, stopping receiver", user_id);
+                                        // Usa handle_user_notification per gestire conversation_deleted
+                                        match handle_user_notification(&state, &val, user_id, &out_tx).await {
+                                            Ok(_) => {
+                                                // Refresh stream dopo deletion
+                                                stream_manager.refresh_conversation_streams(&state, user_id).await;
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to handle conversation_deleted for user {}: {}", user_id, e);
                                                 let _ = stop_tx.send(true);
                                                 break;
                                             }
@@ -363,26 +306,18 @@ pub async fn spawn_receiver(
                                         consecutive_none_count = 0;
                                     }
                                     _ => {
-                                        // Altri tipi di notifiche utente - forward al client
-                                        debug!("Received user notification type '{}' for user {}", msg_type, user_id);
-                                        if let Ok(txt) = serde_json::to_string(&val) {
-                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                                warn!("Failed to send user notification to user {}, stopping receiver", user_id);
-                                                let _ = stop_tx.send(true);
-                                                break;
-                                            }
+                                        // Altri tipi di notifiche utente - usa handle_user_notification
+                                        if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
+                                            warn!("Failed to handle user notification type '{}' for user {}: {}",
+                                                  msg_type, user_id, e);
                                         }
                                     }
                                 }
                             } else {
-                                // Notifiche senza type - forward comunque
+                                // Notifiche senza type - usa handle_user_notification
                                 debug!("Received user notification without type for user {}", user_id);
-                                if let Ok(txt) = serde_json::to_string(&val) {
-                                    if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
-                                        warn!("Failed to send user notification to user {}, stopping receiver", user_id);
-                                        let _ = stop_tx.send(true);
-                                        break;
-                                    }
+                                if let Err(e) = handle_user_notification(&state, &val, user_id, &out_tx).await {
+                                    warn!("Failed to handle typeless notification for user {}: {}", user_id, e);
                                 }
                             }
                         }
