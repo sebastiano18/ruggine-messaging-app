@@ -187,6 +187,11 @@ impl ConversationsSidebar {
         let response =
             ui.allocate_response(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
 
+        // Determina se il puntatore è dentro l'intera riga, indipendentemente da widget sovrapposti
+        let pointer_over_row = ui.rect_contains_pointer(response.rect);
+        // Usato per evitare l'apertura della chat quando si clicca sulla 'X'
+        let mut delete_clicked = false;
+
         let (bg_color, text_color, preview_color) = if is_selected {
             (
                 egui::Color32::from_rgb(200, 100, 40),
@@ -240,58 +245,48 @@ impl ConversationsSidebar {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if conv.kind == "group" {
-                        // Destra: bottone elimina (solo se owner del gruppo)
-                        if show_delete_button {
-                            // Bottone elimina (destra)
-                            let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
+                        // Mostra la 'X' solo quando il mouse è sopra la riga e solo se l'utente è owner
+                        if show_delete_button && pointer_over_row {
+                            let delete_button = egui::Button::new(RichText::new("X").size(16.0))
                                 .small()
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::new(
-                                    1.0,
-                                    if response.hovered() {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        egui::Color32::from_rgb(180, 120, 70)
-                                    },
-                                ))
-                                .rounding(egui::Rounding::same(4.0));
+                                .frame(false)
+                                .fill(egui::Color32::TRANSPARENT);
 
                             let del_resp = ui.add(delete_button).on_hover_text("Elimina gruppo");
 
                             if del_resp.clicked() {
+                                delete_clicked = true;
                                 state.request_delete_confirmation(conv);
                             }
 
                             ui.add_space(8.0);
                         }
                     } else {
-                        let delete_button = egui::Button::new(RichText::new("🗑️").size(16.0))
-                            .small()
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                if response.hovered() {
-                                    egui::Color32::WHITE
-                                } else {
-                                    egui::Color32::from_rgb(180, 120, 70)
-                                },
-                            ))
-                            .rounding(egui::Rounding::same(4.0));
+                        // Per le chat private mostra la 'X' solo quando il mouse è sopra la riga
+                        if pointer_over_row {
+                            let delete_button = egui::Button::new(RichText::new("X").size(16.0))
+                                .small()
+                                .frame(false)
+                                .fill(egui::Color32::TRANSPARENT);
 
-                        let del_resp = ui.add(delete_button).on_hover_text("Elimina conversazione");
+                            let del_resp = ui
+                                .add(delete_button)
+                                .on_hover_text("Elimina conversazione");
 
-                        if del_resp.clicked() {
-                            state.request_delete_confirmation(conv);
+                            if del_resp.clicked() {
+                                delete_clicked = true;
+                                state.request_delete_confirmation(conv);
+                            }
+
+                            ui.add_space(8.0);
                         }
-
-                        ui.add_space(8.0);
                     }
                 });
             });
         });
 
         // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
-        if response.clicked() {
+        if response.clicked() && !delete_clicked {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;
         }
@@ -349,17 +344,17 @@ impl ConversationsSidebar {
                     ui.add_space(12.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("❌ Annulla").clicked() {
+                        ui.add_space(50.0);
+                        if ui.button("Annulla").clicked() {
                             cancel = true;
                         }
 
-                        ui.add_space(8.0);
-
                         let confirm_button = egui::Button::new(
-                            RichText::new("🗑️ Elimina").color(egui::Color32::WHITE),
+                            RichText::new("Elimina").color(egui::Color32::WHITE),
                         )
-                        .fill(egui::Color32::from_rgb(200, 100, 40))
-                        .rounding(egui::Rounding::same(6.0));
+                        .fill(egui::Color32::from_rgb(200, 100, 40));
+
+                        ui.add_space(100.0);
 
                         if ui.add(confirm_button).clicked() {
                             confirm = true;
