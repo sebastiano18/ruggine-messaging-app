@@ -1,7 +1,6 @@
 mod auth_handler;
 mod conversation_handler;
 mod data_handler;
-mod fetch_handler;
 mod helpers;
 mod message_handler;
 mod websocket_handler;
@@ -1249,26 +1248,147 @@ fn process_user_notification(
     match event_type.as_str() {
         "new_message" => {
             if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
-                if state.cid == Some(msg.conversation_id) {
-                    if !state.messages.iter().any(|m| m.id == msg.id) {
-                        state.messages.push(msg.clone());
-                        debug!("Added new message to UI");
-                    } else {
-                        debug!("Ignoring duplicate message {}", msg.id);
+                info!(
+                    "Processing new_message from UserEvent seq {} (msg_id: {}, conv_seq: {:?})",
+                    sequence, msg.id, msg.sequence_num
+                );
+
+                // ✅ 1. DEDUPLICAZIONE: Controlla se già processato via WebSocket
+                let already_in_cache = state
+                    .conversation_messages
+                    .get(&msg.conversation_id)
+                    .map(|cache| cache.iter().any(|m| m.id == msg.id))
+                    .unwrap_or(false);
+
+                if already_in_cache {
+                    debug!(
+                        "UserEvent message {} already in cache (from WebSocket), skipping",
+                        msg.id
+                    );
+
+                    // ✅ 2. AGGIORNA conversation_sequence anche se duplicato
+                    // Questo garantisce che conversation_sequences_confirmed sia sempre aggiornato
+                    if let Some(conv_seq) = msg.sequence_num {
+                        let current = state
+                            .conversation_sequences_confirmed
+                            .get(&msg.conversation_id)
+                            .copied()
+                            .unwrap_or(0);
+
+                        if conv_seq > current {
+                            state
+                                .conversation_sequences_confirmed
+                                .insert(msg.conversation_id, conv_seq);
+                            debug!(
+                                "Updated conversation {} sequence from {} to {} via UserEvent",
+                                msg.conversation_id, current, conv_seq
+                            );
+                        }
                     }
+
+                    return;
                 }
 
-                let messages = state
+                // ✅ 3. Messaggio NUOVO - Aggiorna conversation_sequence
+                // user_sequence garantisce l'ordine, quindi possiamo fidarci di conv_seq
+                if let Some(conv_seq) = msg.sequence_num {
+                    state
+                        .conversation_sequences_confirmed
+                        .insert(msg.conversation_id, conv_seq);
+                    debug!(
+                        "Set conversation {} sequence to {} via UserEvent (trusted from user_seq)",
+                        msg.conversation_id, conv_seq
+                    );
+                }
+
+                // ✅ 4. Aggiungi alla CACHE con inserimento ordinato per sequence
+                let cache = state
                     .conversation_messages
                     .entry(msg.conversation_id)
                     .or_insert_with(Vec::new);
 
-                if !messages.iter().any(|m| m.id == msg.id) {
-                    messages.push(msg);
-                    debug!("Added message to cache");
+                let cache_insert_pos = if let Some(msg_seq) = msg.sequence_num {
+                    // Ordina per sequence se disponibile
+                    cache
+                        .binary_search_by(|existing| {
+                            match (existing.sequence_num, msg.sequence_num) {
+                                (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                                _ => existing
+                                    .created_at
+                                    .cmp(&msg.created_at)
+                                    .then_with(|| existing.id.cmp(&msg.id)),
+                            }
+                        })
+                        .unwrap_or_else(|pos| pos)
+                } else {
+                    // Fallback su timestamp se non c'è sequence
+                    cache
+                        .binary_search_by(|existing| {
+                            existing
+                                .created_at
+                                .cmp(&msg.created_at)
+                                .then_with(|| existing.id.cmp(&msg.id))
+                        })
+                        .unwrap_or_else(|pos| pos)
+                };
+
+                cache.insert(cache_insert_pos, msg.clone());
+                debug!(
+                    "Added UserEvent message {} to cache at position {} (seq: {:?})",
+                    msg.id, cache_insert_pos, msg.sequence_num
+                );
+
+                // ✅ 5. Aggiungi alla UI se è la conversazione corrente
+                if state.cid == Some(msg.conversation_id) {
+                    // Verifica che non sia già in UI
+                    if !state.messages.iter().any(|m| m.id == msg.id) {
+                        let ui_insert_pos = if let Some(msg_seq) = msg.sequence_num {
+                            // Ordina per sequence se disponibile
+                            state
+                                .messages
+                                .binary_search_by(|existing| {
+                                    match (existing.sequence_num, msg.sequence_num) {
+                                        (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                                        _ => existing
+                                            .created_at
+                                            .cmp(&msg.created_at)
+                                            .then_with(|| existing.id.cmp(&msg.id)),
+                                    }
+                                })
+                                .unwrap_or_else(|pos| pos)
+                        } else {
+                            // Fallback su timestamp
+                            state
+                                .messages
+                                .binary_search_by(|existing| {
+                                    existing
+                                        .created_at
+                                        .cmp(&msg.created_at)
+                                        .then_with(|| existing.id.cmp(&msg.id))
+                                })
+                                .unwrap_or_else(|pos| pos)
+                        };
+
+                        state.messages.insert(ui_insert_pos, msg.clone());
+                        debug!(
+                            "Added UserEvent message {} to UI at position {} (seq: {:?})",
+                            msg.id, ui_insert_pos, msg.sequence_num
+                        );
+                    } else {
+                        debug!(
+                            "UserEvent message {} already in UI, skipping",
+                            msg.id
+                        );
+                    }
+                } else {
+                    debug!(
+                        "UserEvent message {} cached for conversation {} (not current: {:?})",
+                        msg.id, msg.conversation_id, state.cid
+                    );
                 }
             }
         }
+
         "conversation_deleted" => {
             if let Some(cid) = conversation_id {
                 info!(
@@ -1379,6 +1499,7 @@ fn process_user_notification(
                     });
                 }
 
+                // Rimuovi DM stub se esiste
                 if state.dm_stubs.contains_key(&id) {
                     state.remove_dm_stub(id);
                     info!(
@@ -1387,6 +1508,7 @@ fn process_user_notification(
                     );
                 }
 
+                // Aggiorna lista conversazioni
                 if let Some(ref mut conversations) = state.conversations {
                     conversations.retain(|c| c.id != id);
                     conversations.push(conversation.clone());
@@ -1395,6 +1517,7 @@ fn process_user_notification(
                     state.conversations = Some(vec![conversation.clone()]);
                 }
 
+                // Aggiungi messaggi alla cache
                 if !messages.is_empty() {
                     state.conversation_messages.insert(id, messages.clone());
 
@@ -1403,6 +1526,7 @@ fn process_user_notification(
                     }
                 }
 
+                // Se siamo in chat e la conversazione è quella corrente (o nessuna selezionata)
                 if state.page == Page::Chat && (state.cid == Some(id) || state.cid.is_none()) {
                     state.cid = Some(id);
                     state.conv_title = conversation.title.clone();
@@ -1428,6 +1552,7 @@ fn process_user_notification(
                 warn!("conversation_created_complete missing conversation object");
             }
         }
+
         _ => {
             debug!("Unhandled notification type: {}", event_type);
         }
