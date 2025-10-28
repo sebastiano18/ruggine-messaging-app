@@ -238,7 +238,7 @@ pub async fn handle_create_conversation(
                     ts,
                     user_id,
                 )
-                .await?;
+                    .await?;
 
                 // Broadcast il messaggio
                 let broadcast_msg = json!({
@@ -249,113 +249,169 @@ pub async fn handle_create_conversation(
                     "author_username": username,
                     "content": content,
                     "created_at": ts,
-                    "sequence": message_sequence
+                    "sequence_num": message_sequence
                 });
 
-                let _ = broadcast_to_conversation(state, existing_id, broadcast_msg).await;
+                broadcast_to_conversation(state, existing_id, broadcast_msg).await?;
             }
 
-            // Invia conferma conversazione duplicata
-            send_conversation_confirmation(state, existing_id, temp_id.clone(), user_id).await?;
             return Ok(());
+        } else {
+            // Cache conversation_id generato
+            let new_id = Uuid::new_v4();
+            state
+                .conversation_confirmation_cache
+                .insert(new_id, temp_id.clone())
+                .await;
+            info!(
+                "Cached new conversation {} with client_temp_id {}",
+                new_id, temp_id
+            );
+            new_id
         }
-
-        let new_id = Uuid::new_v4();
-        state
-            .conversation_confirmation_cache
-            .insert(new_id, temp_id.clone())
-            .await;
-        info!(
-            "Created new conversation {} with client_temp_id {}",
-            new_id, temp_id
-        );
-        new_id
     } else {
         Uuid::new_v4()
     };
 
     let conversation_id_str = conversation_id.to_string();
     let user_id_str = user_id.to_string();
-    let ts = Utc::now().timestamp();
+
+    // Verifica che il target esista
+    let target_row = sqlx::query("SELECT id, username FROM users WHERE username = ?")
+        .bind(target_username)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound)?;
+
+    let target_user_id_str: String = target_row.try_get("id").map_err(AppError::from)?;
+    let target_user_id = Uuid::parse_str(&target_user_id_str).map_err(|_| {
+        AppError::Internal("Invalid UUID format in database for target user".into())
+    })?;
+    let target_username_actual: String = target_row.try_get("username").map_err(AppError::from)?;
+
+    // Impedisci conversazioni con se stessi
+    if target_user_id == user_id {
+        return Err(AppError::BadRequest(
+            "Cannot create conversation with yourself".into(),
+        ));
+    }
+
+    // Verifica duplicati per DM
+    if conversation_type == "dm" {
+        let existing_dm = sqlx::query(
+            "SELECT c.id FROM conversations c
+             JOIN participants p1 ON c.id = p1.conversation_id
+             JOIN participants p2 ON c.id = p2.conversation_id
+             WHERE c.kind = 'dm'
+             AND p1.user_id = ? AND p2.user_id = ?
+             LIMIT 1",
+        )
+            .bind(&user_id_str)
+            .bind(&target_user_id_str)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        if let Some(row) = existing_dm {
+            let existing_id: String = row.try_get("id").map_err(AppError::from)?;
+            return Err(AppError::BadRequest(format!(
+                "DM conversation already exists: {}",
+                existing_id
+            )));
+        }
+    }
 
     // Inizia transazione
     let mut tx = state.pool.begin().await.map_err(AppError::from)?;
 
-    // Verifica che il target user esista
-    let target_row = sqlx::query("SELECT id, username FROM users WHERE username = ?")
-        .bind(target_username)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(AppError::from)?;
-
-    let (target_user_id, target_username_actual) = match target_row {
-        Some(row) => {
-            let id_str: String = row.try_get("id").map_err(AppError::from)?;
-            let username: String = row.try_get("username").map_err(AppError::from)?;
-            let target_id = Uuid::parse_str(&id_str)
-                .map_err(|_| AppError::BadRequest("Invalid target user ID".into()))?;
-            (target_id, username)
-        }
-        None => {
-            return Err(AppError::BadRequest(format!(
-                "User '{}' not found",
-                target_username
-            )));
-        }
-    };
-
-    // Crea la conversazione
+    // Crea conversazione
+    let ts = Utc::now().timestamp();
     sqlx::query(
-        "INSERT INTO conversations(id, kind, title, owner_id, created_at) VALUES(?, ?, NULL, ?, ?)",
+        "INSERT INTO conversations (id, kind, title, owner_id, created_at) VALUES (?, ?, ?, ?, ?)"
     )
-    .bind(&conversation_id_str)
-    .bind(conversation_type)
-    .bind(&user_id_str)
-    .bind(ts)
-    .execute(&mut *tx)
-    .await
-    .map_err(AppError::from)?;
-
-    // Aggiungi i partecipanti
-    sqlx::query("INSERT INTO participants(conversation_id, user_id, role) VALUES(?, ?, 'member')")
         .bind(&conversation_id_str)
-        .bind(&user_id_str)
+        .bind(conversation_type)
+        .bind(None::<String>)
+        .bind(&user_id_str)  // Aggiungi owner_id
+        .bind(ts)
         .execute(&mut *tx)
         .await
         .map_err(AppError::from)?;
 
-    let target_id_str = target_user_id.to_string();
-    sqlx::query("INSERT INTO participants(conversation_id, user_id, role) VALUES(?, ?, 'member')")
-        .bind(&conversation_id_str)
-        .bind(&target_id_str)
-        .execute(&mut *tx)
-        .await
-        .map_err(AppError::from)?;
+    // Aggiungi partecipanti
+    for (participant_id_str, role) in &[(user_id_str.clone(), "member"), (target_user_id_str.clone(), "member")] {
+        sqlx::query(
+            "INSERT INTO participants (conversation_id, user_id, role) VALUES (?, ?, ?)"
+        )
+            .bind(&conversation_id_str)
+            .bind(participant_id_str)
+            .bind(role)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::from)?;
+    }
 
-    // Se c'è un messaggio iniziale, crealo
-    let mut initial_msg_data = None;
+    // Salva messaggio iniziale se presente
+    let mut initial_msg_data: Option<(Uuid, String, u64, Option<String>)> = None;
+
     if let Some(content) = initial_message {
         let msg_id = Uuid::new_v4();
         let msg_id_str = msg_id.to_string();
 
-        // Inizializza la sequenza dei messaggi
-        sqlx::query("INSERT INTO message_sequences (conversation_id, current_sequence, last_updated) VALUES (?, 0, ?)")
+        // Inizializza o aggiorna la sequenza nella tabella message_sequences
+        let sequence_result = sqlx::query(
+            "INSERT INTO message_sequences (conversation_id, current_sequence, last_updated)
+             VALUES (?, 1, ?)
+             ON CONFLICT(conversation_id) DO UPDATE
+             SET current_sequence = current_sequence + 1,
+                 last_updated = ?
+             RETURNING current_sequence"
+        )
             .bind(&conversation_id_str)
             .bind(ts)
-            .execute(&mut *tx)
-            .await
-            .map_err(AppError::from)?;
-
-        let sequence_row = sqlx::query("UPDATE message_sequences SET current_sequence = current_sequence + 1, last_updated = ? WHERE conversation_id = ? RETURNING current_sequence")
             .bind(ts)
-            .bind(&conversation_id_str)
             .fetch_one(&mut *tx)
-            .await
-            .map_err(AppError::from)?;
+            .await;
 
-        let sequence: i64 = sequence_row
-            .try_get("current_sequence")
-            .map_err(AppError::from)?;
+        // Se RETURNING non funziona in SQLite, usa questo approccio alternativo:
+        let sequence = if sequence_result.is_err() {
+            // Prima prova INSERT
+            let insert_result = sqlx::query(
+                "INSERT OR IGNORE INTO message_sequences (conversation_id, current_sequence, last_updated)
+                 VALUES (?, 0, ?)"
+            )
+                .bind(&conversation_id_str)
+                .bind(ts)
+                .execute(&mut *tx)
+                .await;
+
+            // Poi UPDATE
+            sqlx::query(
+                "UPDATE message_sequences
+                 SET current_sequence = current_sequence + 1,
+                     last_updated = ?
+                 WHERE conversation_id = ?"
+            )
+                .bind(ts)
+                .bind(&conversation_id_str)
+                .execute(&mut *tx)
+                .await
+                .map_err(AppError::from)?;
+
+            // Infine SELECT per ottenere il valore
+            let row = sqlx::query(
+                "SELECT current_sequence FROM message_sequences WHERE conversation_id = ?"
+            )
+                .bind(&conversation_id_str)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(AppError::from)?;
+
+            row.try_get::<i64, _>("current_sequence").map_err(AppError::from)?
+        } else {
+            sequence_result.unwrap().try_get::<i64, _>("current_sequence").map_err(AppError::from)?
+        };
 
         // Salva il messaggio
         sqlx::query(
@@ -410,7 +466,7 @@ pub async fn handle_create_conversation(
             ts,
             user_id,
         )
-        .await?;
+            .await?;
         info!("Sent message confirmation for initial message {}", msg_id);
     }
 
@@ -434,12 +490,71 @@ pub async fn handle_create_conversation(
             .as_ref()
             .map(|(_, _, s, _)| *s)
             .unwrap_or(0),
-        client_msg_id: initial_msg_data.and_then(|(_, _, _, cid)| cid),
+        client_msg_id: initial_msg_data.as_ref().and_then(|(_, _, _, cid)| cid.clone()),
         created_at: ts,
     };
 
     // Invia notifiche ai partecipanti
     send_conversation_created_events(state, new_conv_data).await?;
+
+    // FIX: Se c'è un messaggio iniziale, crea anche gli eventi new_message per tutti i partecipanti
+    if let Some((msg_id, content, sequence, client_msg_id)) = initial_msg_data {
+        info!("Creating new_message events for initial message {} in conversation {}",
+              msg_id, conversation_id);
+
+        // Recupera tutti i partecipanti (dovrebbero essere solo 2 per un DM)
+        let participants = vec![user_id, target_user_id];
+
+        // Prepara i dati del messaggio per l'evento
+        let mut message_event_data = json!({
+            "id": msg_id,
+            "conversation_id": conversation_id,
+            "author_id": user_id,
+            "author_username": username,
+            "content": content,
+            "created_at": ts,
+            "sequence_num": sequence,
+        });
+
+        if let Some(ref client_id) = client_msg_id {
+            message_event_data["client_msg_id"] = json!(client_id);
+        }
+
+        // Crea un evento user per ogni partecipante
+        for participant_id in participants {
+            let event_payload = json!({
+                "type": "new_message",
+                "conversation_id": conversation_id,
+                "conversation_sequence": sequence,
+                "message": message_event_data.clone()
+            });
+
+            match state
+                .send_sequenced_event_to_user(
+                    participant_id,
+                    "new_message",
+                    event_payload,
+                    Some(conversation_id),
+                )
+                .await
+            {
+                Ok(seq) => {
+                    info!(
+                        "Sent new_message event (seq={}) for initial message to user {}",
+                        seq, participant_id
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to send new_message event to user {}: {}",
+                        participant_id, e
+                    );
+                }
+            }
+        }
+
+        info!("Initial message events created for all participants");
+    }
 
     Ok(())
 }
@@ -934,29 +1049,8 @@ async fn send_conversation_created_events(
     Ok(())
 }
 
-/// Gestisce notifiche dal canale utente
-/// Gestisce notifiche dal canale utente
-///
-/// Ritorna `Ok(Some(conversation_id))` se è stata processata una notifica di creazione conversazione
-/// che richiede setup aggiuntivo (es. aggiungere stream al DynamicStreamManager).
-/// Ritorna `Ok(None)` per tutti gli altri tipi di notifiche.
-///
-/// # Esempi
-///
-/// Uso base:
-/// ```ignore
-/// let conv_id_opt = handle_user_notification(&state, &notification, user_id, &out_tx).await?;
-/// ```
-///
-/// Uso avanzato con stream manager (in recv_merge.rs):
-/// ```ignore
-/// let conv_id_opt = handle_user_notification(&state, &notification, user_id, &out_tx).await?;
-/// if let Some(conv_id) = conv_id_opt {
-///     let conv_tx = state.get_or_create_broadcast_tx(conv_id).await;
-///     let stream = BroadcastStream::new(conv_tx.subscribe());
-///     stream_manager.add_conversation_stream(conv_id, stream).await;
-/// }
-/// ```
+
+
 pub async fn handle_user_notification(
     state: &AppState,
     notification: &Value,

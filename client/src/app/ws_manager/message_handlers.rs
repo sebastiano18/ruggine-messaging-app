@@ -38,7 +38,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     // Handle messages by type
     match msg_type {
         "chat_message" => handle_chat_message(tx, &parsed_value),
-        "new_message" => handle_new_message_event(tx, &parsed_value), 
+        "new_message" => handle_new_message_event(tx, &parsed_value),
         "initial_state" => handle_initial_state(tx, &parsed_value),
         "conversation_messages" => handle_conversation_messages(tx, &parsed_value),
         "conversation_created_complete" => handle_conversation_created_complete(tx, &parsed_value),
@@ -67,6 +67,27 @@ fn handle_conversation_confirmation(
     tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
     value: &Value,
 ) {
+    // NUOVO: Prima di tutto, gestisci la sequence se presente
+    if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
+        info!("Found sequence {} in conversation_confirmation, sending UserNotification", seq);
+
+        // Estrai conversation_id dal campo conversation
+        let conversation_id = value.get("conversation")
+            .and_then(|c| c.get("id"))
+            .and_then(|id| id.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
+        // Invia come UserNotification per aggiornare la user_sequence
+        let _ = tx.send(UiEvent::UserNotification {
+            sequence: seq,
+            event_type: "conversation_confirmation".to_string(),
+            event_data: value.clone(),
+            conversation_id,
+            recovery: false,
+        });
+    }
+
+    // Continua con il codice esistente
     let conversation_data = value.get("conversation").and_then(|conv_obj| {
         let id = parse_uuid_field(conv_obj, "id")?;
         let client_temp_id = conv_obj

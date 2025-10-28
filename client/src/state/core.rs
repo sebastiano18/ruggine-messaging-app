@@ -325,11 +325,7 @@ impl AppState {
     // ===Ping System ===
 
     pub fn send_ping(&mut self) {
-        let user_seq = if self.user_sequence_confirmed > 0 {
-            Some(self.user_sequence_confirmed)
-        } else {
-            None
-        };
+        let user_seq = Some(self.user_sequence_confirmed);
         debug!("Sending ping - user_seq: {:?}", user_seq);
         self.sequence_stats.ping_count += 1;
         self.send_via_websocket(Outgoing::Ping {
