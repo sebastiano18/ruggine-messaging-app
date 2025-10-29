@@ -804,6 +804,7 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
+ "egui-remixicon",
  "env_logger",
  "futures",
  "hex",
@@ -1227,6 +1228,15 @@ dependencies = [
  "nohash-hasher",
  "ron",
  "serde",
+]
+
+[[package]]
+name = "egui-remixicon"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673b30730f1e0026b1596942a1fbb008a69d821562de38fd22116e6e82b2ac2c"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
