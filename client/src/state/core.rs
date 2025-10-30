@@ -332,8 +332,7 @@ impl AppState {
             user_sequence: user_seq,
         });
     }
-
-    // ... resto dei metodi esistenti rimangono invariati ...
+    
 
     pub fn update_user_sequence(&mut self, sequence: u64) {
         let current = self.user_sequence_received;

@@ -1074,7 +1074,7 @@ impl EventDispatcher {
                             buffered_event.get("sequence").and_then(|s| s.as_u64())
                         {
                             // COMMENTATO PER TEST RESUME
-                            // state.user_sequence_confirmed = event_seq;
+                             state.user_sequence_confirmed = event_seq;
 
                             let evt_type = buffered_event
                                 .get("event_type")
