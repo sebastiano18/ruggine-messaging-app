@@ -108,6 +108,9 @@ pub struct AppState {
     // User Manag
     pub confirm_delete_account: bool,
 
+    // UI Modals
+    pub show_account_modal: bool,
+
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
     pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
@@ -149,6 +152,7 @@ impl AppState {
 
             login_state: LoginState::Idle,
             confirm_delete_account: false,
+            show_account_modal: false,
 
             ui_tx: tx,
             ui_rx: rx,

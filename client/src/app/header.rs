@@ -2,12 +2,17 @@ use eframe::egui;
 use egui::{Align, Layout};
 use crate::models::WsStatus;
 use crate::state::AppState;
+use crate::app::sidebar_components::sidebar_account::AccountSidebar;
 
-pub struct HeaderManager;
+pub struct HeaderManager {
+    account_sidebar: AccountSidebar,
+}
 
 impl HeaderManager {
     pub fn new() -> Self {
-        Self
+        Self {
+            account_sidebar: AccountSidebar::new(),
+        }
     }
 
     pub fn show_header(&mut self, ctx: &egui::Context, state: &mut AppState) {
@@ -20,49 +25,72 @@ impl HeaderManager {
                     self.show_app_title(ui);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Status indicators
-                        self.show_websocket_status(ui, state);
-
                         // User info se autenticato
-                        self.show_user_info(ui, state);
+                        if state.is_authenticated() {
+
+                            ui.add_space(8.0);
+
+                            if state.is_loading && !state.is_initial_load_complete {
+                                ui.label("Caricamento...");
+                                ui.spinner();
+                            }
+
+                            // Stato WebSocket
+                            self.show_websocket_status(ui, state);
+                            ui.separator();
+
+                            // Usa un bottone invisibile per avere il cursore corretto
+                            let button = egui::Button::new(
+                                egui::RichText::new(format!("{} {}", egui_remixicon::icons::USER_FILL, state.username)).size(18.0))
+                                .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.06));
+
+                            if ui.add(button)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text("Impostazioni account")
+                                .clicked() 
+                            {
+                                state.show_account_modal = true;
+                            }
+                        }
                     });
                 });
-                ui.add_space(4.0);
             });
     }
 
     fn show_app_title(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("🦀").size(24.0));
-            ui.label(egui::RichText::new("Ruggine Chat").size(20.0).strong());
+            ui.label(egui::RichText::new(format!("{}", egui_remixicon::icons::GROUP_FILL)).size(34.0).color(egui::Color32::from_rgb(200, 100, 40))); 
+            ui.label(egui::RichText::new("Ruggine Chat").size(24.0).strong());
         });
     }
 
     fn show_websocket_status(&self, ui: &mut egui::Ui, state: &AppState) {
         match state.ws_status {
             WsStatus::Connected => {
-                ui.colored_label(egui::Color32::GREEN, "🟢")
-                    .on_hover_text("WebSocket connesso");
+                ui.label(
+                    egui::RichText::new(egui_remixicon::icons::CHECKBOX_CIRCLE_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::GREEN)
+                ).on_hover_text("WebSocket connesso");
             },
             WsStatus::Connecting => {
-                ui.colored_label(egui::Color32::YELLOW, "🟡")
-                    .on_hover_text("Connessione in corso...");
+                ui.label(
+                    egui::RichText::new(egui_remixicon::icons::REFRESH_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::YELLOW)
+                ).on_hover_text("Connessione in corso...");
             },
             WsStatus::Disconnected => {
-                ui.colored_label(egui::Color32::RED, "🔴")
-                    .on_hover_text("WebSocket disconnesso");
+                ui.label(
+                    egui::RichText::new(egui_remixicon::icons::CLOSE_CIRCLE_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::RED)
+                ).on_hover_text("WebSocket disconnesso");
             },
-        };
+        }
     }
 
-    fn show_user_info(&self, ui: &mut egui::Ui, state: &AppState) {
-        if let Some(ref username) = state.token.as_ref().map(|_| &state.username) {
-            ui.separator();
-            ui.label(format!("👤 {}", username));
-            if state.is_loading && !state.is_initial_load_complete {
-                ui.spinner();
-                ui.label("Caricamento...");
-            }
-        }
+    pub fn show_account_popup_content(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
+        self.account_sidebar.show(ui, state);
     }
 }

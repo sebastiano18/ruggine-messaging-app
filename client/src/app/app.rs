@@ -48,6 +48,27 @@ impl eframe::App for App {
             self.show_main_layout(ctx);
         }
 
+        // Pop-up dettagli account account centrale
+        if self.state.show_account_modal {
+            let mut open = self.state.show_account_modal;
+            egui::Window::new(
+                egui::RichText::new(format!("{} Impostazioni account", egui_remixicon::icons::SETTINGS_4_FILL))
+                    .color(egui::Color32::WHITE)
+            )
+                .collapsible(false)
+                .resizable(true)
+                .auto_sized()
+                .min_width(300.0)
+                .max_width(400.0)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, [-150.0, 0.0])
+                .show(ctx, |ui| {
+                    self.header_manager
+                        .show_account_popup_content(ui, &mut self.state);
+                });
+            self.state.show_account_modal = open;
+        }
+
         self.periodic_cleanup();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
