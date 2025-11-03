@@ -1,6 +1,8 @@
 use crate::models::{ConversationDto, MessageDto, Outgoing, UiEvent, WsStatus};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use crate::app::events::buffer_handler::BufferHandler;
+use crate::app::events::sequence_handler::SequenceHandler;
 
 pub struct WebSocketHandler;
 
@@ -14,13 +16,13 @@ impl WebSocketHandler {
 
             UiEvent::WsConnected => {
                 state.ws_status = WsStatus::Connected;
-                state.reset_sequence_system();
+                SequenceHandler::reset_sequence_system(state);
                 info!("WebSocket connected, sequence system active");
             }
 
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
-                state.reset_sequence_on_disconnect();
+                SequenceHandler::reset_sequence_on_disconnect(state);
                 warn!("WebSocket disconnected");
             }
 
@@ -53,7 +55,7 @@ impl WebSocketHandler {
             msg.sequence_num
         );
 
-        // ✅ GESTIONE BUFFER DI RIORDINO
+        // GESTIONE BUFFER DI RIORDINO
         if let Some(seq) = msg.sequence_num {
             let expected = state
                 .conversation_sequences_confirmed
@@ -67,25 +69,27 @@ impl WebSocketHandler {
                     "Message seq {} out of order (expected {}), buffering",
                     seq, expected
                 );
-                state.buffer_message_for_reorder(msg);
+
+                // Update per gap detection (senza conferma esplicita)
+                SequenceHandler::update_conversation_sequence(state, message_conversation_id, seq);
+
+                // Bufferizza per consegna successiva
+                BufferHandler::buffer_message_for_reorder(state, msg);
                 return;
             } else if seq < expected {
                 debug!("Message seq {} already processed, skipping", seq);
                 return;
             }
 
-            // Aggiorna sequenze
-            state.update_conversation_sequence(message_conversation_id, seq);
-            state
-                .conversation_sequences_confirmed
-                .insert(message_conversation_id, seq);
+            // Messaggio in ordine - update gestisce la conferma automaticamente
+            SequenceHandler::update_conversation_sequence(state, message_conversation_id, seq);
 
             debug!("Message seq {} matches expected, processing normally", seq);
         }
 
         state.sequence_stats.total_events_received += 1;
 
-        // ✅ VERIFICA E RIMOZIONE DUPLICATI CONVERSAZIONI
+        // VERIFICA E RIMOZIONE DUPLICATI CONVERSAZIONI
         if let Some(ref conversations) = state.conversations {
             let count = conversations
                 .iter()
@@ -119,7 +123,7 @@ impl WebSocketHandler {
             }
         }
 
-        // ✅ CONVERSIONE DM STUB A CONVERSAZIONE REALE
+        // CONVERSIONE DM STUB A CONVERSAZIONE REALE
         let is_stub_conversion = state.dm_stubs.contains_key(&message_conversation_id);
 
         if is_stub_conversion {
@@ -144,6 +148,7 @@ impl WebSocketHandler {
                 created_at: msg.created_at,
                 last_read_sequence: 0,
                 last_activity: msg.created_at,
+                last_msg_seq: msg.sequence_num.map(|s| s as i64).unwrap_or(0),
             };
 
             if let Some(ref mut conversations) = state.conversations {
@@ -173,7 +178,7 @@ impl WebSocketHandler {
             );
         }
 
-        // ✅ GESTIONE CONVERSAZIONE SCONOSCIUTA
+        // GESTIONE CONVERSAZIONE SCONOSCIUTA
         let conversation_exists = state
             .conversations
             .as_ref()
@@ -202,26 +207,22 @@ impl WebSocketHandler {
             state.conversation_unread_counts.entry(message_conversation_id).or_insert(0);
         }
 
-        // ✅ AGGIORNA CACHE MESSAGGI
-        if !Self::update_message_cache_improved(state, &msg) {
-            debug!("Message already exists in cache, skipping: {}", msg.id);
+        // AGGIORNA CACHE MESSAGGI
+        if !Self::update_message_cache(state, &msg) {
+            debug!("Message {} already in cache, skipping", msg.id);
             return;
         }
 
-        // ✅ AGGIORNA UI SE È LA CONVERSAZIONE CORRENTE
+        // AGGIORNA UI SE CONVERSAZIONE CORRENTE
         if Some(message_conversation_id) == state.cid {
-            Self::update_ui_messages_improved(state, msg.clone());
-            debug!(
-                "Message added to current conversation UI: {}",
-                msg.content.chars().take(50).collect::<String>()
-            );
+            Self::update_ui_messages(state, msg.clone());
         } else {
             debug!(
                 "Message cached but not for current conversation: {}",
-                msg.content.chars().take(50).collect::<String>()
+                msg.id
             );
 
-            // ⭐ INCREMENTA UNREAD per messaggi in altre conversazioni (NON dell'utente)
+            // Incrementa unread per messaggi in altre chat
             if Some(msg.author_id) != state.user_id {
                 let current_unread = state.conversation_unread_counts
                     .entry(message_conversation_id)
@@ -230,7 +231,7 @@ impl WebSocketHandler {
                 *current_unread += 1;
 
                 debug!(
-                    "Incremented unread count for conversation {} to {} (WsIncoming from {})",
+                    "Incremented unread count for conversation {} to {} (new message from {})",
                     message_conversation_id,
                     *current_unread,
                     msg.author_username
@@ -238,8 +239,9 @@ impl WebSocketHandler {
             }
         }
 
-        // ✅ CONSEGNA MESSAGGI BUFFERIZZATI
-        let buffered_messages = state.try_deliver_buffered_messages(message_conversation_id);
+        // CONSEGNA MESSAGGI BUFFERIZZATI
+        let buffered_messages = BufferHandler::try_deliver_buffered_messages(state, message_conversation_id);
+
         if !buffered_messages.is_empty() {
             info!(
                 "Delivering {} buffered messages for conversation {}",
@@ -248,16 +250,13 @@ impl WebSocketHandler {
             );
 
             for buffered_msg in buffered_messages {
-                // Aggiorna sequenza
+                // Update gestisce la conferma automaticamente
                 if let Some(seq) = buffered_msg.sequence_num {
-                    state.update_conversation_sequence(message_conversation_id, seq);
-                    state
-                        .conversation_sequences_confirmed
-                        .insert(message_conversation_id, seq);
+                    SequenceHandler::update_conversation_sequence(state, message_conversation_id, seq);
                 }
 
-                // Processa in cache - include auto-mark_read
-                if !Self::update_message_cache_improved(state, &buffered_msg) {
+                // Aggiungi alla cache
+                if !Self::update_message_cache(state, &buffered_msg) {
                     debug!(
                         "Buffered message already exists in cache: {}",
                         buffered_msg.id
@@ -265,8 +264,9 @@ impl WebSocketHandler {
                     continue;
                 }
 
+                // Aggiorna UI se conversazione corrente
                 if Some(message_conversation_id) == state.cid {
-                    Self::update_ui_messages_improved(state, buffered_msg.clone());
+                    Self::update_ui_messages(state, buffered_msg.clone());
                 } else {
                     debug!(
                         "Buffered message cached but not for current conversation: {}",
@@ -293,22 +293,16 @@ impl WebSocketHandler {
         }
     }
 
-    /// ⭐⭐⭐ FUNZIONE HELPER CENTRALIZZATA PER AUTO-MARK_READ ⭐⭐⭐
+    /// FUNZIONE HELPER PER AUTO-MARK_READ
     ///
     /// Controlla se inviare automaticamente mark_read quando un messaggio viene aggiunto alla cache.
-    /// Questa funzione viene chiamata ogni volta che un messaggio è inserito in cache,
-    /// centralizzando la logica per:
-    /// - Messaggi diretti (WsIncoming)
-    /// - Messaggi dal buffer di riordino
-    /// - Messaggi dagli user events
-    /// - Messaggi dal resume
     fn check_and_send_auto_mark_read(state: &mut crate::state::core::AppState, msg: &MessageDto) {
         // Controlla se il messaggio appartiene alla conversazione attualmente aperta
         if state.cid != Some(msg.conversation_id) {
             return;
         }
 
-        // Controlla se il messaggio NON è dell'utente corrente (non vogliamo marcare i nostri messaggi)
+        // Controlla se il messaggio NON è dell'utente corrente
         if Some(msg.author_id) == state.user_id {
             return;
         }
@@ -349,7 +343,9 @@ impl WebSocketHandler {
         }
     }
 
-    fn update_message_cache_improved(
+    /// Aggiunge un messaggio alla cache della conversazione
+    /// Ritorna false se il messaggio esiste già
+    fn update_message_cache(
         state: &mut crate::state::core::AppState,
         msg: &MessageDto,
     ) -> bool {
@@ -359,10 +355,7 @@ impl WebSocketHandler {
             .or_insert_with(Vec::new);
 
         // Controlla duplicati
-        if conversation_cache
-            .iter()
-            .any(|existing| existing.id == msg.id)
-        {
+        if conversation_cache.iter().any(|existing| existing.id == msg.id) {
             return false;
         }
 
@@ -401,18 +394,14 @@ impl WebSocketHandler {
             Self::verify_cache_sequence_integrity(state, msg.conversation_id);
         }
 
-        // ⭐⭐⭐ AUTO-MARK_READ: Controlla e invia mark_read se necessario ⭐⭐⭐
-        // Questo viene chiamato per TUTTI i messaggi aggiunti alla cache, indipendentemente dalla fonte:
-        // - Messaggi diretti dal WebSocket (WsIncoming)
-        // - Messaggi dal buffer di riordino
-        // - Messaggi dagli user events
-        // - Messaggi dal resume
+        // Auto-mark_read per tutti i messaggi aggiunti alla cache
         Self::check_and_send_auto_mark_read(state, msg);
 
         true
     }
 
-    fn update_ui_messages_improved(state: &mut crate::state::core::AppState, msg: MessageDto) {
+    /// Aggiunge un messaggio all'UI della conversazione corrente
+    fn update_ui_messages(state: &mut crate::state::core::AppState, msg: MessageDto) {
         if state.messages.iter().any(|existing| existing.id == msg.id) {
             debug!("Message already exists in UI, skipping: {}", msg.id);
             return;
@@ -450,6 +439,7 @@ impl WebSocketHandler {
         );
     }
 
+    /// Verifica l'integrità delle sequenze nella cache
     fn verify_cache_sequence_integrity(state: &crate::state::core::AppState, conversation_id: Uuid) {
         if let Some(messages) = state.conversation_messages.get(&conversation_id) {
             let sequenced_messages: Vec<u64> = messages

@@ -123,9 +123,17 @@ fn handle_conversation_confirmation(
             .get("last_message")
             .and_then(|msg| msg.get("created_at"))
             .and_then(|t| t.as_i64())
-            .unwrap_or(created_at);
+            .unwrap_or(0);
 
         let last_activity = std::cmp::max(created_at, last_message_time);
+
+        let last_msg_seq = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("sequence_num"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+
 
         let conversation = ConversationDto {
             id,
@@ -135,6 +143,7 @@ fn handle_conversation_confirmation(
             created_at,
             last_read_sequence,
             last_activity,
+            last_msg_seq
         };
 
         // Parse dell'ultimo messaggio se presente
@@ -219,7 +228,7 @@ fn handle_conversation_created_complete(
             .get("last_read_sequence")
             .and_then(|s| s.as_i64())
             .unwrap_or(0);
-        
+
 
         // Usa display_title per DM, altrimenti usa title normale
         let title = conv_obj
@@ -234,10 +243,16 @@ fn handle_conversation_created_complete(
             .get("last_message")
             .and_then(|msg| msg.get("created_at"))
             .and_then(|t| t.as_i64())
-            .unwrap_or(created_at);
+            .unwrap_or(0);
 
         let last_activity = std::cmp::max(created_at, last_message_time);
 
+
+        let last_msg_seq = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("sequence_num"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
 
         Some(ConversationDto {
             id,
@@ -247,6 +262,7 @@ fn handle_conversation_created_complete(
             created_at,
             last_read_sequence,
             last_activity,
+            last_msg_seq,
         })
     });
 
@@ -358,9 +374,15 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         .get("last_message")
                         .and_then(|msg| msg.get("created_at"))
                         .and_then(|t| t.as_i64())
-                        .unwrap_or(created_at);
+                        .unwrap_or(0);
 
                     let last_activity = std::cmp::max(created_at, last_message_time);
+
+                    let last_msg_seq = conv
+                        .get("last_message")
+                        .and_then(|msg| msg.get("sequence_num"))
+                        .and_then(|t| t.as_i64())
+                        .unwrap_or(0);
 
                     Some(ConversationDto {
                         id,
@@ -370,6 +392,7 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         created_at,
                         last_read_sequence,
                         last_activity,
+                        last_msg_seq,
                     })
                 })
                 .collect()
@@ -515,7 +538,7 @@ fn handle_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) 
         .get("current_user_sequence")
         .and_then(|s| s.as_u64())
         .unwrap_or(0);
-    
+
 
     let gaps_detected = value
         .get("gaps_detected")
