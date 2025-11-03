@@ -38,6 +38,9 @@ pub struct ConversationOut {
     pub title: String,
     pub owner_id: Uuid,
     pub created_at: i64,
+    pub last_read_sequence: i64,  // AGGIUNTO per il client
+    pub last_activity: i64,        // AGGIUNTO per il client
+    pub last_msg_seq: i64,         // AGGIUNTO per il client
 }
 
 #[derive(Serialize)]
@@ -88,15 +91,23 @@ pub async fn mine(
 ) -> Result<Json<Vec<ConversationOut>>> {
     let rows = ConversationService::mine(&st.pool, user.id).await?;
 
-    let conversations = rows.into_iter().map(|(id, kind, title, owner_id, created_at)| {
+    let conversations: Vec<ConversationOut> = rows.into_iter().map(|(id, kind, title, owner_id, created_at, last_read_sequence, last_activity, last_msg_seq)| {
         ConversationOut {
             id,
             kind,
             title,
             owner_id,
             created_at,
+            last_read_sequence,  // Valore reale dal DB
+            last_activity,       // Valore reale dal DB
+            last_msg_seq,        // Valore reale dal DB
         }
     }).collect();
+
+    // DEBUG: Logga il JSON che stiamo per inviare
+    if let Ok(json_str) = serde_json::to_string_pretty(&conversations) {
+        tracing::info!("Sending conversations JSON to client:\n{}", json_str);
+    }
 
     Ok(Json(conversations))
 }
@@ -111,13 +122,16 @@ pub async fn get_conversation(
     let conversation_data = ConversationService::get_conversation(&st.pool, conversation_id, user.id).await?;
 
     match conversation_data {
-        Some((id, kind, title, owner_id, created_at)) => {
+        Some((id, kind, title, owner_id, created_at, last_read_sequence, last_activity, last_msg_seq)) => {
             Ok(Json(ConversationOut {
                 id,
                 kind,
                 title,
                 owner_id,
                 created_at,
+                last_read_sequence,  // Valore reale dal DB
+                last_activity,       // Valore reale dal DB
+                last_msg_seq,        // Valore reale dal DB
             }))
         }
         None => Err(crate::error::AppError::NotFound),
@@ -147,12 +161,15 @@ pub async fn get_conversation_with_messages(
     let conversation_data = ConversationService::get_conversation(&st.pool, conversation_id, user.id).await?;
 
     let conversation = match conversation_data {
-        Some((id, kind, title, owner_id, created_at)) => ConversationOut {
+        Some((id, kind, title, owner_id, created_at, last_read_sequence, last_activity, last_msg_seq)) => ConversationOut {
             id,
             kind,
             title,
             owner_id,
             created_at,
+            last_read_sequence,  // Valore reale dal DB
+            last_activity,       // Valore reale dal DB
+            last_msg_seq,        // Valore reale dal DB
         },
         None => return Err(crate::error::AppError::NotFound),
     };

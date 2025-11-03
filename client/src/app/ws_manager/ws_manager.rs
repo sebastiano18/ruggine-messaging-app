@@ -1,4 +1,5 @@
 use tracing::info;
+use crate::app::events::sequence_handler::SequenceHandler;
 use crate::app::ws_manager::connection_manager;
 use crate::app::ws_manager::connection_manager::ConnectionManager;
 use crate::app::ws_manager::health_monitor::HealthMonitor;
@@ -40,18 +41,18 @@ impl WebSocketManager {
 
     /// Gestione ping cycle per sincronizzazione sequenze
     fn manage_ping_cycle(&mut self, state: &mut AppState) {
-        if !state.should_send_ping() {
+        if !SequenceHandler::should_send_ping(state) {
             return;
         }
 
         // Check per timeout pong precedenti
         if state.missed_pings > 0 && state.last_ping_time.elapsed() > state.ping_timeout {
-            state.handle_pong_timeout();
+            SequenceHandler::handle_pong_timeout(state);
             return;
         }
-        
-        state.send_ping();
-        state.update_ping_time();
+
+        SequenceHandler::send_ping(state);
+        SequenceHandler::update_ping_time(state);
 
         tracing::debug!("Ping sent - user_seq: {}", 
                state.user_sequence_confirmed);

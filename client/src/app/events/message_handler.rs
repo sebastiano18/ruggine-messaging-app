@@ -1,5 +1,4 @@
 // events/message_handler.rs - Gestione messaggi
-// events/message_handler.rs - Gestione messaggi
 use super::sequence_handler::SequenceHandler;
 use crate::models::*;
 use crate::state::core::AppState;

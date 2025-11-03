@@ -84,7 +84,8 @@ pub struct ConversationDto {
     pub owner_id: Uuid,
     pub created_at: i64,
     pub last_read_sequence: i64,
-    pub last_activity: i64
+    pub last_activity: i64,
+    pub last_msg_seq: i64,
 }
 
 #[derive(Deserialize, Serialize)]

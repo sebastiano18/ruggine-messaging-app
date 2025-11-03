@@ -20,12 +20,12 @@ impl ConversationRepo {
     }
 
     /// NUOVO: Ottiene una singola conversazione con dettagli completi
-    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at)
+    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at, last_read_sequence, last_activity, last_msg_seq)
     pub async fn get_single_conversation(
         pool: &SqlitePool,
         conversation_id: Uuid,
         user_id: Uuid,
-    ) -> Result<Option<(Uuid, String, String, Uuid, i64)>> {
+    ) -> Result<Option<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -52,7 +52,20 @@ impl ConversationRepo {
                     ELSE 'Unknown'
                 END AS display_title,
                 c.owner_id,
-                c.created_at
+                c.created_at,
+                COALESCE(p.last_read_sequence, 0) AS last_read_sequence,
+                COALESCE(
+                    (SELECT MAX(m.created_at) 
+                     FROM messages m 
+                     WHERE m.conversation_id = c.id),
+                    c.created_at
+                ) AS last_activity,
+                COALESCE(
+                    (SELECT current_sequence 
+                     FROM message_sequences 
+                     WHERE conversation_id = c.id),
+                    0
+                ) AS last_msg_seq
             FROM conversations c
             LEFT JOIN participants p ON c.id = p.conversation_id AND p.user_id = ?
             WHERE c.id = ?
@@ -77,12 +90,18 @@ impl ConversationRepo {
             let display_title: Option<String> = r.get("display_title");
             let owner_id_str: String = r.get("owner_id");
             let created_at: i64 = r.get("created_at");
+            let last_read_sequence: i64 = r.get("last_read_sequence");
+            let last_activity: i64 = r.get("last_activity");
+            let last_msg_seq: i64 = r.get("last_msg_seq");
             (
                 Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
                 kind,
                 display_title.unwrap_or_else(|| "Unknown".to_string()),
                 Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
                 created_at,
+                last_read_sequence,
+                last_activity,
+                last_msg_seq,
             )
         }))
     }
@@ -231,11 +250,11 @@ impl ConversationRepo {
     }
 
     /// Restituisce le conversazioni dell'utente con tutti i campi necessari.
-    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at)
+    /// Ritorna: (conversation_id, kind, display_title, owner_id, created_at, last_read_sequence, last_activity, last_msg_seq)
     pub async fn by_user(
         pool: &SqlitePool,
         user_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
+    ) -> Result<Vec<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
         let rows = sqlx::query(
             r#"
         SELECT
@@ -262,7 +281,20 @@ impl ConversationRepo {
                 ELSE 'Unknown'
             END AS display_title,
             c.owner_id,
-            c.created_at
+            c.created_at,
+            COALESCE(p.last_read_sequence, 0) AS last_read_sequence,
+            COALESCE(
+                (SELECT MAX(m.created_at) 
+                 FROM messages m 
+                 WHERE m.conversation_id = c.id),
+                c.created_at
+            ) AS last_activity,
+            COALESCE(
+                (SELECT current_sequence 
+                 FROM message_sequences 
+                 WHERE conversation_id = c.id),
+                0
+            ) AS last_msg_seq
         FROM conversations c
         LEFT JOIN participants p ON c.id = p.conversation_id AND p.user_id = ?
         WHERE p.user_id = ?
@@ -270,7 +302,7 @@ impl ConversationRepo {
                 SELECT 1 FROM messages m 
                 WHERE m.conversation_id = c.id AND m.author_id = ?
            ))
-        ORDER BY c.created_at DESC
+        ORDER BY last_activity DESC
         "#,
         )
             .bind(user_id.to_string())
@@ -289,12 +321,18 @@ impl ConversationRepo {
                 let display_title: Option<String> = r.get("display_title");
                 let owner_id_str: String = r.get("owner_id");
                 let created_at: i64 = r.get("created_at");
+                let last_read_sequence: i64 = r.get("last_read_sequence");
+                let last_activity: i64 = r.get("last_activity");
+                let last_msg_seq: i64 = r.get("last_msg_seq");
                 (
                     Uuid::parse_str(&id_str).expect("DB must store valid UUIDs"),
                     kind,
                     display_title.unwrap_or_else(|| "Unknown".to_string()),
                     Uuid::parse_str(&owner_id_str).expect("DB must store valid UUIDs"),
                     created_at,
+                    last_read_sequence,
+                    last_activity,
+                    last_msg_seq,
                 )
             })
             .collect())

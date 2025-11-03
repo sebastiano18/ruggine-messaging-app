@@ -1,4 +1,5 @@
 use crate::app::events::helpers;
+use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
 use crate::state::core::AppState;
 use tracing::{debug, info, warn};
@@ -24,6 +25,27 @@ impl ConversationHandler {
         state.conversations = Some(conversations.clone());
 
         state.conversation_unread_counts.clear();
+
+        // Inizializza le sequenze per TUTTE le conversazioni
+        // Usa la sequenza dell'ultimo messaggio, non last_read_sequence!
+        // Questo evita gap permanenti quando ci sono messaggi non letti
+        for conv in &conversations {
+            // Prova a usare la sequenza dell'ultimo messaggio se disponibile
+            let last_seq = conv.last_msg_seq;
+
+            if last_seq > 0 {
+                state
+                    .conversation_sequences
+                    .insert(conv.id, last_seq as u64);
+                state
+                    .conversation_sequences_confirmed
+                    .insert(conv.id, last_seq as u64);
+                debug!(
+                    "Initialized conversation {} ({}) sequences to {} (from last_msg_seq)",
+                    conv.title, conv.id, last_seq
+                );
+            }
+        }
 
         for conv in &conversations {
             let last_cached_seq = state
@@ -88,7 +110,9 @@ impl ConversationHandler {
 
                 if let Some(last_msg_seq) = message.sequence_num {
                     let unread = std::cmp::max(0, last_msg_seq as i64 - conv.last_read_sequence);
-                    state.conversation_unread_counts.insert(conversation_id, unread);
+                    state
+                        .conversation_unread_counts
+                        .insert(conversation_id, unread);
 
                     if unread > 0 {
                         debug!("Updated unread for '{}': {} messages", conv.title, unread);
@@ -131,7 +155,9 @@ impl ConversationHandler {
             .insert(conversation_id, sorted_messages.clone());
 
         if let Some(max_seq) = sorted_messages.iter().filter_map(|m| m.sequence_num).max() {
-            state.conversation_sequences.insert(conversation_id, max_seq);
+            state
+                .conversation_sequences
+                .insert(conversation_id, max_seq);
             state
                 .conversation_sequences_confirmed
                 .insert(conversation_id, max_seq);
@@ -294,10 +320,17 @@ impl ConversationHandler {
         state.has_more_messages.insert(cid, true);
 
         state.conversation_sequences.entry(cid).or_insert(0);
-        state.conversation_sequences_confirmed.entry(cid).or_insert(0);
+        state
+            .conversation_sequences_confirmed
+            .entry(cid)
+            .or_insert(0);
 
         if state.conversation_unread_counts.contains_key(&cid) {
-            let old_count = state.conversation_unread_counts.get(&cid).copied().unwrap_or(0);
+            let old_count = state
+                .conversation_unread_counts
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
             state.conversation_unread_counts.insert(cid, 0);
 
             if old_count > 0 {
@@ -468,7 +501,7 @@ impl ConversationHandler {
             state.conversation_messages.insert(cid, messages.clone());
 
             if let Some(max_seq) = messages.iter().filter_map(|m| m.sequence_num).max() {
-                state.update_conversation_sequence(cid, max_seq);
+                SequenceHandler::update_conversation_sequence(state, cid, max_seq);
             }
         }
     }
@@ -516,7 +549,10 @@ impl ConversationHandler {
                         ));
                     }
                     Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!("Failed to fetch conversation: {}", e)));
+                        let _ = tx.send(UiEvent::Error(format!(
+                            "Failed to fetch conversation: {}",
+                            e
+                        )));
                     }
                 }
             });
@@ -561,7 +597,9 @@ impl ConversationHandler {
             );
         }
 
-        state.conversation_messages.insert(conv.id, messages.clone());
+        state
+            .conversation_messages
+            .insert(conv.id, messages.clone());
 
         if state.cid == Some(conv.id) {
             state.messages = messages;

@@ -238,7 +238,7 @@ impl EventDispatcher {
 
             UiEvent::SendPing => {
                 debug!("Manual ping requested");
-                state.send_ping();
+                SequenceHandler::send_ping(state);
             }
 
             _ => {

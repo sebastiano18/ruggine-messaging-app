@@ -4,6 +4,7 @@ use crate::state::core::AppState;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use crate::app::events::buffer_handler::BufferHandler;
+use crate::app::events::sequence_handler::SequenceHandler;
 
 pub struct UserNotificationHandler;
 
@@ -34,7 +35,7 @@ impl UserNotificationHandler {
         }
 
         if sequence > 0 {
-            //state.user_sequence_confirmed = sequence;
+            SequenceHandler::update_user_sequence(state, sequence);
         }
 
         Self::process_user_notification(state, sequence, event_type, event_data, conversation_id, recovery);
@@ -51,7 +52,7 @@ impl UserNotificationHandler {
 
             for buffered_event in buffered_events {
                 if let Some(event_seq) = buffered_event.get("sequence").and_then(|s| s.as_u64()) {
-                    // state.user_sequence_confirmed = event_seq;
+                    SequenceHandler::update_user_sequence(state, event_seq);
 
                     let evt_type = buffered_event
                         .get("event_type")
@@ -163,33 +164,14 @@ impl UserNotificationHandler {
                     msg.id
                 );
 
-                if let Some(conv_seq) = msg.sequence_num {
-                    let current = state
-                        .conversation_sequences_confirmed
-                        .get(&msg.conversation_id)
-                        .copied()
-                        .unwrap_or(0);
-
-                    if conv_seq > current {
-                        /*state
-                             .conversation_sequences_confirmed
-                             .insert(msg.conversation_id, conv_seq);*/
-                        debug!(
-                            "Updated conversation {} sequence from {} to {} via UserEvent",
-                            msg.conversation_id, current, conv_seq
-                        );
-                    }
-                }
-
                 return;
             }
 
             if let Some(conv_seq) = msg.sequence_num {
-                /*state
-                    .conversation_sequences_confirmed
-                    .insert(msg.conversation_id, conv_seq);*/
+                use super::sequence_handler::SequenceHandler;
+                SequenceHandler::update_conversation_sequence(state, msg.conversation_id, conv_seq);
                 debug!(
-                    "Set conversation {} sequence to {} via UserEvent (trusted from user_seq)",
+                    "Updated conversation {} sequence to {} via UserEvent",
                     msg.conversation_id, conv_seq
                 );
             }
@@ -204,9 +186,7 @@ impl UserNotificationHandler {
                     .binary_search_by(|existing| {
                         match (existing.sequence_num, msg.sequence_num) {
                             (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
-                            _ => existing
-                                .created_at
-                                .cmp(&msg.created_at)
+                            _ => existing.created_at.cmp(&msg.created_at)
                                 .then_with(|| existing.id.cmp(&msg.id)),
                         }
                     })
@@ -214,9 +194,7 @@ impl UserNotificationHandler {
             } else {
                 cache
                     .binary_search_by(|existing| {
-                        existing
-                            .created_at
-                            .cmp(&msg.created_at)
+                        existing.created_at.cmp(&msg.created_at)
                             .then_with(|| existing.id.cmp(&msg.id))
                     })
                     .unwrap_or_else(|pos| pos)
@@ -224,21 +202,21 @@ impl UserNotificationHandler {
 
             cache.insert(cache_insert_pos, msg.clone());
             debug!(
-                "Added UserEvent message {} to cache at position {} (seq: {:?})",
-                msg.id, cache_insert_pos, msg.sequence_num
+                "UserEvent message {} cached at position {} for conversation {}",
+                msg.id, cache_insert_pos, msg.conversation_id
             );
 
-            if state.cid == Some(msg.conversation_id) {
-                if !state.messages.iter().any(|m| m.id == msg.id) {
+            if Some(msg.conversation_id) == state.cid {
+                let already_in_ui = state.messages.iter().any(|m| m.id == msg.id);
+
+                if !already_in_ui {
                     let ui_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
                         state
                             .messages
                             .binary_search_by(|existing| {
                                 match (existing.sequence_num, msg.sequence_num) {
                                     (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
-                                    _ => existing
-                                        .created_at
-                                        .cmp(&msg.created_at)
+                                    _ => existing.created_at.cmp(&msg.created_at)
                                         .then_with(|| existing.id.cmp(&msg.id)),
                                 }
                             })
@@ -247,9 +225,7 @@ impl UserNotificationHandler {
                         state
                             .messages
                             .binary_search_by(|existing| {
-                                existing
-                                    .created_at
-                                    .cmp(&msg.created_at)
+                                existing.created_at.cmp(&msg.created_at)
                                     .then_with(|| existing.id.cmp(&msg.id))
                             })
                             .unwrap_or_else(|pos| pos)
@@ -340,6 +316,12 @@ impl UserNotificationHandler {
 
             let last_activity = std::cmp::max(created_at, last_message_time);
 
+            let last_msg_seq = conv_obj
+                .get("last_message")
+                .and_then(|msg| msg.get("sequence_num"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
             let conversation = ConversationDto {
                 id,
                 kind,
@@ -348,6 +330,7 @@ impl UserNotificationHandler {
                 created_at,
                 last_read_sequence,
                 last_activity,
+                last_msg_seq,
             };
 
             let mut messages = Vec::new();
