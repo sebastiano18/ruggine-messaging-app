@@ -1,0 +1,463 @@
+use crate::app::events::helpers;
+use crate::models::*;
+use crate::state::core::AppState;
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+use crate::app::events::buffer_handler::BufferHandler;
+
+pub struct UserNotificationHandler;
+
+impl UserNotificationHandler {
+    pub fn handle_user_notification(
+        state: &mut AppState,
+        sequence: u64,
+        event_type: String,
+        event_data: serde_json::Value,
+        conversation_id: Option<Uuid>,
+        recovery: bool,
+    ) {
+        let expected = state.user_sequence_confirmed + 1;
+
+        if sequence > expected {
+            warn!(
+                "User event seq {} out of order (expected {}), buffering",
+                sequence, expected
+            );
+            BufferHandler::buffer_user_event_for_reorder(state, sequence, event_data);
+            return;
+        } else if sequence < expected && sequence > 0 {
+            debug!(
+                "User event seq {} already processed (expected {}), skipping",
+                sequence, expected
+            );
+            return;
+        }
+
+        if sequence > 0 {
+            //state.user_sequence_confirmed = sequence;
+        }
+
+        Self::process_user_notification(state, sequence, event_type, event_data, conversation_id, recovery);
+
+        debug!("User event seq {} processed normally", sequence);
+
+        let buffered_events = BufferHandler::try_deliver_buffered_user_events(state);
+        if !buffered_events.is_empty() {
+            info!(
+                "Delivering {} buffered user events after processing seq {}",
+                buffered_events.len(),
+                sequence
+            );
+
+            for buffered_event in buffered_events {
+                if let Some(event_seq) = buffered_event.get("sequence").and_then(|s| s.as_u64()) {
+                    // state.user_sequence_confirmed = event_seq;
+
+                    let evt_type = buffered_event
+                        .get("event_type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let conv_id = buffered_event
+                        .get("conversation_id")
+                        .and_then(|id| id.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok());
+
+                    Self::process_user_notification(state, event_seq, evt_type, buffered_event.clone(), conv_id, false);
+                }
+            }
+        }
+    }
+
+    fn process_user_notification(
+        state: &mut AppState,
+        sequence: u64,
+        event_type: String,
+        event_data: serde_json::Value,
+        conversation_id: Option<Uuid>,
+        recovery: bool,
+    ) {
+        debug!(
+            "User notification - seq: {}, type: {}, recovery: {}",
+            sequence, event_type, recovery
+        );
+
+        if recovery {
+            state.sequence_stats.events_recovered += 1;
+            info!("Processing recovery event: seq {} type {}", sequence, event_type);
+        }
+
+        match event_type.as_str() {
+            "new_message" => {
+                Self::handle_new_message(state, event_data);
+            }
+            "conversation_deleted" => {
+                if let Some(cid) = conversation_id {
+                    info!(
+                        "Applying conversation_deleted from UserNotification for {}",
+                        cid
+                    );
+                    let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
+                } else {
+                    warn!("conversation_deleted notification without conversation_id");
+                }
+            }
+            "conversation_created_complete" => {
+                Self::handle_conversation_created_complete(state, event_data);
+            }
+            _ => {
+                debug!("Unhandled notification type: {}", event_type);
+            }
+        }
+
+        if let Some(conv_id) = conversation_id {
+            if let Some(current_cid) = state.cid {
+                if current_cid == conv_id {
+                    let seq = state
+                        .conversation_sequences_confirmed
+                        .get(&conv_id)
+                        .copied()
+                        .or_else(|| state.conversation_sequences.get(&conv_id).copied());
+
+                    if let Some(seq) = seq {
+                        let outgoing = Outgoing::MarkRead {
+                            conversation_id: conv_id,
+                            sequence_num: seq,
+                        };
+                        let _ = state.ui_to_net_tx.try_send(outgoing);
+                        debug!("Auto mark_read for conversation {} up to seq {}", conv_id, seq);
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_new_message(state: &mut AppState, event_data: serde_json::Value) {
+        let conversation_sequence = event_data
+            .get("conversation_sequence")
+            .and_then(|v| v.as_u64())
+            .map(|seq| seq as u64);
+
+        let message_data = event_data.get("message").unwrap_or(&event_data);
+
+        if let Ok(mut msg) = serde_json::from_value::<MessageDto>(message_data.clone()) {
+            if let Some(conv_seq) = conversation_sequence {
+                msg.sequence_num = Some(conv_seq);
+            }
+
+            info!(
+                "Processing new_message from UserEvent (msg_id: {}, conv_seq: {:?})",
+                msg.id, msg.sequence_num
+            );
+
+            let already_in_cache = state
+                .conversation_messages
+                .get(&msg.conversation_id)
+                .map(|cache| cache.iter().any(|m| m.id == msg.id))
+                .unwrap_or(false);
+
+            if already_in_cache {
+                debug!(
+                    "UserEvent message {} already in cache (from WebSocket), skipping",
+                    msg.id
+                );
+
+                if let Some(conv_seq) = msg.sequence_num {
+                    let current = state
+                        .conversation_sequences_confirmed
+                        .get(&msg.conversation_id)
+                        .copied()
+                        .unwrap_or(0);
+
+                    if conv_seq > current {
+                        /*state
+                             .conversation_sequences_confirmed
+                             .insert(msg.conversation_id, conv_seq);*/
+                        debug!(
+                            "Updated conversation {} sequence from {} to {} via UserEvent",
+                            msg.conversation_id, current, conv_seq
+                        );
+                    }
+                }
+
+                return;
+            }
+
+            if let Some(conv_seq) = msg.sequence_num {
+                /*state
+                    .conversation_sequences_confirmed
+                    .insert(msg.conversation_id, conv_seq);*/
+                debug!(
+                    "Set conversation {} sequence to {} via UserEvent (trusted from user_seq)",
+                    msg.conversation_id, conv_seq
+                );
+            }
+
+            let cache = state
+                .conversation_messages
+                .entry(msg.conversation_id)
+                .or_insert_with(Vec::new);
+
+            let cache_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
+                cache
+                    .binary_search_by(|existing| {
+                        match (existing.sequence_num, msg.sequence_num) {
+                            (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                            _ => existing
+                                .created_at
+                                .cmp(&msg.created_at)
+                                .then_with(|| existing.id.cmp(&msg.id)),
+                        }
+                    })
+                    .unwrap_or_else(|pos| pos)
+            } else {
+                cache
+                    .binary_search_by(|existing| {
+                        existing
+                            .created_at
+                            .cmp(&msg.created_at)
+                            .then_with(|| existing.id.cmp(&msg.id))
+                    })
+                    .unwrap_or_else(|pos| pos)
+            };
+
+            cache.insert(cache_insert_pos, msg.clone());
+            debug!(
+                "Added UserEvent message {} to cache at position {} (seq: {:?})",
+                msg.id, cache_insert_pos, msg.sequence_num
+            );
+
+            if state.cid == Some(msg.conversation_id) {
+                if !state.messages.iter().any(|m| m.id == msg.id) {
+                    let ui_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
+                        state
+                            .messages
+                            .binary_search_by(|existing| {
+                                match (existing.sequence_num, msg.sequence_num) {
+                                    (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                                    _ => existing
+                                        .created_at
+                                        .cmp(&msg.created_at)
+                                        .then_with(|| existing.id.cmp(&msg.id)),
+                                }
+                            })
+                            .unwrap_or_else(|pos| pos)
+                    } else {
+                        state
+                            .messages
+                            .binary_search_by(|existing| {
+                                existing
+                                    .created_at
+                                    .cmp(&msg.created_at)
+                                    .then_with(|| existing.id.cmp(&msg.id))
+                            })
+                            .unwrap_or_else(|pos| pos)
+                    };
+
+                    state.messages.insert(ui_insert_pos, msg.clone());
+                    debug!(
+                        "Added UserEvent message {} to UI at position {} (seq: {:?})",
+                        msg.id, ui_insert_pos, msg.sequence_num
+                    );
+                } else {
+                    debug!("UserEvent message {} already in UI, skipping", msg.id);
+                }
+            } else {
+                debug!(
+                    "UserEvent message {} cached for conversation {} (not current: {:?})",
+                    msg.id, msg.conversation_id, state.cid
+                );
+
+                if Some(msg.author_id) != state.user_id {
+                    let current_unread = state
+                        .conversation_unread_counts
+                        .get(&msg.conversation_id)
+                        .copied()
+                        .unwrap_or(0);
+
+                    state
+                        .conversation_unread_counts
+                        .insert(msg.conversation_id, current_unread + 1);
+
+                    debug!(
+                        "Incremented unread count for conversation {} from {} to {} (new message from {})",
+                        msg.conversation_id,
+                        current_unread,
+                        current_unread + 1,
+                        msg.author_username
+                    );
+                }
+            }
+
+            super::utils::move_conversation_to_top(state, msg.conversation_id);
+        }
+    }
+
+    fn handle_conversation_created_complete(state: &mut AppState, event_data: serde_json::Value) {
+        if let Some(conv_obj) = event_data.get("conversation") {
+            let id = conv_obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::nil);
+
+            let kind_str = conv_obj
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("direct_message");
+
+            let kind = kind_str.to_string();
+
+            let owner_id = conv_obj
+                .get("owner_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::nil);
+
+            let created_at = conv_obj
+                .get("created_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let title = conv_obj
+                .get("display_title")
+                .and_then(|t| t.as_str())
+                .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
+                .unwrap_or("")
+                .to_string();
+
+            let last_read_sequence = conv_obj
+                .get("last_read_sequence")
+                .and_then(|s| s.as_i64())
+                .unwrap_or(0);
+
+            let last_message_time = conv_obj
+                .get("last_message")
+                .and_then(|msg| msg.get("created_at"))
+                .and_then(|t| t.as_i64())
+                .unwrap_or(created_at);
+
+            let last_activity = std::cmp::max(created_at, last_message_time);
+
+            let conversation = ConversationDto {
+                id,
+                kind,
+                title: title.clone(),
+                owner_id,
+                created_at,
+                last_read_sequence,
+                last_activity,
+            };
+
+            let mut messages = Vec::new();
+            if let Some(last_msg) = conv_obj.get("last_message") {
+                let msg_id = last_msg
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .unwrap_or_else(Uuid::new_v4);
+
+                let msg_author_id = last_msg
+                    .get("author_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .unwrap_or_else(Uuid::nil);
+
+                let msg_author_username = last_msg
+                    .get("author_username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let msg_content = last_msg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let msg_created_at = last_msg
+                    .get("created_at")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                let msg_sequence = last_msg.get("sequence_num").and_then(|v| v.as_u64());
+
+                messages.push(MessageDto {
+                    id: msg_id,
+                    author_id: msg_author_id,
+                    author_username: msg_author_username.clone(),
+                    conversation_id: id,
+                    content: msg_content,
+                    created_at: msg_created_at,
+                    sequence_num: msg_sequence,
+                    client_msg_id: None,
+                    is_confirmed: Some(true),
+                });
+            }
+
+            if state.dm_stubs.contains_key(&id) {
+                state.remove_dm_stub(id);
+                info!("Removed DM stub {} after receiving complete conversation", id);
+            }
+
+            if let Some(ref mut conversations) = state.conversations {
+                conversations.retain(|c| c.id != id);
+                conversations.push(conversation.clone());
+            } else {
+                state.conversations = Some(vec![conversation.clone()]);
+            }
+
+            if !messages.is_empty() {
+                state.conversation_messages.insert(id, messages.clone());
+
+                if state.cid == Some(id) {
+                    state.messages = messages.clone();
+                }
+            }
+
+            if let Some(first_msg) = messages.first() {
+                if let Some(msg_seq) = first_msg.sequence_num {
+                    let unread = std::cmp::max(0, msg_seq as i64 - conversation.last_read_sequence);
+
+                    if first_msg.author_id != state.user_id.unwrap_or(Uuid::nil()) && unread > 0 {
+                        state.conversation_unread_counts.insert(id, unread);
+
+                        info!(
+                            "New conversation '{}' has {} unread messages (author: {})",
+                            conversation.title, unread, first_msg.author_username
+                        );
+                    } else {
+                        state.conversation_unread_counts.insert(id, 0);
+                    }
+                } else {
+                    state.conversation_unread_counts.insert(id, 0);
+                }
+            } else {
+                state.conversation_unread_counts.insert(id, 0);
+            }
+
+            if state.page == Page::Chat && (state.cid == Some(id) || state.cid.is_none()) {
+                state.cid = Some(id);
+                state.conv_title = conversation.title.clone();
+
+                state.conversation_unread_counts.insert(id, 0);
+
+                if let Some(cached) = state.conversation_messages.get(&id) {
+                    state.messages = cached.clone();
+                }
+            }
+
+            helpers::add_system_message(
+                state,
+                format!("Nuova conversazione '{}' creata e sincronizzata", title),
+            );
+
+            info!("Successfully processed conversation_created_complete for {}", id);
+
+            super::utils::move_conversation_to_top(state, id);
+        } else {
+            warn!("conversation_created_complete missing conversation object");
+        }
+    }
+}

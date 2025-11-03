@@ -1,6 +1,7 @@
 use crate::models::{ConversationDto, MessageDto, Outgoing, UiEvent, WsStatus};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use crate::app::events::buffer_handler::BufferHandler;
 
 pub struct WebSocketHandler;
 
@@ -67,7 +68,7 @@ impl WebSocketHandler {
                     "Message seq {} out of order (expected {}), buffering",
                     seq, expected
                 );
-                state.buffer_message_for_reorder(msg);
+                BufferHandler::buffer_message_for_reorder(state, msg);
                 return;
             } else if seq < expected {
                 debug!("Message seq {} already processed, skipping", seq);
@@ -75,10 +76,10 @@ impl WebSocketHandler {
             }
 
             // Aggiorna sequenze
-            state.update_conversation_sequence(message_conversation_id, seq);
-            state
+            // state.update_conversation_sequence(message_conversation_id, seq);
+            /*state
                 .conversation_sequences_confirmed
-                .insert(message_conversation_id, seq);
+                .insert(message_conversation_id, seq);*/
 
             debug!("Message seq {} matches expected, processing normally", seq);
         }
@@ -239,7 +240,7 @@ impl WebSocketHandler {
         }
 
         // ✅ CONSEGNA MESSAGGI BUFFERIZZATI
-        let buffered_messages = state.try_deliver_buffered_messages(message_conversation_id);
+        let buffered_messages = BufferHandler::try_deliver_buffered_messages(state, message_conversation_id);
         if !buffered_messages.is_empty() {
             info!(
                 "Delivering {} buffered messages for conversation {}",
@@ -293,7 +294,7 @@ impl WebSocketHandler {
         }
     }
 
-    /// ⭐⭐⭐ FUNZIONE HELPER CENTRALIZZATA PER AUTO-MARK_READ ⭐⭐⭐
+    ///  FUNZIONE HELPER CENTRALIZZATA PER AUTO-MARK_READ 
     ///
     /// Controlla se inviare automaticamente mark_read quando un messaggio viene aggiunto alla cache.
     /// Questa funzione viene chiamata ogni volta che un messaggio è inserito in cache,
@@ -401,7 +402,6 @@ impl WebSocketHandler {
             Self::verify_cache_sequence_integrity(state, msg.conversation_id);
         }
 
-        // ⭐⭐⭐ AUTO-MARK_READ: Controlla e invia mark_read se necessario ⭐⭐⭐
         // Questo viene chiamato per TUTTI i messaggi aggiunti alla cache, indipendentemente dalla fonte:
         // - Messaggi diretti dal WebSocket (WsIncoming)
         // - Messaggi dal buffer di riordino

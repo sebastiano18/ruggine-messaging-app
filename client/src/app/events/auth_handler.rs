@@ -1,123 +1,102 @@
 // events/auth_handler.rs
-use crate::models::{UiEvent, LoginState, Page, WsStatus, MessageDto};
+use crate::models::*;
+use crate::state::core::AppState;
+use reqwest::StatusCode;
 use tracing::info;
-use uuid::Uuid;
 
 pub struct AuthHandler;
 
 impl AuthHandler {
-    pub fn handle(state: &mut crate::state::core::AppState, event: UiEvent) {
-        match event {
-            UiEvent::LoginStarted => {
-                state.login_state = LoginState::LoggingIn;
-                crate::app::events::helpers::add_system_message(state, "Effettuando login...".into());
-            }
-            UiEvent::RegisterStarted => {
-                state.login_state = LoginState::Registering;
-                crate::app::events::helpers::add_system_message(state, "Registrando utente...".into());
-            }
-            UiEvent::Logged(token, user_id, initial_sequence) => {
-                Self::handle_login_success(state, token, user_id, initial_sequence);
-            }
-            UiEvent::LoggedOut => {
-                Self::handle_logout(state);
-            }
-            _ => unreachable!("Invalid auth event"),
-        }
+    pub fn handle_login_started(state: &mut AppState) {
+        state.login_state = LoginState::LoggingIn;
+        info!("Login started");
     }
 
-    fn handle_login_success(
-        state: &mut crate::state::core::AppState,
-        token: String,
-        user_id: Uuid,
-        initial_sequence: u64
-    ) {
+    pub fn handle_register_started(state: &mut AppState) {
+        state.login_state = LoginState::Registering;
+        info!("Registration started");
+    }
+
+    pub fn handle_logged(state: &mut AppState, token: String, user_id: uuid::Uuid, last_sequence: u64) {
+        info!(
+            "User logged in - user_id: {}, initial sequence: {}",
+            user_id, last_sequence
+        );
+
         state.token = Some(token.clone());
         state.user_id = Some(user_id);
-        state.login_state = LoginState::LoggedIn;
-        state.page = Page::Conversations;
 
-        // Inizializza il sistema DUAL sequences
-        state.user_sequence_confirmed = initial_sequence;
-        state.user_sequence_received = initial_sequence;
-
-        // Clear conversation sequences for fresh start
+        state.user_sequence_confirmed = last_sequence;
+        state.user_sequence_received = last_sequence;
         state.conversation_sequences.clear();
         state.conversation_sequences_confirmed.clear();
 
-        // Reset recovery state
-        state.is_recovering_user_events = false;
-        state.is_recovering_messages.clear();
-        state.pending_resume_requests = 0;
-
-        // Reset stats
+        state.login_state = LoginState::LoggedIn;
+        state.page = Page::Conversations;
         state.sequence_stats = Default::default();
-
-        let success_msg = if initial_sequence > 0 {
-            format!("Login effettuato con successo! Sequenza utente iniziale: #{}", initial_sequence)
-        } else {
-            "Login effettuato con successo".into()
-        };
-
-        crate::app::events::helpers::add_system_message(state, success_msg);
-
-        info!("User {} logged in successfully with initial user sequence: {}", user_id, initial_sequence);
+        state.request_ws_reconnect = true;
     }
 
-    fn handle_logout(state: &mut crate::state::core::AppState) {
-        info!("User logout");
+    pub fn handle_logged_out(state: &mut AppState) {
+        info!("User logged out");
 
-        // Shutdown WebSocket gracefully
         if let Some(ctrl) = state.ws_ctrl.take() {
             let _ = ctrl.shutdown.send(());
         }
 
-        // Complete state reset
         state.token = None;
         state.user_id = None;
         state.page = Page::Auth;
-        state.login_state = LoginState::Idle;
-        state.password.clear();
         state.cid = None;
-        state.conv_title.clear();
-        state.input.clear();
         state.messages.clear();
         state.conversations = None;
-        state.ws_status = WsStatus::Disconnected;
-        state.request_ws_reconnect = false;
-        state.request_conversations_refresh = false;
-
-        // Clear group management state
-        state.group_name.clear();
-        state.dm_user_username_input.clear();
-        state.invite_conversation_id.clear();
-        state.last_created_invite = None;
-        state.last_invite_token = None;
-
-        // Clear conversation cache
         state.conversation_messages.clear();
-        state.is_initial_load_complete = false;
-        state.is_loading = false;
+        state.login_state = LoginState::Idle;
+        state.ws_status = WsStatus::Disconnected;
         state.dm_stubs.clear();
 
-        // Reset del sistema DUAL sequences
         state.user_sequence_confirmed = 0;
         state.user_sequence_received = 0;
         state.conversation_sequences.clear();
         state.conversation_sequences_confirmed.clear();
-
-        // Reset recovery state
-        state.is_recovering_user_events = false;
-        state.is_recovering_messages.clear();
-        state.pending_resume_requests = 0;
-
-        // Reset ping/pong
-        state.last_ping_time = std::time::Instant::now();
-        state.missed_pings = 0;
-
-        // Reset stats
         state.sequence_stats = Default::default();
+    }
 
-        crate::app::events::helpers::add_system_message(state, "Logout effettuato".into());
+    pub fn handle_delete_account_start(state: &mut AppState) {
+        state.confirm_delete_account = true;
+    }
+
+    pub fn handle_delete_account_cancel(state: &mut AppState) {
+        state.confirm_delete_account = false;
+        let _ = state.ui_tx.send(UiEvent::Info("Eliminazione annullata".into()));
+    }
+
+    pub fn handle_delete_account_confirm(state: &mut AppState) {
+        state.confirm_delete_account = false;
+
+        let Some(token) = state.token.clone() else {
+            let _ = state.ui_tx.send(UiEvent::LoggedOut);
+            return;
+        };
+
+        let base = state.base.clone();
+        let tx = state.ui_tx.clone();
+
+        state.rt.spawn(async move {
+            match crate::api::auth::delete_account(&base, &token).await {
+                Ok(()) => {
+                    let _ = tx.send(UiEvent::LoggedOut);
+                }
+                Err(e) => {
+                    if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
+                        if req_err.status() == Some(StatusCode::UNAUTHORIZED) {
+                            let _ = tx.send(UiEvent::LoggedOut);
+                            return;
+                        }
+                    }
+                    let _ = tx.send(UiEvent::Error(format!("Eliminazione account fallita: {e}")));
+                }
+            }
+        });
     }
 }

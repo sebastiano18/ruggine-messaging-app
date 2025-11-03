@@ -6,7 +6,6 @@ use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::data_loader::DataLoader;
 
 #[derive(Debug, Default)]
 pub struct SequenceStats {
@@ -210,9 +209,6 @@ impl AppState {
         }
     }
 
-    pub fn load_single_conversation_messages(&self, cid: Uuid) {
-        DataLoader::load_single_conversation_messages(self, cid);
-    }
 
     pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
         self.pending_deletion = Some(PendingDeletion {
@@ -728,90 +724,5 @@ impl AppState {
             }
         });
     }
-
-    pub fn try_deliver_buffered_messages(&mut self, conversation_id: Uuid) -> Vec<MessageDto> {
-        let mut messages_to_deliver = Vec::new();
-
-        if let Some(buffer) = self.message_reorder_buffer.get_mut(&conversation_id) {
-            let mut current_expected = self
-                .conversation_sequences_confirmed
-                .get(&conversation_id)
-                .copied()
-                .unwrap_or(0)
-                + 1;
-
-            let mut sequences_to_remove = Vec::new();
-
-            while let Some(msg) = buffer.get(&current_expected) {
-                messages_to_deliver.push(msg.clone());
-                sequences_to_remove.push(current_expected);
-                current_expected += 1;
-            }
-
-            for seq in sequences_to_remove {
-                buffer.remove(&seq);
-            }
-
-            if buffer.is_empty() {
-                self.message_reorder_buffer.remove(&conversation_id);
-            }
-        }
-
-        messages_to_deliver
-    }
-
-    pub fn try_deliver_buffered_user_events(&mut self) -> Vec<serde_json::Value> {
-        let mut events_to_deliver = Vec::new();
-
-        let mut current_expected = self.user_sequence_confirmed + 1;
-        let mut sequences_to_remove = Vec::new();
-
-        while let Some(events) = self.user_event_reorder_buffer.get(&current_expected) {
-            events_to_deliver.extend(events.clone());
-            sequences_to_remove.push(current_expected);
-            current_expected += 1;
-        }
-
-        for seq in sequences_to_remove {
-            self.user_event_reorder_buffer.remove(&seq);
-        }
-
-        events_to_deliver
-    }
-
-    pub fn buffer_message_for_reorder(&mut self, msg: MessageDto) {
-        if let Some(seq) = msg.sequence_num {
-            let expected = self
-                .conversation_sequences_confirmed
-                .get(&msg.conversation_id)
-                .copied()
-                .unwrap_or(0)
-                + 1;
-
-            if seq > expected {
-                debug!(
-                    "Buffering message seq {} for conversation {} (expected {})",
-                    seq, msg.conversation_id, expected
-                );
-
-                self.message_reorder_buffer
-                    .entry(msg.conversation_id)
-                    .or_insert_with(BTreeMap::new)
-                    .insert(seq, msg);
-            }
-        }
-    }
-
-    pub fn buffer_user_event_for_reorder(&mut self, seq: u64, event: serde_json::Value) {
-        let expected = self.user_sequence_confirmed + 1;
-
-        if seq > expected {
-            debug!("Buffering user event seq {} (expected {})", seq, expected);
-
-            self.user_event_reorder_buffer
-                .entry(seq)
-                .or_insert_with(Vec::new)
-                .push(event);
-        }
-    }
+    
 }
