@@ -107,6 +107,9 @@ impl UserNotificationHandler {
             "conversation_created_complete" => {
                 Self::handle_conversation_created_complete(state, event_data);
             }
+            "new_conversation" => {
+                Self::handle_new_conversation(state, event_data);
+            }
             _ => {
                 debug!("Unhandled notification type: {}", event_type);
             }
@@ -441,6 +444,91 @@ impl UserNotificationHandler {
             super::utils::move_conversation_to_top(state, id);
         } else {
             warn!("conversation_created_complete missing conversation object");
+        }
+    }
+
+    fn handle_new_conversation(state: &mut AppState, event_data: serde_json::Value) {
+        if let Some(conv_obj) = event_data.get("conversation") {
+            let id = conv_obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::nil);
+
+            let kind = conv_obj
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("group")
+                .to_string();
+
+            let owner_id = conv_obj
+                .get("owner_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::nil);
+
+            let created_at = conv_obj
+                .get("created_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let title = conv_obj
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("Gruppo")
+                .to_string();
+
+            let last_read_sequence = conv_obj
+                .get("last_read_sequence")
+                .and_then(|s| s.as_i64())
+                .unwrap_or(0);
+
+            let last_activity = conv_obj
+                .get("last_activity")
+                .and_then(|t| t.as_i64())
+                .unwrap_or(created_at);
+
+            let last_msg_seq = conv_obj
+                .get("last_msg_seq")
+                .and_then(|s| s.as_i64())
+                .unwrap_or(0);
+
+            let conversation = ConversationDto {
+                id,
+                kind,
+                title,
+                owner_id,
+                created_at,
+                last_read_sequence,
+                last_activity,
+                last_msg_seq,
+            };
+
+            info!("📩 Aggiunta alla conversazione '{}' ({})", conversation.title, id);
+
+            // Aggiungi la conversazione alla lista
+            if let Some(ref mut convs) = state.conversations {
+                if !convs.iter().any(|c| c.id == id) {
+                    convs.push(conversation.clone());
+                    state.conversation_unread_counts.insert(id, 0);
+                    state.conversation_sequences.insert(id, 0);
+                    state.conversation_sequences_confirmed.insert(id, 0);
+                    state.conversation_messages.insert(id, Vec::new());
+
+                    helpers::add_system_message(
+                        state,
+                        format!("✅ Sei stato aggiunto al gruppo '{}'", conversation.title),
+                    );
+
+                    super::utils::move_conversation_to_top(state, id);
+
+                    info!("New conversation '{}' added to list", conversation.title);
+                } else {
+                    debug!("Conversation {} already exists, skipping", id);
+                }
+            }
+        } else {
+            warn!("new_conversation event missing conversation object");
         }
     }
 }
