@@ -83,6 +83,8 @@ pub struct ConversationDto {
     pub title: String,
     pub owner_id: Uuid,
     pub created_at: i64,
+    pub last_read_sequence: i64,
+    pub last_activity: i64
 }
 
 #[derive(Deserialize, Serialize)]
@@ -161,6 +163,10 @@ pub enum Outgoing {
     },
     DeleteConversation {
         cid: Uuid,
+    },
+    MarkRead {
+        conversation_id: Uuid,
+        sequence_num: u64,
     },
 }
 

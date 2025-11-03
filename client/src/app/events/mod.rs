@@ -152,7 +152,16 @@ impl EventDispatcher {
             | UiEvent::WsControlReady(_)
             | UiEvent::WsError(_)
             | UiEvent::WsIncoming(_) => {
-                WebSocketHandler::handle(state, event);
+                // Se è un messaggio in arrivo, sposta la conversazione in cima
+                if let UiEvent::WsIncoming(ref msg) = event {
+                    let conv_id = msg.conversation_id;
+                    // Delega prima al handler
+                    WebSocketHandler::handle(state, event);
+                    // Poi sposta la conversazione in cima
+                    move_conversation_to_top(state, conv_id);
+                } else {
+                    WebSocketHandler::handle(state, event);
+                }
             }
 
             // ===== NUOVI HANDLER PER INITIAL_STATE =====
@@ -172,6 +181,53 @@ impl EventDispatcher {
 
                 // Salva le conversazioni
                 state.conversations = Some(conversations.clone());
+
+
+                // ⭐ NUOVO: Calcola contatori unread da last_read_sequence del server
+                state.conversation_unread_counts.clear();
+
+                for conv in &conversations {
+                    // Trova l'ultimo messaggio nella cache per questa conversazione
+                    let last_cached_seq = state.conversation_messages
+                        .get(&conv.id)
+                        .and_then(|messages| {
+                            messages.iter()
+                                .filter_map(|m| m.sequence_num)
+                                .max()
+                        });
+
+                    // ⭐ FIX: Usa last_read_sequence dalla conversazione (dato dal server)
+                    // Se c'è una sequence cached maggiore, calcola la differenza
+                    let unread = if let Some(last_seq) = last_cached_seq {
+                        let unread_count = last_seq as i64 - conv.last_read_sequence;
+                        std::cmp::max(0, unread_count)
+                    } else {
+                        // ⭐ IMPORTANTE: Se non ci sono messaggi in cache,
+                        // non possiamo sapere quanti sono unread, quindi mettiamo 0
+                        // Verranno aggiornati quando i messaggi arriveranno
+                        0
+                    };
+
+                    state.conversation_unread_counts.insert(conv.id, unread);
+
+                    if unread > 0 {
+                        debug!(
+                            "Conversation '{}' (id: {}) - last_cached_seq: {:?}, last_read: {}, unread: {}",
+                            conv.title,
+                            conv.id,
+                            last_cached_seq,
+                            conv.last_read_sequence,
+                            unread
+                        );
+                    }
+                }
+
+                let total_unread: i64 = state.conversation_unread_counts.values().sum();
+                info!(
+                    "Loaded {} conversations with {} total unread messages",
+                    conversations.len(),
+                    total_unread
+                );
 
                 // Pulisci eventuali DM stubs che ora esistono come conversazioni reali
                 let mut stubs_to_remove = Vec::new();
@@ -202,36 +258,34 @@ impl EventDispatcher {
                 conversation_id,
                 message,
             } => {
-                debug!("Updating last message for conversation {}", conversation_id);
+                // ⭐ Aggiorna last_activity e calcola messaggi non letti
+                if let Some(ref mut conversations) = state.conversations {
+                    if let Some(conv) = conversations.iter_mut().find(|c| c.id == conversation_id) {
+                        // Aggiorna last_activity con il timestamp del messaggio
+                        conv.last_activity = std::cmp::max(conv.last_activity, message.created_at);
 
-                // Aggiorna la cache dei messaggi
-                let cache = state
+                        // Calcola messaggi non letti
+                        if let Some(last_msg_seq) = message.sequence_num {
+                            let unread = std::cmp::max(0, last_msg_seq as i64 - conv.last_read_sequence);
+                            state.conversation_unread_counts.insert(conversation_id, unread);
+
+                            if unread > 0 {
+                                debug!(
+                                    "Updated unread for '{}': {} messages",
+                                    conv.title, unread
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Aggiungi messaggio alla cache
+                state
                     .conversation_messages
                     .entry(conversation_id)
-                    .or_insert_with(Vec::new);
+                    .or_insert_with(Vec::new)
+                    .push(message);
 
-                // Aggiungi solo se non esiste già
-                if !cache.iter().any(|m| m.id == message.id) {
-                    // Inserisci come ultimo messaggio
-                    cache.push(message.clone());
-                }
-
-                // Aggiorna sequence per questa conversazione se presente
-                if let Some(seq) = message.sequence_num {
-                    //state.conversation_sequences.insert(conversation_id, seq);
-                    //state
-                    // .conversation_sequences_confirmed
-                    //.insert(conversation_id, seq);
-                    debug!(
-                        "Updated conversation {} sequence to {} from last message",
-                        conversation_id, seq
-                    );
-                }
-
-                // Se è la conversazione corrente e non ci sono messaggi, mostra questo
-                if state.cid == Some(conversation_id) && state.messages.is_empty() {
-                    state.messages = vec![message];
-                }
             }
 
             UiEvent::ConversationMessagesReceived {
@@ -294,6 +348,8 @@ impl EventDispatcher {
                         );
                     }
                 }
+
+                // Nota: NON riordiniamo qui perché è solo un caricamento di messaggi esistenti
             }
 
             // ===== PONG EVENT =====
@@ -303,9 +359,9 @@ impl EventDispatcher {
                 user_events_gap,
             } => {
                 debug!(
-        "Pong - server_user_seq: {}, gaps_detected: {}",
-        current_user_sequence, gaps_detected
-    );
+                    "Pong - server_user_seq: {}, gaps_detected: {}",
+                    current_user_sequence, gaps_detected
+                );
 
                 state.sequence_stats.pong_count += 1;
                 state.missed_pings = 0;
@@ -314,9 +370,9 @@ impl EventDispatcher {
                 if let Some(gap) = user_events_gap {
                     if gap.detected {
                         warn!(
-                "User events gap detected: {} events missing (client: {}, server: {})",
-                gap.gap_size, gap.client_seq, gap.server_seq
-            );
+                            "User events gap detected: {} events missing (client: {}, server: {})",
+                            gap.gap_size, gap.client_seq, gap.server_seq
+                        );
                         state.sequence_stats.gaps_detected += 1;
                         state.request_user_events_resume(gap.client_seq);
                     }
@@ -460,7 +516,7 @@ impl EventDispatcher {
                         if let Some(pending_msg) = state.pending_confirmations.get(server_client_id)
                         {
                             info!("    FOUND in pending! Pending msg_id={}, will replace with server msg",
-                      pending_msg.id);
+                                  pending_msg.id);
                             pending_to_remove.push(server_client_id.clone());
                             optimistic_to_remove.push((pending_msg.id, server_client_id.clone()));
                             // Non serve aggiungere, sostituiremo l'ottimistico
@@ -558,6 +614,29 @@ impl EventDispatcher {
                         });
 
                     info!("Final UI message count: {}", state.messages.len());
+                }
+
+                // 🔥 FIX #1: Svuota il buffer dei messaggi in sospeso per questa conversazione
+                if let Some(buffered) = state.message_reorder_buffer.remove(&conversation_id) {
+                    info!(
+                        "Cleared {} buffered messages for conversation {} after resume",
+                        buffered.len(),
+                        conversation_id
+                    );
+                }
+
+                // 🔥 FIX #3: Auto mark_read dopo resume se la conversazione è aperta
+                if let Some(current_cid) = state.cid {
+                    if current_cid == conversation_id {
+                        if let Some(seq) = state.conversation_sequences.get(&conversation_id).copied() {
+                            let outgoing = Outgoing::MarkRead {
+                                conversation_id,
+                                sequence_num: seq,
+                            };
+                            let _ = state.ui_to_net_tx.try_send(outgoing);
+                            info!("Auto mark_read after resume for conversation {} up to seq {}", conversation_id, seq);
+                        }
+                    }
                 }
             }
 
@@ -719,6 +798,19 @@ impl EventDispatcher {
                     .entry(cid)
                     .or_insert(0);
 
+                // ⭐ NUOVO: Azzera contatore unread quando apri la conversazione
+                if state.conversation_unread_counts.contains_key(&cid) {
+                    let old_count = state.conversation_unread_counts.get(&cid).copied().unwrap_or(0);
+                    state.conversation_unread_counts.insert(cid, 0);
+
+                    if old_count > 0 {
+                        debug!(
+                            "Reset unread count for conversation {} from {} to 0 (conversation opened)",
+                            cid, old_count
+                        );
+                    }
+                }
+
                 // IMPORTANTE: Carica dalla cache se disponibile
                 if let Some(cached) = state.conversation_messages.get(&cid) {
                     state.messages = cached.clone();
@@ -727,6 +819,32 @@ impl EventDispatcher {
                     if let Some(max_seq) = cached.iter().filter_map(|m| m.sequence_num).max() {
                         state.conversation_sequences.insert(cid, max_seq);
                         state.conversation_sequences_confirmed.insert(cid, max_seq);
+
+                        // ⭐⭐⭐ NUOVO: INVIA MARK_READ AL SERVER ⭐⭐⭐
+                        if let Err(e) = state.ui_to_net_tx.try_send(Outgoing::MarkRead {
+                            conversation_id: cid,
+                            sequence_num: max_seq,
+                        }) {
+                            warn!("Failed to send mark_read: {}", e);
+                        } else {
+                            info!(
+                                "✅ Sent mark_read for conversation {} up to sequence {}",
+                                cid, max_seq
+                            );
+
+                            // Aggiorna anche last_read_sequence locale nelle conversazioni
+                            if let Some(conversations) = &mut state.conversations {
+                                if let Some(conv) = conversations.iter_mut().find(|c| c.id == cid) {
+                                    let old_last_read = conv.last_read_sequence;
+                                    conv.last_read_sequence = max_seq as i64;
+                                    debug!(
+                                        "Updated local last_read_sequence from {} to {}",
+                                        old_last_read, max_seq
+                                    );
+                                }
+                            }
+                        }
+                        // ⭐⭐⭐ FINE NUOVO CODICE ⭐⭐⭐
                     }
 
                     info!(
@@ -1004,6 +1122,9 @@ impl EventDispatcher {
                 }
 
                 state.remove_dm_stub(conv.id);
+
+                // ⭐ Sposta la conversazione fetchata in cima
+                move_conversation_to_top(state, conv.id);
             }
 
             UiEvent::ConversationListUpdated => {
@@ -1046,7 +1167,7 @@ impl EventDispatcher {
                 // sequence == expected o sequence == 0, processa normalmente
                 if sequence > 0 {
                     // COMMENTATO PER TEST RESUME - client rimane sempre a seq 0
-                     state.user_sequence_confirmed = sequence;
+                    state.user_sequence_confirmed = sequence;
                 }
 
                 process_user_notification(
@@ -1074,7 +1195,7 @@ impl EventDispatcher {
                             buffered_event.get("sequence").and_then(|s| s.as_u64())
                         {
                             // COMMENTATO PER TEST RESUME
-                            // state.user_sequence_confirmed = event_seq;
+                            state.user_sequence_confirmed = event_seq;
 
                             let evt_type = buffered_event
                                 .get("event_type")
@@ -1224,6 +1345,32 @@ impl EventDispatcher {
     }
 }
 
+/// Sposta una conversazione in cima alla lista (più efficiente del riordino completo)
+fn move_conversation_to_top(state: &mut AppState, conversation_id: Uuid) {
+    if let Some(ref mut conversations) = state.conversations {
+        // Trova la posizione della conversazione
+        if let Some(pos) = conversations.iter().position(|c| c.id == conversation_id) {
+            // Se non è già in cima (posizione 0)
+            if pos > 0 {
+                // Rimuovi la conversazione dalla sua posizione attuale
+                let conversation = conversations.remove(pos);
+                // Inseriscila in cima
+                conversations.insert(0, conversation);
+
+                debug!("Moved conversation {} to top", conversation_id);
+            }
+        }
+    }
+}
+
+fn sort_conversations_by_last_activity(state: &mut AppState) {
+    if let Some(ref mut conversations) = state.conversations {
+        // Ordina usando il campo last_activity già presente
+        conversations.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        debug!("Conversations sorted by last_activity");
+    }
+}
+
 fn process_user_notification(
     state: &mut AppState,
     sequence: u64,
@@ -1247,7 +1394,21 @@ fn process_user_notification(
 
     match event_type.as_str() {
         "new_message" => {
-            if let Ok(msg) = serde_json::from_value::<MessageDto>(event_data) {
+            // 🔥 FIX: Estrai conversation_sequence PRIMA di deserializzare message
+            let conversation_sequence = event_data
+                .get("conversation_sequence")
+                .and_then(|v| v.as_u64())
+                .map(|seq| seq as u64);
+
+            // Estrai il campo "message" che contiene i dati del messaggio
+            let message_data = event_data.get("message").unwrap_or(&event_data);
+
+            if let Ok(mut msg) = serde_json::from_value::<MessageDto>(message_data.clone()) {
+                // Imposta sequence_num dal conversation_sequence estratto
+                if let Some(conv_seq) = conversation_sequence {
+                    msg.sequence_num = Some(conv_seq);
+                }
+
                 info!(
                     "Processing new_message from UserEvent seq {} (msg_id: {}, conv_seq: {:?})",
                     sequence, msg.id, msg.sequence_num
@@ -1381,11 +1542,36 @@ fn process_user_notification(
                         );
                     }
                 } else {
+                    // ⭐ Messaggio in conversazione NON corrente
                     debug!(
                         "UserEvent message {} cached for conversation {} (not current: {:?})",
                         msg.id, msg.conversation_id, state.cid
                     );
+
+                    // ⭐ NUOVO: Incrementa contatore unread SOLO se:
+                    // 1. Il messaggio NON è dell'utente corrente
+                    // 2. Il messaggio è stato effettivamente aggiunto alla cache (non bufferizzato)
+                    if Some(msg.author_id) != state.user_id {
+                        let current_unread = state.conversation_unread_counts
+                            .get(&msg.conversation_id)
+                            .copied()
+                            .unwrap_or(0);
+
+                        state.conversation_unread_counts
+                            .insert(msg.conversation_id, current_unread + 1);
+
+                        debug!(
+                            "Incremented unread count for conversation {} from {} to {} (new message from {})",
+                            msg.conversation_id,
+                            current_unread,
+                            current_unread + 1,
+                            msg.author_username
+                        );
+                    }
                 }
+
+                // ⭐ Sposta la conversazione in cima per nuovo messaggio
+                move_conversation_to_top(state, msg.conversation_id);
             }
         }
 
@@ -1445,12 +1631,29 @@ fn process_user_notification(
                     .unwrap_or("")
                     .to_string();
 
+                let last_read_sequence = conv_obj
+                    .get("last_read_sequence")
+                    .and_then(|s| s.as_i64())
+                    .unwrap_or(0);
+
+                // Calcola last_activity
+                let last_message_time = conv_obj
+                    .get("last_message")
+                    .and_then(|msg| msg.get("created_at"))
+                    .and_then(|t| t.as_i64())
+                    .unwrap_or(created_at);
+
+                let last_activity = std::cmp::max(created_at, last_message_time);
+
+
                 let conversation = ConversationDto {
                     id,
                     kind,
                     title,
                     owner_id,
                     created_at,
+                    last_read_sequence,
+                    last_activity
                 };
 
                 let mut messages = Vec::new();
@@ -1512,7 +1715,6 @@ fn process_user_notification(
                 if let Some(ref mut conversations) = state.conversations {
                     conversations.retain(|c| c.id != id);
                     conversations.push(conversation.clone());
-                    conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
                 } else {
                     state.conversations = Some(vec![conversation.clone()]);
                 }
@@ -1522,14 +1724,42 @@ fn process_user_notification(
                     state.conversation_messages.insert(id, messages.clone());
 
                     if state.cid == Some(id) {
-                        state.messages = messages;
+                        state.messages = messages.clone();
                     }
+                }
+
+                // ⭐ NUOVO: Calcola e imposta i messaggi non letti
+                if let Some(first_msg) = messages.first() {
+                    if let Some(msg_seq) = first_msg.sequence_num {
+                        let unread = std::cmp::max(0, msg_seq as i64 - conversation.last_read_sequence);
+
+                        // Solo mostra badge se il messaggio NON è nostro E ci sono messaggi non letti
+                        if first_msg.author_id != state.user_id.unwrap_or(Uuid::nil()) && unread > 0 {
+                            state.conversation_unread_counts.insert(id, unread);
+
+                            info!(
+                                "New conversation '{}' has {} unread messages (author: {})",
+                                conversation.title,
+                                unread,
+                                first_msg.author_username
+                            );
+                        } else {
+                            state.conversation_unread_counts.insert(id, 0);
+                        }
+                    } else {
+                        state.conversation_unread_counts.insert(id, 0);
+                    }
+                } else {
+                    state.conversation_unread_counts.insert(id, 0);
                 }
 
                 // Se siamo in chat e la conversazione è quella corrente (o nessuna selezionata)
                 if state.page == Page::Chat && (state.cid == Some(id) || state.cid.is_none()) {
                     state.cid = Some(id);
                     state.conv_title = conversation.title.clone();
+
+                    // Azzera il contatore se diventa la chat corrente
+                    state.conversation_unread_counts.insert(id, 0);
 
                     if let Some(cached) = state.conversation_messages.get(&id) {
                         state.messages = cached.clone();
@@ -1548,6 +1778,9 @@ fn process_user_notification(
                     "Successfully processed conversation_created_complete for {}",
                     id
                 );
+
+                // ⭐ Sposta la nuova conversazione in cima
+                move_conversation_to_top(state, id);
             } else {
                 warn!("conversation_created_complete missing conversation object");
             }
@@ -1555,6 +1788,29 @@ fn process_user_notification(
 
         _ => {
             debug!("Unhandled notification type: {}", event_type);
+        }
+    }
+
+    // 🔥 FIX #2: Auto mark_read se la conversazione è aperta
+    if let Some(conv_id) = conversation_id {
+        if let Some(current_cid) = state.cid {
+            if current_cid == conv_id {
+                // Usa conversation_sequences_confirmed che è già stato aggiornato
+                // durante il processing del messaggio
+                let seq = state.conversation_sequences_confirmed
+                    .get(&conv_id)
+                    .copied()
+                    .or_else(|| state.conversation_sequences.get(&conv_id).copied());
+
+                if let Some(seq) = seq {
+                    let outgoing = Outgoing::MarkRead {
+                        conversation_id: conv_id,
+                        sequence_num: seq,
+                    };
+                    let _ = state.ui_to_net_tx.try_send(outgoing);
+                    debug!("Auto mark_read for conversation {} up to seq {}", conv_id, seq);
+                }
+            }
         }
     }
 }

@@ -225,6 +225,22 @@ impl MessageProcessor {
                     "conversation_id": cid.to_string()
                 })
             }
+
+            Outgoing::MarkRead {
+                conversation_id,
+                sequence_num,
+            } => {
+                debug!(
+                    "Formatting mark_read for conversation {} up to sequence {}",
+                    conversation_id, sequence_num
+                );
+
+                serde_json::json!({
+                    "type": "mark_read",
+                    "conversation_id": conversation_id.to_string(),
+                    "sequence_num": sequence_num
+                })
+            }
         };
 
         serde_json::to_string(&json_obj).map_err(|e| format!("JSON serialization error: {}", e))

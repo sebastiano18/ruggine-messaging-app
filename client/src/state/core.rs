@@ -111,6 +111,9 @@ pub struct AppState {
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
     pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
+
+    //Unread message counter
+    pub conversation_unread_counts: HashMap<Uuid, i64>,
 }
 
 impl AppState {
@@ -190,6 +193,8 @@ impl AppState {
 
             message_reorder_buffer: BTreeMap::new(),
             user_event_reorder_buffer: BTreeMap::new(),
+
+            conversation_unread_counts: HashMap::new(),
         }
     }
 
@@ -332,8 +337,7 @@ impl AppState {
             user_sequence: user_seq,
         });
     }
-
-    // ... resto dei metodi esistenti rimangono invariati ...
+    
 
     pub fn update_user_sequence(&mut self, sequence: u64) {
         let current = self.user_sequence_received;
