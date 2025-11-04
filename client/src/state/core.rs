@@ -136,8 +136,10 @@ pub struct AppState {
     // UI Modals
     pub show_account_modal: bool,
 
-    // UI Messages
-    pub ui_message: Option<String>,
+    // UI Messages - separati per pagina
+    pub ui_message: Option<String>,        // Messaggi per pagine interne (dopo login)
+    pub auth_message: Option<String>,      // Messaggi solo per pagina auth
+    pub auth_message_is_error: bool,       // true = errore (rosso), false = info (verde)
 
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
@@ -197,6 +199,8 @@ impl AppState {
             show_account_modal: false,
 
             ui_message: None,
+            auth_message: None,
+            auth_message_is_error: false,
 
             ui_tx: tx,
             ui_rx: rx,
@@ -560,11 +564,42 @@ impl AppState {
 
     // UI Message handling
     pub fn set_ui_message(&mut self, msg: String) {
-        self.ui_message = Some(msg);
+        // Messaggi per le pagine interne (dopo login)
+        if self.token.is_some() {
+            self.ui_message = Some(msg);
+        }
     }
 
     pub fn clear_ui_message(&mut self) {
         self.ui_message = None;
+    }
+
+    pub fn set_auth_message(&mut self, msg: String, is_error: bool) {
+        // Messaggi per la pagina di autenticazione
+        self.auth_message = Some(msg);
+        self.auth_message_is_error = is_error;
+    }
+
+    pub fn clear_auth_message(&mut self) {
+        self.auth_message = None;
+        self.auth_message_is_error = false;
+    }
+
+    /// Instrada automaticamente il messaggio alla categoria giusta
+    pub fn set_message_info(&mut self, msg: String) {
+        if self.token.is_none() {
+            self.set_auth_message(msg, false); // Info = non errore
+        } else {
+            self.set_ui_message(msg);
+        }
+    }
+
+    pub fn set_message_error(&mut self, msg: String) {
+        if self.token.is_none() {
+            self.set_auth_message(msg, true); // Error = errore
+        } else {
+            self.set_ui_message(msg);
+        }
     }
 
 }

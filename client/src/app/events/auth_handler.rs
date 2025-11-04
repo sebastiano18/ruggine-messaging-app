@@ -1,5 +1,4 @@
 // events/auth_handler.rs
-// events/auth_handler.rs
 use crate::models::*;
 use crate::state::core::AppState;
 use reqwest::StatusCode;
@@ -38,7 +37,7 @@ impl AuthHandler {
         state.request_ws_reconnect = true;
 
         // Pulisci eventuali messaggi di errore dalla schermata di login
-        state.clear_ui_message();
+        state.clear_auth_message();
     }
 
     pub fn handle_logged_out(state: &mut AppState) {

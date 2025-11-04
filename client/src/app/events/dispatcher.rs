@@ -213,12 +213,12 @@ impl EventDispatcher {
 
             UiEvent::Info(msg) => {
                 info!("Info: {}", msg);
-                state.set_ui_message(msg);
+                state.set_message_info(msg);
             }
 
             UiEvent::Error(msg) => {
                 error!("Error: {}", msg);
-                state.set_ui_message(msg);
+                state.set_message_error(msg);
             }
 
             UiEvent::InviteCreated(token) => {
