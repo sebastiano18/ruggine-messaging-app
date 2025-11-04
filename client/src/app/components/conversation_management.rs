@@ -1,9 +1,10 @@
-use crate::models::UiEvent;
 use crate::api;
+use crate::models::{ConversationDto, MessageDto, Outgoing, Page, UiEvent};
 use crate::state::AppState;
 use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Stroke, TextEdit};
+use std::collections::HashSet;
 use tokio::runtime::Handle;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 // Costanti di stile per matching con sidebar
@@ -182,8 +183,8 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
 fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle) {
     section_card(ui, "💬", "Crea Nuove Chat", |ui| {
         ui.columns(2, |columns| {
-            // Nuovo gruppo
-            create_group_subsection(&mut columns[0], s, token, rt);
+            // Nuovo gruppo - ora con popup
+            create_group_button(&mut columns[0], s);
 
             // Chat privata
             create_dm_subsection(&mut columns[1], s);
@@ -191,7 +192,7 @@ fn create_chats_section(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &H
     });
 }
 
-fn create_group_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt: &Handle) {
+fn create_group_button(ui: &mut egui::Ui, s: &mut AppState) {
     styled_frame(ui).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(
@@ -209,63 +210,400 @@ fn create_group_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt:
 
         ui.add_space(8.0);
 
-        labeled_text(ui, "Nome gruppo:", &mut s.group_name, "Es: Team Alpha");
+        ui.vertical_centered(|ui| {
+            if ui
+                .button(
+                    RichText::new("➕ Crea Gruppo")
+                        .size(14.0)
+                        .color(egui::Color32::WHITE),
+                )
+                .clicked()
+            {
+                s.show_create_group_modal = true;
+            }
+        });
 
-        ui.add_space(8.0);
-
-        let can_create = !s.group_name.trim().is_empty();
-        if action_button(ui, "➕ Crea Gruppo", can_create) {
-            let base = s.base.clone();
-            let name = s.group_name.trim().to_string();
-            let tx = s.ui_tx.clone();
-            let token2 = token.to_string();
-            s.group_name.clear();
-
-            rt.spawn(async move {
-                match api::conversation::create_group(&base, &token2, &name).await {
-                    Ok(cid) => {
-                        let _ = tx.send(UiEvent::Info("Gruppo creato! Aggiornamento lista...".into()));
-
-                        // Attendi un momento per permettere al server di processare
-                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-
-                        // Ricarica le conversazioni
-                        match crate::api::conversation::get_conversations(&base, &token2).await {
-                            Ok(conversations) => {
-                                // Invia la lista aggiornata
-                                let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
-
-                                // Prova ad aprire la conversazione
-                                let _ = tx.send(UiEvent::Opened(cid));
-                                let _ = tx.send(UiEvent::Info("Gruppo creato con successo!".into()));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(UiEvent::Error(format!(
-                                    "Gruppo creato ma errore nel refresh: {}",
-                                    e
-                                )));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!(
-                            "Creazione gruppo fallita: {}",
-                            e
-                        )));
-                    }
-                }
-            });
-        }
-
-        if !can_create {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("💡 Inserisci un nome per creare il gruppo")
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(160, 100, 60)),
-            );
-        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("💡 Crea un gruppo e aggiungi partecipanti")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(160, 100, 60)),
+        );
     });
+}
+
+// Popup modale per la creazione del gruppo
+// Popup modale per la creazione del gruppo - stile minimale moderno come auth.rs
+pub fn show_create_group_modal(ctx: &egui::Context, s: &mut AppState) {
+    let mut open = s.show_create_group_modal;
+    let mut should_close = false;
+
+    egui::Window::new("")
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .fixed_size([580.0, 650.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                // Titolo principale
+                ui.label(
+                    RichText::new(format!("{} Crea Nuovo Gruppo", egui_remixicon::icons::GROUP_LINE))
+                        .size(28.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+
+                ui.add_space(30.0);
+
+                // Frame principale senza bordo
+                egui::Frame::none()
+                    .inner_margin(30.0)
+                    .show(ui, |ui| {
+                        ui.set_min_width(520.0);
+
+                        ScrollArea::vertical()
+                            .id_source("create_group_main_scroll")
+                            .max_height(450.0)
+                            .show(ui, |ui| {
+                                // Nome gruppo - Prima riga con indicatore obbligatorio
+                                ui.horizontal(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(RichText::new(egui_remixicon::icons::EDIT_LINE).size(24.0));
+                                    ui.add_space(15.0);
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new("Nome del gruppo").size(14.0).weak());
+                                            ui.label(RichText::new("*").size(16.0).color(ui.visuals().error_fg_color));
+                                        });
+
+                                        let name_field = TextEdit::singleline(&mut s.create_group_popup.group_name)
+                                            .hint_text("Es: Team Alpha")
+                                            .desired_width(ui.available_width() - 60.0);
+
+                                        let response = ui.add(name_field);
+
+                                        // Bordo rosso se vuoto e modificato
+                                        if s.create_group_popup.group_name.trim().is_empty() && response.changed() {
+                                            ui.painter().rect_stroke(
+                                                response.rect,
+                                                2.0,
+                                                egui::Stroke::new(1.5, ui.visuals().error_fg_color)
+                                            );
+                                        }
+                                    });
+                                });
+
+                                ui.add_space(24.0);
+
+                                // Input manuale per aggiungere username
+                                ui.horizontal(|ui| {
+                                    ui.add_space(10.0);
+                                    ui.label(RichText::new(egui_remixicon::icons::USER_ADD_LINE).size(24.0));
+                                    ui.add_space(15.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new("Aggiungi partecipanti").size(14.0).weak());
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                TextEdit::singleline(&mut s.create_group_popup.manual_username_input)
+                                                    .hint_text("Scrivi username...")
+                                                    .desired_width(ui.available_width() - 70.0)
+                                            );
+
+                                            let can_add = !s.create_group_popup.manual_username_input.trim().is_empty()
+                                                && !s.create_group_popup.selected_participants.contains(
+                                                &s.create_group_popup.manual_username_input.trim().to_string()
+                                            );
+
+                                            let add_button = egui::Button::new(RichText::new("Aggiungi").size(14.0))
+                                                .min_size(egui::vec2(60.0, 28.0));
+
+                                            if ui.add_enabled(can_add, add_button).clicked() {
+                                                let username = s.create_group_popup.manual_username_input.trim().to_string();
+                                                s.create_group_popup.selected_participants.insert(username);
+                                                s.create_group_popup.manual_username_input.clear();
+                                            }
+                                        });
+                                    });
+                                });
+
+                                ui.add_space(20.0);
+
+                                // Lista unificata con sezioni centrate
+                                if let Some(ref conversations) = s.conversations {
+                                    let dm_conversations: Vec<_> = conversations
+                                        .iter()
+                                        .filter(|c| c.kind == "dm")
+                                        .collect();
+
+                                    // Raccogli username dei DM
+                                    let dm_usernames: std::collections::HashSet<String> = dm_conversations
+                                        .iter()
+                                        .map(|c| c.title.clone())
+                                        .collect();
+
+                                    // Separa partecipanti in DM e manuali
+                                    let mut manual_participants: Vec<String> = s.create_group_popup.selected_participants
+                                        .iter()
+                                        .filter(|u| !dm_usernames.contains(*u))
+                                        .cloned()
+                                        .collect();
+                                    manual_participants.sort();
+
+                                    // Lista unificata con frame
+                                    ui.vertical_centered(|ui| {
+                                        egui::Frame::none()
+                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                                            .inner_margin(12.0)
+                                            .rounding(6.0)
+                                            .show(ui, |ui| {
+                                                ScrollArea::vertical()
+                                                    .id_source("create_group_unified_scroll")
+                                                    .max_height(220.0)
+                                                    .show(ui, |ui| {
+                                                        // SEZIONE 1: Altri utenti (aggiunti manualmente)
+                                                        if !manual_participants.is_empty() {
+                                                            ui.label(
+                                                                RichText::new("Altri utenti")
+                                                                    .size(13.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::from_rgb(200, 100, 40))
+                                                            );
+                                                            ui.add_space(6.0);
+
+                                                            for username in manual_participants {
+                                                                ui.horizontal(|ui| {
+                                                                    ui.spacing_mut().item_spacing.x = 0.0;
+
+                                                                    egui::Frame::none()
+                                                                        .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                                        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                                        .rounding(4.0)
+                                                                        .show(ui, |ui| {
+                                                                            ui.horizontal(|ui| {
+                                                                                ui.spacing_mut().item_spacing.x = 4.0;
+
+                                                                                if ui.small_button(egui_remixicon::icons::CLOSE_LINE).clicked() {
+                                                                                    s.create_group_popup.selected_participants.remove(&username);
+                                                                                }
+                                                                                ui.label(
+                                                                                    RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                                        .size(16.0)
+                                                                                        .color(egui::Color32::WHITE)
+                                                                                );
+                                                                            });
+                                                                        });
+                                                                });
+                                                            }
+
+                                                            ui.add_space(12.0);
+                                                            ui.separator();
+                                                            ui.add_space(12.0);
+                                                        }
+
+                                                        // SEZIONE 2: I tuoi contatti
+                                                        if !dm_conversations.is_empty() {
+                                                            ui.label(
+                                                                RichText::new("I tuoi contatti")
+                                                                    .size(13.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::GRAY)
+                                                            );
+                                                            ui.add_space(6.0);
+
+                                                            for conv in dm_conversations {
+                                                                let username = conv.title.clone();
+                                                                let is_selected = s.create_group_popup.selected_participants.contains(&username);
+
+                                                                ui.horizontal(|ui| {
+                                                                    ui.spacing_mut().item_spacing.x = 0.0;
+
+                                                                    // Checkbox
+                                                                    let mut selected = is_selected;
+                                                                    if ui.checkbox(&mut selected, "").changed() {
+                                                                        if selected {
+                                                                            s.create_group_popup.selected_participants.insert(username.clone());
+                                                                        } else {
+                                                                            s.create_group_popup.selected_participants.remove(&username);
+                                                                        }
+                                                                    }
+
+                                                                    ui.add_space(4.0);
+
+                                                                    // Frame overlay solo se selezionato
+                                                                    if is_selected {
+                                                                        egui::Frame::none()
+                                                                            .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                                            .rounding(4.0)
+                                                                            .show(ui, |ui| {
+                                                                                ui.horizontal(|ui| {
+                                                                                    ui.spacing_mut().item_spacing.x = 4.0;
+
+                                                                                    ui.label(
+                                                                                        RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                                            .size(16.0)
+                                                                                            .color(egui::Color32::WHITE)
+                                                                                    );
+                                                                                });
+                                                                            });
+                                                                    } else {
+                                                                        ui.label(
+                                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                                .size(16.0)
+                                                                        );
+                                                                    }
+                                                                });
+                                                            }
+                                                        } else {
+                                                            ui.label(
+                                                                RichText::new("I tuoi contatti")
+                                                                    .size(13.0)
+                                                                    .strong()
+                                                                    .color(egui::Color32::GRAY)
+                                                            );
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("Nessun contatto disponibile")
+                                                                    .italics()
+                                                                    .color(egui::Color32::GRAY)
+                                                            );
+                                                        }
+                                                    });
+                                            });
+                                    });
+                                }
+                            });
+                    });
+
+                ui.add_space(20.0);
+
+                // Bottoni azione - uno a sinistra, uno a destra
+                let can_create = !s.create_group_popup.group_name.trim().is_empty();
+
+                ui.horizontal(|ui| {
+                    // Bottone Annulla a sinistra
+                    let cancel_button = egui::Button::new(
+                        RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                            .size(16.0)
+                    )
+                        .fill(ui.visuals().widgets.inactive.bg_fill)
+                        .min_size(egui::vec2(150.0, 45.0));
+
+                    if ui.add(cancel_button).clicked() {
+                        s.create_group_popup.reset();
+                        should_close = true;
+                    }
+
+                    // Spazio flessibile al centro
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // Bottone Crea Gruppo a destra
+                        let create_button = egui::Button::new(
+                            RichText::new(format!("{} Crea Gruppo", egui_remixicon::icons::CHECK_LINE))
+                                .size(16.0)
+                        )
+                            .fill(if can_create {
+                                egui::Color32::from_rgb(200, 100, 40)
+                            } else {
+                                ui.visuals().widgets.inactive.bg_fill
+                            })
+                            .min_size(egui::vec2(200.0, 45.0));
+
+                        if ui.add_enabled(can_create, create_button).clicked() {
+                            create_group_with_participants(s);
+                            should_close = true;
+                        }
+                    });
+                });
+            });
+        });
+
+    if should_close {
+        open = false;
+    }
+
+    s.show_create_group_modal = open;
+}
+
+fn create_group_with_participants(s: &mut AppState) {
+    let group_name = s.create_group_popup.group_name.trim().to_string();
+    let participants: Vec<String> = s
+        .create_group_popup
+        .selected_participants
+        .iter()
+        .cloned()
+        .collect();
+
+    info!(
+        "Creating group '{}' with {} participants via WebSocket: {:?}",
+        group_name,
+        participants.len(),
+        participants
+    );
+
+    // Crea stub per il gruppo
+    let stub_id = Uuid::new_v4();
+
+    let stub_conversation = ConversationDto {
+        id: stub_id,
+        kind: "group".to_string(),
+        title: group_name.clone(),
+        owner_id: s.user_id.unwrap_or(Uuid::nil()),
+        created_at: chrono::Utc::now().timestamp(),
+        last_read_sequence: 0,
+        last_activity: chrono::Utc::now().timestamp(),
+        last_msg_seq: 0,
+    };
+
+    // Aggiungi stub alla lista conversazioni
+    if let Some(ref mut convs) = s.conversations {
+        convs.insert(0, stub_conversation);
+    }
+
+    // Traccia lo stub
+    s.group_stubs.insert(stub_id, group_name.clone());
+
+    // Apri il gruppo stub
+    s.cid = Some(stub_id);
+    s.page = Page::Chat;
+    s.conv_title = group_name.clone();
+
+    // Messaggio di sistema nello stub
+    let system_msg =
+        MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
+    s.conversation_messages
+        .entry(stub_id)
+        .or_insert_with(Vec::new)
+        .push(system_msg.clone());
+    s.messages = vec![system_msg];
+
+    // Invia al server
+    let outgoing = Outgoing::CreateGroupWithParticipants {
+        group_name,
+        participant_usernames: participants,
+        client_temp_id: Some(stub_id.to_string()),
+    };
+
+    if let Err(e) = s.ui_to_net_tx.try_send(outgoing) {
+        // Cleanup in caso di errore
+        if let Some(ref mut convs) = s.conversations {
+            convs.retain(|c| c.id != stub_id);
+        }
+        s.group_stubs.remove(&stub_id);
+        s.conversation_messages.remove(&stub_id);
+        s.messages.clear();
+        s.cid = None;
+        s.page = Page::Conversations;
+
+        let _ = s
+            .ui_tx
+            .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
+        return;
+    }
+
+    info!("Created group stub {} and opened it", stub_id);
+    s.create_group_popup.reset();
 }
 
 fn create_dm_subsection(ui: &mut egui::Ui, s: &mut AppState) {
@@ -274,7 +612,7 @@ fn create_dm_subsection(ui: &mut egui::Ui, s: &mut AppState) {
             ui.label(
                 RichText::new("💬")
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(255, 180, 100)),
+                    .color(egui::Color32::from_rgb(120, 180, 255)),
             );
             ui.add_space(6.0);
             ui.label(
@@ -286,98 +624,60 @@ fn create_dm_subsection(ui: &mut egui::Ui, s: &mut AppState) {
 
         ui.add_space(8.0);
 
-        labeled_text(
-            ui,
-            "Destinatario:",
-            &mut s.dm_user_username_input,
-            "Username",
-        );
+        labeled_text(ui, "Username:", &mut s.dm_username, "nome_utente");
 
         ui.add_space(8.0);
 
-        let can_dm = !s.dm_user_username_input.trim().is_empty();
+        let can_dm = !s.dm_username.trim().is_empty();
+        if action_button(ui, "➕ Crea Chat", can_dm) {
+            let target_username = s.dm_username.trim().to_string();
 
-        if action_button(ui, "🚀 Inizia Chat", can_dm) {
-            let target_username = s.dm_user_username_input.trim().to_owned();
+            // Verifica se esiste già un DM con questo utente
+            let existing_dm = s.conversations.as_ref().and_then(|convs| {
+                convs
+                    .iter()
+                    .find(|c| c.kind == "dm" && c.title == target_username)
+            });
 
-            // CRITICO: Genera UUID univoco per lo stub locale
-            // Questo UUID sarà usato come client_temp_id quando invieremo il primo messaggio
-            let stub_conversation_id = Uuid::new_v4();
-            info!("Creating DM stub with ID: {} for target user: {}", 
-                  stub_conversation_id, target_username);
+            if let Some(existing_conv) = existing_dm {
+                // DM già esistente, apri quella conversazione
+                info!(
+                    "DM with {} already exists (id: {}), opening it",
+                    target_username, existing_conv.id
+                );
 
-            // CONTROLLO DUPLICATI CONVERSAZIONI: Verifica se esiste già una conversazione con questo target
-            let mut duplicate_found = false;
-
-            // Prima controlla tra le conversazioni esistenti
-            if let Some(ref conversations) = s.conversations {
-                for conv in conversations {
-                    if conv.kind == "dm" && conv.title == target_username {
-                        warn!("DM conversation with {} already exists: {}", 
-                              target_username, conv.id);
-                        let _ = s.ui_tx.send(UiEvent::Info(format!(
-                            "Chat con {} già esistente",
-                            target_username
-                        )));
-                        // Apri la conversazione esistente
-                        let _ = s.ui_tx.send(UiEvent::Opened(conv.id));
-                        duplicate_found = true;
-                        break;
-                    }
-                }
-            }
-
-            // CONTROLLO DUPLICATI STUB: Verifica se esiste già uno stub per questo target
-            if !duplicate_found {
-                for (existing_stub_id, existing_target) in &s.dm_stubs {
-                    if existing_target == &target_username {
-                        warn!("DM stub for {} already exists: {}", 
-                              target_username, existing_stub_id);
-                        let _ = s.ui_tx.send(UiEvent::Info(format!(
-                            "Chat con {} già in preparazione",
-                            target_username
-                        )));
-                        // Apri lo stub esistente
-                        let _ = s.ui_tx.send(UiEvent::Opened(*existing_stub_id));
-                        duplicate_found = true;
-                        break;
-                    }
-                }
-            }
-
-            if !duplicate_found {
-                // IMPORTANTE FLOW:
-                // 1. Lo stub usa il suo UUID come identificatore locale
-                // 2. Quando invieremo il primo messaggio, useremo questo UUID come client_temp_id
-                // 3. Il server creerà la conversazione reale e restituirà il client_temp_id nella conferma
-                // 4. Useremo il client_temp_id per trovare e rimuovere questo stub
-
-                info!("Creating new DM stub: {} -> {}", stub_conversation_id, target_username);
-                debug!("This stub UUID will be used as client_temp_id: {}", stub_conversation_id);
-
-                // Invia evento per creare lo stub
-                let _ = s.ui_tx.send(UiEvent::DmStubCreated(
-                    stub_conversation_id,
-                    target_username.clone()
-                ));
-
-                // Pulisci l'input solo se lo stub è stato creato con successo
-                s.dm_user_username_input.clear();
-
-                // Feedback positivo all'utente
                 let _ = s.ui_tx.send(UiEvent::Info(format!(
-                    "Chat con {} pronta - invia il primo messaggio per iniziare!",
+                    "Chat con {} già esistente, apertura in corso...",
                     target_username
                 )));
 
-                // Log dettagliato per debug
+                let _ = s.ui_tx.send(UiEvent::Opened(existing_conv.id));
+                s.dm_username.clear();
+            } else {
+                // Crea uno stub locale per la DM
+                let stub_conversation_id = Uuid::new_v4();
+
+                info!(
+                    "Creating DM stub for {} with temp ID: {}",
+                    target_username, stub_conversation_id
+                );
+
+                let _ = s.ui_tx.send(UiEvent::DmStubCreated(
+                    stub_conversation_id,
+                    target_username.clone(),
+                ));
+
+                s.dm_username.clear();
+
+                let _ = s.ui_tx.send(UiEvent::Info(format!(
+                    "Chat con {} pronta! Scrivi il primo messaggio per iniziare",
+                    target_username
+                )));
+
                 debug!("DM stub created successfully:");
                 debug!("  Stub ID: {}", stub_conversation_id);
                 debug!("  Target: {}", target_username);
                 debug!("  Will use as client_temp_id when sending first message");
-            } else {
-                // Se trovato duplicato, non pulire l'input per permettere all'utente di correggere
-                debug!("Duplicate DM found for {}, not creating new stub", target_username);
             }
         }
 
@@ -438,16 +738,14 @@ fn join_by_token_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt
             let token_input_clone = invite_token.trim().to_owned();
 
             rt.spawn(async move {
-                match api::conversation::join_by_token(&base, &token2, &token_input_clone)
-                    .await
-                {
+                match api::conversation::join_by_token(&base, &token2, &token_input_clone).await {
                     Ok(cid) => {
-                        let _ = tx.send(UiEvent::Info("Unito al gruppo! Aggiornamento lista...".into()));
+                        let _ = tx.send(UiEvent::Info(
+                            "Unito al gruppo! Aggiornamento lista...".into(),
+                        ));
 
-                        // Attendi un momento per permettere al server di processare
                         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-                        // Ricarica le conversazioni
                         match crate::api::conversation::get_conversations(&base, &token2).await {
                             Ok(conversations) => {
                                 let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
@@ -528,10 +826,7 @@ fn generate_invite_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, 
                         let _ = tx.send(UiEvent::InviteCreated(invite_token));
                     }
                     Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!(
-                            "Creazione invito fallita: {}",
-                            e
-                        )));
+                        let _ = tx.send(UiEvent::Error(format!("Creazione invito fallita: {}", e)));
                     }
                 }
             });

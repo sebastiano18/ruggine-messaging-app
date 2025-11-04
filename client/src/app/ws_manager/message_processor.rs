@@ -101,6 +101,7 @@ impl MessageProcessor {
                 cid,
                 content,
                 target_username,
+                target_usernames,
                 client_msg_id,
             } => {
                 if content.trim().is_empty() {
@@ -142,7 +143,16 @@ impl MessageProcessor {
                         json_obj["conversation_id"] = serde_json::Value::String(cid.to_string());
                         warn!("Conversation {} has target_username but is not a stub", cid);
                     }
-                } else {
+                }
+                // NUOVO: Gestione group con target_usernames
+                else if let Some(ref usernames) = target_usernames {
+                    // È un messaggio per creare un gruppo
+                    json_obj["target_usernames"] = serde_json::json!(usernames);
+                    json_obj["client_temp_id"] = serde_json::Value::String(cid.to_string());
+
+                    info!("Sending message to create group with {} members", usernames.len());
+                }
+                else {
                     // Conversazione esistente normale (no target_username)
                     json_obj["conversation_id"] = serde_json::Value::String(cid.to_string());
                     debug!("Sending message to existing conversation {}", cid);
@@ -169,6 +179,38 @@ impl MessageProcessor {
                     "cid": cid,
                     "username": username.trim()
                 })
+            }
+
+            Outgoing::CreateGroup { group_name } => {
+                if group_name.trim().is_empty() {
+                    return Err("Empty group name".into());
+                }
+                serde_json::json!({
+                    "type": "create_group",
+                    "group_name": group_name.trim()
+                })
+            }
+
+            Outgoing::CreateGroupWithParticipants {
+                group_name,
+                participant_usernames,
+                client_temp_id,
+            } => {
+                if group_name.trim().is_empty() {
+                    return Err("Empty group name".into());
+                }
+
+                let mut json_obj = serde_json::json!({
+                    "type": "create_group_with_participants",
+                    "group_name": group_name.trim(),
+                    "participant_usernames": participant_usernames
+                });
+
+                if let Some(ref temp_id) = client_temp_id {
+                    json_obj["client_temp_id"] = serde_json::Value::String(temp_id.clone());
+                }
+
+                json_obj
             }
 
             Outgoing::Typing { cid, is_typing } => {

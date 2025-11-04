@@ -144,11 +144,20 @@ pub enum Outgoing {
         cid: Uuid,
         content: String,
         target_username: Option<String>,
+        target_usernames: Option<Vec<String>>,
         client_msg_id: Option<String>,
     },
     InviteUser {
         cid: Uuid,
         username: String,
+    },
+    CreateGroup {
+        group_name: String,
+    },
+    CreateGroupWithParticipants {
+        group_name: String,
+        participant_usernames: Vec<String>,
+        client_temp_id: Option<String>,
     },
     Typing {
         cid: Uuid,

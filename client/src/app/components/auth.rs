@@ -130,12 +130,18 @@ fn show_login_view(ui: &mut egui::Ui, s: &mut AppState) {
     ui.add_space(20.0);
 
     // Mostra messaggio di errore/info se presente
-    if let Some(ref msg) = s.ui_message {
+    if let Some(ref msg) = s.auth_message {
+        let color = if s.auth_message_is_error {
+            egui::Color32::from_rgb(220, 60, 60)  // Rosso per errori
+        } else {
+            egui::Color32::from_rgb(60, 180, 60)  // Verde per info
+        };
+
         ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new(msg)
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(220, 60, 60))
+                    .color(color)
             );
         });
         ui.add_space(10.0);
@@ -227,7 +233,7 @@ fn show_login_view(ui: &mut egui::Ui, s: &mut AppState) {
 
                     if register_link.clicked() {
                         s.password.clear();
-                        s.clear_ui_message();
+                        s.clear_auth_message();
                         // Salva la vista nella memoria UI
                         ui.data_mut(|d| d.insert_temp(egui::Id::new("auth_view"), AuthView::Register));
                     }
@@ -263,12 +269,18 @@ fn show_register_view(ui: &mut egui::Ui, s: &mut AppState) {
     ui.add_space(20.0);
 
     // Mostra messaggio di errore/info se presente
-    if let Some(ref msg) = s.ui_message {
+    if let Some(ref msg) = s.auth_message {
+        let color = if s.auth_message_is_error {
+            egui::Color32::from_rgb(220, 60, 60)  // Rosso per errori
+        } else {
+            egui::Color32::from_rgb(60, 180, 60)  // Verde per info
+        };
+
         ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new(msg)
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(220, 60, 60))
+                    .color(color)
             );
         });
         ui.add_space(10.0);
@@ -395,7 +407,7 @@ fn show_register_view(ui: &mut egui::Ui, s: &mut AppState) {
                     if login_link.clicked() {
                         s.password.clear();
                         s.password_confirm.clear();
-                        s.clear_ui_message();
+                        s.clear_auth_message();
                         // Torna alla vista login
                         ui.data_mut(|d| d.insert_temp(egui::Id::new("auth_view"), AuthView::Login));
                     }
@@ -420,7 +432,7 @@ fn show_register_view(ui: &mut egui::Ui, s: &mut AppState) {
 
 fn start_login(s: &mut AppState) {
     // Pulisci eventuali messaggi precedenti
-    s.clear_ui_message();
+    s.clear_auth_message();
 
     let base = s.base.clone();
     let u = s.username.clone();
@@ -454,7 +466,7 @@ fn start_login(s: &mut AppState) {
                     format!("{} Errore di connessione al server", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
                 };
 
-                let _ = tx.send(UiEvent::Info(error_msg));
+                let _ = tx.send(UiEvent::Error(error_msg));
                 let _ = tx.send(UiEvent::LoggedOut);
             }
         }
@@ -463,7 +475,7 @@ fn start_login(s: &mut AppState) {
 
 fn start_registration(s: &mut AppState) {
     // Pulisci eventuali messaggi precedenti
-    s.clear_ui_message();
+    s.clear_auth_message();
 
     let base = s.base.clone();
     let u = s.username.clone();
@@ -509,7 +521,7 @@ fn start_registration(s: &mut AppState) {
                     format!("{} Errore durante la registrazione, riprova", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
                 };
 
-                let _ = tx.send(UiEvent::Info(error_msg));
+                let _ = tx.send(UiEvent::Error(error_msg));
                 let _ = tx.send(UiEvent::LoggedOut);
             }
         }

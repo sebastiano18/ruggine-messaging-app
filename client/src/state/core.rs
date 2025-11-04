@@ -1,7 +1,7 @@
 use crate::api::ws::WsControl;
 use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
@@ -22,6 +22,25 @@ pub struct SequenceStats {
 #[derive(Debug, Clone)]
 pub struct PendingDeletion {
     pub conversation: ConversationDto,
+}
+
+#[derive(Default)]
+pub struct CreateGroupPopupState {
+    pub group_name: String,
+    pub manual_username_input: String,
+    pub selected_participants: HashSet<String>,
+}
+
+impl CreateGroupPopupState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.group_name.clear();
+        self.manual_username_input.clear();
+        self.selected_participants.clear();
+    }
 }
 
 pub struct AppState {
@@ -76,6 +95,9 @@ pub struct AppState {
     // DM stub tracking - conversation_id -> target_username
     pub dm_stubs: HashMap<Uuid, String>,
 
+    // Group stub tracking - conversation_id -> group_name
+    pub group_stubs: HashMap<Uuid, String>,
+
     // Message confirmation tracking
     pub pending_confirmations: HashMap<String, MessageDto>, // client_msg_id -> messaggio ottimistico
     pub confirmation_timeout: Duration,
@@ -104,7 +126,7 @@ pub struct AppState {
 
     pub is_loading_more: bool,
     pub has_more_messages: HashMap<Uuid, bool>,
-    
+
     #[allow(dead_code)]
     pub pending_conversations: HashMap<String, ConversationDto>,
 
@@ -114,8 +136,10 @@ pub struct AppState {
     // UI Modals
     pub show_account_modal: bool,
 
-    // UI Messages
-    pub ui_message: Option<String>,
+    // UI Messages - separati per pagina
+    pub ui_message: Option<String>,        // Messaggi per pagine interne (dopo login)
+    pub auth_message: Option<String>,      // Messaggi solo per pagina auth
+    pub auth_message_is_error: bool,       // true = errore (rosso), false = info (verde)
 
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
@@ -127,13 +151,19 @@ pub struct AppState {
     // Invite popup state
     pub show_invite_popup: bool,
     pub invite_username_input: String,
-
+  
     // Members popup state
     pub show_members_popup: bool,
     pub members_list: Vec<ParticipantInfo>,
     pub is_loading_members: bool,
-}
 
+    // Create group popup state
+    pub show_create_group_modal: bool,
+    pub create_group_popup: CreateGroupPopupState,
+
+    // DM management
+    pub dm_username: String,
+}
 impl AppState {
     pub fn new() -> Self {
         let rt = Runtime::new().expect("tokio runtime");
@@ -174,6 +204,8 @@ impl AppState {
             show_account_modal: false,
 
             ui_message: None,
+            auth_message: None,
+            auth_message_is_error: false,
 
             ui_tx: tx,
             ui_rx: rx,
@@ -185,6 +217,7 @@ impl AppState {
             is_loading: false,
 
             dm_stubs: HashMap::new(),
+            group_stubs: HashMap::new(),
 
             // Message confirmation
             pending_confirmations: HashMap::new(),
@@ -220,6 +253,13 @@ impl AppState {
 
             show_invite_popup: false,
             invite_username_input: String::new(),
+
+            // Create group popup
+            show_create_group_modal: false,
+            create_group_popup: CreateGroupPopupState::new(),
+
+            // DM management
+            dm_username: String::new(),
 
             show_members_popup: false,
             members_list: Vec::new(),
@@ -315,6 +355,7 @@ impl AppState {
                 cid,
                 content,
                 target_username,
+                target_usernames: None,
                 client_msg_id,
             });
         }
@@ -553,11 +594,42 @@ impl AppState {
     }
     // UI Message handling
     pub fn set_ui_message(&mut self, msg: String) {
-        self.ui_message = Some(msg);
+        // Messaggi per le pagine interne (dopo login)
+        if self.token.is_some() {
+            self.ui_message = Some(msg);
+        }
     }
 
     pub fn clear_ui_message(&mut self) {
         self.ui_message = None;
+    }
+
+    pub fn set_auth_message(&mut self, msg: String, is_error: bool) {
+        // Messaggi per la pagina di autenticazione
+        self.auth_message = Some(msg);
+        self.auth_message_is_error = is_error;
+    }
+
+    pub fn clear_auth_message(&mut self) {
+        self.auth_message = None;
+        self.auth_message_is_error = false;
+    }
+
+    /// Instrada automaticamente il messaggio alla categoria giusta
+    pub fn set_message_info(&mut self, msg: String) {
+        if self.token.is_none() {
+            self.set_auth_message(msg, false); // Info = non errore
+        } else {
+            self.set_ui_message(msg);
+        }
+    }
+
+    pub fn set_message_error(&mut self, msg: String) {
+        if self.token.is_none() {
+            self.set_auth_message(msg, true); // Error = errore
+        } else {
+            self.set_ui_message(msg);
+        }
     }
 
 }
