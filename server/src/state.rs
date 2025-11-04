@@ -441,10 +441,15 @@ impl AppState {
         self.store_user_event(user_id, sequence, event_type, &event_data, conversation_id)
             .await?;
 
-        // Aggiungi sequence ai dati dell'evento
+        // Aggiungi sequence, event_type, type e user_id ai dati dell'evento
         let mut enriched_event = event_data;
+        enriched_event["type"] = json!("user_event");
         enriched_event["sequence"] = json!(sequence);
         enriched_event["user_id"] = json!(user_id);
+        enriched_event["event_type"] = json!(event_type);
+        if let Some(cid) = conversation_id {
+            enriched_event["conversation_id"] = json!(cid);
+        }
 
         // Invia tramite WebSocket (best effort)
         let user_tx = self.get_or_create_user_notification_channel(user_id).await;

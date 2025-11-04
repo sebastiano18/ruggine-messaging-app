@@ -480,4 +480,19 @@ impl ConversationRepo {
 
         Ok(members)
     }
+
+    // Rimuovi un membro da una conversazione
+    pub async fn remove_member(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM participants WHERE conversation_id = ? AND user_id = ?")
+            .bind(conversation_id.to_string())
+            .bind(user_id.to_string())
+            .execute(pool)
+            .await?;
+        
+        Ok(())
+    }
 }

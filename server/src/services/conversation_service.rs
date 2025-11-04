@@ -154,4 +154,30 @@ impl ConversationService {
             }
         }
     }
+
+    // Espelli un membro da una conversazione
+    pub async fn kick_member(
+        pool: &sqlx::SqlitePool,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+        user_id_to_kick: Uuid,
+    ) -> Result<()> {
+        // Verifica che il richiedente sia il proprietario della conversazione
+        if !ConversationRepo::is_owner(pool, conversation_id, requester_id).await? {
+            return Err(crate::error::AppError::Unauthorized);
+        }
+
+        // Verifica che non stia cercando di espellere se stesso
+        if requester_id == user_id_to_kick {
+            return Err(crate::error::AppError::BadRequest("Non puoi espellere te stesso".to_string()));
+        }
+
+        // Verifica che l'utente da espellere non sia il proprietario
+        if ConversationRepo::is_owner(pool, conversation_id, user_id_to_kick).await? {
+            return Err(crate::error::AppError::BadRequest("Non puoi espellere il proprietario".to_string()));
+        }
+
+        // Rimuovi il membro
+        ConversationRepo::remove_member(pool, conversation_id, user_id_to_kick).await
+    }
 }

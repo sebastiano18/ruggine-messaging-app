@@ -528,13 +528,14 @@ fn bubble_width(ui: &egui::Ui, text: &str, max_wrap: f32, pad_x: f32) -> f32 {
 
 fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
+    let mut member_to_kick: Option<Uuid> = None;
 
     egui::Window::new("Membri del gruppo")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            ui.set_width(350.0);
+            ui.set_width(400.0);
             ui.set_height(400.0);
 
             if s.is_loading_members {
@@ -549,11 +550,14 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                         if s.members_list.is_empty() {
                             ui.label("Nessun membro trovato.");
                         } else {
-                            // Trova l'owner del gruppo
+                            // Trova l'owner del gruppo e l'utente corrente
                             let owner_id = s.conversations
                                 .as_ref()
                                 .and_then(|convs| convs.iter().find(|c| c.id == cid))
                                 .map(|conv| conv.owner_id);
+                            
+                            let current_user_id = s.user_id;
+                            let is_owner = Some(current_user_id) == owner_id.map(Some);
 
                             for member in &s.members_list {
                                 ui.horizontal(|ui| {
@@ -570,6 +574,19 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                             .size(12.0)
                                             .color(egui::Color32::GRAY)
                                     );
+                                    
+                                    // Bottone espelli: solo se l'utente corrente è owner,
+                                    // il membro non è l'owner stesso
+                                    if is_owner && Some(member.user_id) != owner_id {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.button(RichText::new("🗑️ Espelli").color(egui::Color32::RED))
+                                                .on_hover_text("Rimuovi questo membro dal gruppo")
+                                                .clicked() 
+                                            {
+                                                member_to_kick = Some(member.user_id);
+                                            }
+                                        });
+                                    }
                                 });
                                 ui.add_space(4.0);
                             }
@@ -587,5 +604,10 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 
     if close_popup {
         s.show_members_popup = false;
+    }
+    
+    // Se c'è un membro da espellere, chiamiamo la funzione
+    if let Some(user_id) = member_to_kick {
+        s.kick_member(cid, user_id);
     }
 }

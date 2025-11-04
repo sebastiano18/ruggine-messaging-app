@@ -225,3 +225,31 @@ pub async fn get_members(
     
     Ok(Json(participants))
 }
+
+// Espelli un membro da una conversazione
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn kick_member(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path((conversation_id, user_id_to_kick)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode> {
+    ConversationService::kick_member(&st.pool, conversation_id, user.id, user_id_to_kick).await?;
+    
+    // Invia evento sequenziato all'utente espulso per rimuovere la conversazione
+    let payload = json!({
+        "conversation_id": conversation_id,
+        "kicked_by": user.id,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
+    
+    if let Err(e) = st.send_sequenced_event_to_user(
+        user_id_to_kick,
+        "member_kicked",
+        payload,
+        Some(conversation_id),
+    ).await {
+        tracing::error!("Failed to send member_kicked event: {}", e);
+    }
+    
+    Ok(StatusCode::NO_CONTENT)
+}

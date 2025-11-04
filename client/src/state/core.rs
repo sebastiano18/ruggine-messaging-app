@@ -592,6 +592,36 @@ impl AppState {
             }
         });
     }
+
+    pub fn kick_member(&mut self, conversation_id: Uuid, user_id: Uuid) {
+        let Some(ref token) = self.token else { return };
+        
+        let base = self.base.clone();
+        let token = token.clone();
+        let tx = self.ui_tx.clone();
+
+        self.rt.spawn(async move {
+            match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id).await {
+                Ok(_) => {
+                    info!("Member kicked successfully");
+                    // Ricarica la lista dei membri
+                    match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
+                        Ok(members) => {
+                            let _ = tx.send(UiEvent::MembersLoaded(members));
+                        }
+                        Err(e) => {
+                            error!("Failed to reload members: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to kick member: {}", e);
+                    let _ = tx.send(UiEvent::Error(format!("Errore espulsione membro: {}", e)));
+                }
+            }
+        });
+    }
+
     // UI Message handling
     pub fn set_ui_message(&mut self, msg: String) {
         // Messaggi per le pagine interne (dopo login)
