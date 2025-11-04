@@ -430,4 +430,54 @@ impl ConversationRepo {
 
         Ok(ids)
     }
+
+    // Ottieni i membri di una conversazione con dettagli
+    // Ritorna: (user_id, username, role, joined_at)
+    pub async fn get_members(
+        pool: &SqlitePool,
+        conversation_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, String, i64)>> {
+        tracing::info!("Getting members for conversation: {}", conversation_id);
+        
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                p.user_id,
+                u.username,
+                p.role,
+                0 as joined_at
+            FROM participants p
+            JOIN users u ON p.user_id = u.id
+            WHERE p.conversation_id = ?
+            ORDER BY u.username ASC
+            "#,
+        )
+            .bind(conversation_id.to_string())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error in get_members: {:?}", e);
+                e
+            })?;
+
+        tracing::info!("Found {} members", rows.len());
+
+        let members: Vec<(Uuid, String, String, i64)> = rows
+            .into_iter()
+            .map(|r| {
+                let user_id_str: String = r.get("user_id");
+                let username: String = r.get("username");
+                let role: String = r.get("role");
+                let joined_at: i64 = r.get("joined_at");
+                (
+                    Uuid::parse_str(&user_id_str).expect("DB must store valid UUIDs"),
+                    username,
+                    role,
+                    joined_at,
+                )
+            })
+            .collect();
+
+        Ok(members)
+    }
 }

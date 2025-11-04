@@ -103,6 +103,20 @@ impl ConversationService {
         ConversationRepo::list_participant_ids(pool, conversation_id).await
     }
 
+    // Ottieni i membri di una conversazione con i loro dettagli
+    pub async fn get_members(
+        pool: &sqlx::SqlitePool,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, String, i64)>> {
+        // Verifica che il richiedente sia un partecipante della conversazione
+        if !ConversationRepo::is_participant(pool, conversation_id, requester_id).await? {
+            return Err(crate::error::AppError::Unauthorized);
+        }
+
+        ConversationRepo::get_members(pool, conversation_id).await
+    }
+
     pub async fn broadcast_conversation_deleted(
         st: &AppState,
         conversation_id: Uuid,

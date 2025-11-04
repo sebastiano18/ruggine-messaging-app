@@ -60,6 +60,14 @@ pub struct MessageOut {
     pub sequence_num: Option<i64>, // AGGIUNTO
 }
 
+#[derive(Serialize)]
+pub struct ParticipantOut {
+    pub user_id: Uuid,
+    pub username: String,
+    pub role: String,
+    pub joined_at: i64,
+}
+
 // Crea un nuovo gruppo
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn create_group(
@@ -194,4 +202,26 @@ pub async fn get_conversation_with_messages(
         conversation,
         messages,
     }))
+}
+
+// Ottieni membri di una conversazione
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn get_members(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Result<Json<Vec<ParticipantOut>>> {
+    let members = ConversationService::get_members(&st.pool, conversation_id, user.id).await?;
+    
+    let participants: Vec<ParticipantOut> = members
+        .into_iter()
+        .map(|(user_id, username, role, joined_at)| ParticipantOut {
+            user_id,
+            username,
+            role,
+            joined_at,
+        })
+        .collect();
+    
+    Ok(Json(participants))
 }

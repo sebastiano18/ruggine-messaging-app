@@ -240,6 +240,15 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 {
                                     s.show_invite_popup = true;
                                 }
+                                
+                                if ui
+                                    .button(RichText::new("ℹ️").size(18.0))
+                                    .on_hover_text("Mostra membri del gruppo")
+                                    .clicked()
+                                {
+                                    s.show_members_popup = true;
+                                    s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
+                                }
                             });
                         }
                     }
@@ -257,6 +266,11 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     // Popup per invitare membri (solo se attivo)
     if s.show_invite_popup {
         show_invite_popup(ui, s, cid);
+    }
+    
+    // Popup per visualizzare membri
+    if s.show_members_popup {
+        show_members_popup(ui, s, cid);
     }
 }
 
@@ -509,4 +523,68 @@ fn bubble_width(ui: &egui::Ui, text: &str, max_wrap: f32, pad_x: f32) -> f32 {
         let galley = fonts.layout_job(job);
         (galley.rect.size().x + pad_x).clamp(96.0, max_wrap + pad_x)
     })
+}
+
+fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
+    let mut close_popup = false;
+
+    egui::Window::new("Membri del gruppo")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(350.0);
+            ui.set_height(400.0);
+
+            if s.is_loading_members {
+                ui.centered_and_justified(|ui| {
+                    ui.spinner();
+                    ui.label("Caricamento membri...");
+                });
+            } else {
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        if s.members_list.is_empty() {
+                            ui.label("Nessun membro trovato.");
+                        } else {
+                            // Trova l'owner del gruppo
+                            let owner_id = s.conversations
+                                .as_ref()
+                                .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                                .map(|conv| conv.owner_id);
+
+                            for member in &s.members_list {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&member.username).size(14.0));
+                                    
+                                    // Se questo membro è l'owner, mostra la corona
+                                    if Some(member.user_id) == owner_id {
+                                        ui.label(RichText::new("👑").size(14.0));
+                                    }
+                                    
+                                    // Mostra il ruolo
+                                    ui.label(
+                                        RichText::new(format!("({})", member.role))
+                                            .size(12.0)
+                                            .color(egui::Color32::GRAY)
+                                    );
+                                });
+                                ui.add_space(4.0);
+                            }
+                        }
+                    });
+            }
+
+            ui.add_space(12.0);
+
+            // Pulsante Chiudi
+            if ui.button("Chiudi").clicked() {
+                close_popup = true;
+            }
+        });
+
+    if close_popup {
+        s.show_members_popup = false;
+    }
 }

@@ -94,6 +94,14 @@ pub struct User {
     pub username: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ParticipantInfo {
+    pub user_id: Uuid,
+    pub username: String,
+    pub role: String,
+    pub joined_at: i64,
+}
+
 // IMPORTANTE: MessageResponse ora include sequence
 #[derive(Deserialize)]
 pub struct MessageResponse {
@@ -218,6 +226,7 @@ pub enum UiEvent {
 
     // General events
     InviteCreated(String),
+    MembersLoaded(Vec<ParticipantInfo>),
 
     // Sistema unificato di fetch conversazione
     TriggerConversationFetch(Uuid, String),
