@@ -1,9 +1,8 @@
-use crate::models::{UiEvent, WsStatus, ConversationDto, MessageDto};
+use crate::models::{WsStatus, MessageDto};
 use crate::state::AppState;
-use crate::api;
-use eframe::egui::{self, Frame, RichText, Stroke, TextEdit};
+use eframe::egui::{self, Frame, RichText, TextEdit};
 use uuid::Uuid;
-use tracing::{debug, info};
+use tracing::info;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     ui.heading("💬 Chat");
@@ -22,17 +21,8 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
 }
 
 fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    // Header conversazione
-    show_conversation_header(ui, s);
-
-    // Se gruppo, mostra opzioni invito (senza passare token come parametro)
-    if let Some(ref conversations) = s.conversations {
-        if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-            if conv.kind == "group" {
-                show_invite_options(ui, s, cid);
-            }
-        }
-    }
+    // Header conversazione con bottone invita
+    show_conversation_header(ui, s, cid);
 
     ui.separator();
 
@@ -224,9 +214,10 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) 
     );
 }
 
-fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
-    if let Some(ref conversations) = s.conversations {
-        if let Some(cid) = s.cid {
+fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
+    ui.horizontal(|ui| {
+        // Titolo conversazione
+        if let Some(ref conversations) = s.conversations {
             if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
                 let icon = match conv.kind.as_str() {
                     "group" => "👥",
@@ -234,91 +225,97 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &AppState) {
                     _ => "💭",
                 };
                 ui.label(format!("{} {}", icon, conv.title));
-            } else if s.is_dm_stub(cid) {
-                // Se è uno stub, mostra il titolo dallo stato
-                ui.label(format!("💬 {}", s.conv_title));
-            }
-        }
-    } else if s.cid.is_some() && !s.conv_title.is_empty() {
-        // Fallback per stub quando conversations non è ancora caricato
-        ui.label(format!("💬 {}", s.conv_title));
-    }
-}
 
-fn show_invite_options(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.1))
-        .stroke(Stroke::new(
-            1.0,
-            egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.3),
-        ))
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("🎫").size(16.0));
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Invita membri")
-                        .strong()
-                        .color(egui::Color32::from_rgb(255, 140, 60)),
-                );
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Pulsante per generare token di invito
-                    if ui
-                        .button(RichText::new("🔮 Genera Token").color(egui::Color32::WHITE))
-                        .on_hover_text("Crea un token di invito per questo gruppo")
-                        .clicked()
-                    {
-                        // Accedi al token di autenticazione quando serve
-                        if let Some(token) = s.token.clone() {
-                            let base = s.base.clone();
-                            let tx = s.ui_tx.clone();
-
-                            s.rt.spawn(async move {
-                                match api::conversation::create_invite(&base, &token, cid).await {
-                                    Ok(invite_token) => {
-                                        let _ = tx.send(UiEvent::InviteCreated(invite_token));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(UiEvent::Error(format!(
-                                            "Creazione invito fallita: {}",
-                                            e
-                                        )));
-                                    }
+                // Se è un gruppo e l'utente è owner, mostra bottone +
+                if conv.kind == "group" {
+                    if let Some(user_id) = s.user_id {
+                        if conv.owner_id == user_id {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .button(RichText::new("➕").size(18.0))
+                                    .on_hover_text("Aggiungi membri al gruppo")
+                                    .clicked()
+                                {
+                                    s.show_invite_popup = true;
                                 }
                             });
                         }
                     }
+                }
+            } else if s.is_dm_stub(cid) {
+                // Se è uno stub, mostra il titolo dallo stato
+                ui.label(format!("💬 {}", s.conv_title));
+            }
+        } else if s.cid.is_some() && !s.conv_title.is_empty() {
+            // Fallback per stub quando conversations non è ancora caricato
+            ui.label(format!("💬 {}", s.conv_title));
+        }
+    });
 
-                    ui.add_space(8.0);
+    // Popup per invitare membri (solo se attivo)
+    if s.show_invite_popup {
+        show_invite_popup(ui, s, cid);
+    }
+}
 
-                    // Mostra il token generato se disponibile
-                    if let Some(ref invite_token) = s.last_created_invite {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Token:")
-                                    .small()
-                                    .color(egui::Color32::from_rgb(200, 120, 80)),
-                            );
-                            let mut token_text = invite_token.clone();
-                            ui.add(
-                                TextEdit::singleline(&mut token_text)
-                                    .desired_width(120.0)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                            if ui.small_button("📋").on_hover_text("Copia token").clicked() {
-                                ui.output_mut(|o| o.copied_text = invite_token.clone());
-                                let _ = s.ui_tx.send(UiEvent::Info("Token copiato!".into()));
-                            }
-                        });
+fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
+    let mut close_popup = false;
+
+    egui::Window::new("Aggiungi membri")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(300.0);
+
+            ui.label("Inserisci il nome utente del membro da aggiungere:");
+            ui.add_space(8.0);
+
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut s.invite_username_input)
+                    .hint_text("username")
+                    .desired_width(280.0),
+            );
+
+            // Focus automatico sul campo di testo
+            if s.show_invite_popup {
+                response.request_focus();
+            }
+
+            // Invio con Enter
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let username = s.invite_username_input.trim().to_string();
+                if !username.is_empty() {
+                    // Invia invito via WebSocket
+                    s.send_invite_user(cid, username);
+                    s.invite_username_input.clear();
+                    // Non chiudere il popup, permetti di aggiungere più membri
+                }
+            }
+
+            ui.add_space(12.0);
+
+            ui.horizontal(|ui| {
+                if ui.button("✖ Chiudi").clicked() {
+                    close_popup = true;
+                }
+
+                ui.add_space(8.0);
+
+                if ui.button("➕ Aggiungi").clicked() {
+                    let username = s.invite_username_input.trim().to_string();
+                    if !username.is_empty() {
+                        s.send_invite_user(cid, username);
+                        s.invite_username_input.clear();
                     }
-                });
+                }
             });
         });
 
-    ui.add_space(4.0);
+    if close_popup {
+        s.show_invite_popup = false;
+        s.invite_username_input.clear();
+    }
 }
 
 fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
@@ -491,7 +488,7 @@ fn send_message(s: &mut AppState, cid: Uuid) {
 }
 
 fn format_time(timestamp: i64) -> String {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
     DateTime::from_timestamp(timestamp, 0)
         .map(|dt| dt.format("%H:%M").to_string())
         .unwrap_or_else(|| "??:??".to_string())

@@ -103,6 +103,8 @@ pub struct AppState {
 
     pub is_loading_more: bool,
     pub has_more_messages: HashMap<Uuid, bool>,
+    
+    #[allow(dead_code)]
     pub pending_conversations: HashMap<String, ConversationDto>,
 
     // User Manag
@@ -114,6 +116,10 @@ pub struct AppState {
 
     //Unread message counter
     pub conversation_unread_counts: HashMap<Uuid, i64>,
+
+    // Invite popup state
+    pub show_invite_popup: bool,
+    pub invite_username_input: String,
 }
 
 impl AppState {
@@ -195,6 +201,9 @@ impl AppState {
             user_event_reorder_buffer: BTreeMap::new(),
 
             conversation_unread_counts: HashMap::new(),
+
+            show_invite_popup: false,
+            invite_username_input: String::new(),
         }
     }
 
@@ -291,6 +300,11 @@ impl AppState {
         }
     }
 
+    pub fn send_invite_user(&self, cid: Uuid, username: String) {
+        info!("Sending invite for user '{}' to conversation {}", username, cid);
+        self.send_via_websocket(Outgoing::InviteUser { cid, username });
+    }
+
     // === Message Confirmation Methods ===
 
     pub fn cleanup_pending_confirmations(&mut self) {
@@ -305,7 +319,7 @@ impl AppState {
         }
 
         for client_id in expired {
-            if let Some(msg) = self.pending_confirmations.remove(&client_id) {
+            if let Some(_msg) = self.pending_confirmations.remove(&client_id) {
                 warn!("Message confirmation timeout for {}", client_id);
 
                 // Marca il messaggio come fallito nell'UI

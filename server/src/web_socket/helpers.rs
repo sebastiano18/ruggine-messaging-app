@@ -66,6 +66,7 @@ pub async fn handle_incoming_message(
             // La logica di decisione è ora dentro handle_chat_message
             handle_chat_message(state, value, user_id, username).await
         }
+        "invite_user" => handle_invite_user(state, value, user_id).await,
         _ => Err(AppError::BadRequest(format!(
             "Unknown message type: {}",
             message_type
@@ -377,7 +378,7 @@ pub async fn handle_create_conversation(
         // Se RETURNING non funziona in SQLite, usa questo approccio alternativo:
         let sequence = if sequence_result.is_err() {
             // Prima prova INSERT
-            let insert_result = sqlx::query(
+            let _insert_result = sqlx::query(
                 "INSERT OR IGNORE INTO message_sequences (conversation_id, current_sequence, last_updated)
                  VALUES (?, 0, ?)"
             )
@@ -918,6 +919,7 @@ async fn send_message_confirmation(
 }
 
 /// Invia conferma di creazione conversazione (per duplicati)
+#[allow(dead_code)]
 async fn send_conversation_confirmation(
     state: &AppState,
     conversation_id: Uuid,
@@ -982,7 +984,7 @@ async fn send_conversation_created_events(
         ),
     ];
 
-    for (participant_id, participant_username, other_username) in participants {
+    for (participant_id, _participant_username, other_username) in participants {
         let mut event = json!({
             "type": "conversation_created_complete",
             "conversation": {
@@ -1298,4 +1300,199 @@ pub async fn handle_user_events_resume_request(
             )))
         }
     }
+}
+
+/// Gestisce l'invito di un utente a un gruppo tramite WebSocket
+async fn handle_invite_user(
+    state: &AppState,
+    value: &Value,
+    inviter_id: Uuid,
+) -> Result<()> {
+    info!("Handling invite_user request");
+
+    // Estrai conversation_id e username
+    let conversation_id_str = value
+        .get("cid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("Missing conversation_id (cid)".into()))?;
+
+    let conversation_id = Uuid::parse_str(conversation_id_str)
+        .map_err(|_| AppError::BadRequest("Invalid conversation_id format".into()))?;
+
+    let target_username = value
+        .get("username")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("Missing username".into()))?
+        .trim();
+
+    if target_username.is_empty() {
+        return Err(AppError::BadRequest("Username cannot be empty".into()));
+    }
+
+    info!(
+        "User {} inviting '{}' to conversation {}",
+        inviter_id, target_username, conversation_id
+    );
+
+    // Verifica che la conversazione esista e sia un gruppo
+    let conv_row = sqlx::query(
+        "SELECT kind, owner_id FROM conversations WHERE id = ?"
+    )
+        .bind(conversation_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound)?;
+
+    let kind: String = conv_row.try_get("kind").map_err(AppError::from)?;
+    let owner_id_str: String = conv_row.try_get("owner_id").map_err(AppError::from)?;
+    let owner_id = Uuid::parse_str(&owner_id_str)
+        .map_err(|_| AppError::Internal("Invalid owner_id in database".into()))?;
+
+    // Verifica che sia un gruppo
+    if kind != "group" {
+        return Err(AppError::BadRequest("Can only invite users to groups".into()));
+    }
+
+    // Verifica che l'inviter sia l'owner
+    if inviter_id != owner_id {
+        return Err(AppError::Forbidden);
+    }
+
+    // Trova l'utente da invitare
+    let target_user_row = sqlx::query("SELECT id, username FROM users WHERE username = ?")
+        .bind(target_username)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::NotFound)?;
+
+    let target_user_id_str: String = target_user_row.try_get("id").map_err(AppError::from)?;
+    let target_user_id = Uuid::parse_str(&target_user_id_str)
+        .map_err(|_| AppError::Internal("Invalid user_id in database".into()))?;
+    let target_username_actual: String = target_user_row.try_get("username").map_err(AppError::from)?;
+
+    // Verifica che l'utente non sia già membro
+    let is_member: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
+    )
+        .bind(conversation_id.to_string())
+        .bind(&target_user_id_str)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    if is_member > 0 {
+        return Err(AppError::BadRequest(format!(
+            "User '{}' is already a member of this group",
+            target_username_actual
+        )));
+    }
+
+    // Aggiungi l'utente al gruppo
+    sqlx::query(
+        "INSERT INTO participants (conversation_id, user_id, role) VALUES (?, ?, ?)"
+    )
+        .bind(conversation_id.to_string())
+        .bind(&target_user_id_str)
+        .bind("member")
+        .execute(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    info!(
+        "User '{}' added to group {} by owner {}",
+        target_username_actual, conversation_id, inviter_id
+    );
+
+    // Crea evento per notificare il nuovo membro
+    let user_sequence = state.get_next_user_sequence(target_user_id).await?;
+    let ts = Utc::now().timestamp();
+
+    // Ottieni informazioni sulla conversazione
+    let conv_info = sqlx::query(
+        "SELECT id, kind, title, owner_id, created_at FROM conversations WHERE id = ?"
+    )
+        .bind(conversation_id.to_string())
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    let conv_title: Option<String> = conv_info.try_get("title").ok();
+    let conv_created_at: i64 = conv_info.try_get("created_at").map_err(AppError::from)?;
+
+    // Salva evento nella tabella user_events per il nuovo membro
+    sqlx::query(
+        "INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)"
+    )
+        .bind(&target_user_id_str)
+        .bind(user_sequence as i64)
+        .bind("new_conversation")
+        .bind(json!({
+            "conversation": {
+                "id": conversation_id,
+                "kind": kind,
+                "title": conv_title,
+                "owner_id": owner_id,
+                "created_at": conv_created_at,
+                "last_read_sequence": 0,
+                "last_activity": ts,
+                "last_msg_seq": 0
+            }
+        }).to_string())
+        .bind(conversation_id.to_string())
+        .bind(ts)
+        .execute(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    // Notifica il nuovo membro via user notification channel
+    let notification = json!({
+        "type": "user_notification",
+        "sequence": user_sequence,
+        "event_type": "new_conversation",
+        "event_data": {
+            "conversation": {
+                "id": conversation_id,
+                "kind": kind,
+                "title": conv_title,
+                "owner_id": owner_id,
+                "created_at": conv_created_at,
+                "last_read_sequence": 0,
+                "last_activity": ts,
+                "last_msg_seq": 0
+            }
+        },
+        "conversation_id": conversation_id
+    });
+
+    if let Some(user_tx) = state.user_notification_channels.read().await.get(&target_user_id) {
+        match user_tx.send(notification.clone()) {
+            Ok(_) => info!("✅ Sent new_conversation notification to user {}", target_user_id),
+            Err(e) => warn!("❌ Failed to send notification to user {}: {}", target_user_id, e),
+        }
+    } else {
+        warn!("⚠️ User {} has no notification channel (offline or not subscribed)", target_user_id);
+    }
+
+    // Broadcast a tutti i membri del gruppo (incluso il nuovo)
+    let member_added_msg = json!({
+        "type": "member_added",
+        "conversation_id": conversation_id,
+        "user_id": target_user_id,
+        "username": target_username_actual,
+        "added_by": inviter_id,
+        "timestamp": ts
+    });
+
+    // Best effort broadcast - non è un errore fatale se fallisce
+    match broadcast_to_conversation(state, conversation_id, member_added_msg).await {
+        Ok(n) => info!("Broadcast member_added to {} subscribers", n),
+        Err(e) => warn!("Failed to broadcast member_added (non-fatal): {}", e),
+    }
+
+    info!("Successfully added user '{}' to group {}", target_username_actual, conversation_id);
+
+    Ok(())
 }

@@ -43,6 +43,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "conversation_messages" => handle_conversation_messages(tx, &parsed_value),
         "conversation_created_complete" => handle_conversation_created_complete(tx, &parsed_value),
         "conversation_confirmation" => handle_conversation_confirmation(tx, &parsed_value),
+        "user_notification" => handle_user_notification(tx, &parsed_value),
         "pong" => handle_pong(tx, &parsed_value),
         "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value),
         "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value),
@@ -54,6 +55,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "messages_resume_complete" => handle_resume_complete(tx, &parsed_value, "messages"),
         "conversation_created" => handle_conversation_created(tx, &parsed_value),
         "conversation_deleted" => handle_conversation_deleted(tx, &parsed_value),
+        "member_added" => handle_member_added(tx, &parsed_value),
         "error" => handle_server_error(tx, &parsed_value),
         "message_ack" => handle_message_ack(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
@@ -890,6 +892,60 @@ fn handle_conversation_deleted(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
     }
 }
 
+/// Handler per eventi member_added (quando un utente viene aggiunto a un gruppo)
+fn handle_member_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    info!("Received member_added event: {:?}", value);
+
+    // Estrai conversation_id
+    let conversation_id = match parse_conversation_id(value) {
+        Some(id) => id,
+        None => {
+            warn!("member_added without valid conversation_id: {:?}", value);
+            return;
+        }
+    };
+
+    // Estrai informazioni sul membro aggiunto
+    let username = value
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+
+    let user_id = value
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    // Estrai chi ha aggiunto (opzionale)
+    let added_by = value
+        .get("added_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+
+    info!(
+        "User '{}' (id: {:?}) added to conversation {} by '{}'",
+        username, user_id, conversation_id, added_by
+    );
+
+    // Gestisci la sequence se presente per sincronizzazione
+    if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
+        let _ = tx.send(UiEvent::UserNotification {
+            sequence: seq,
+            event_type: "member_added".to_string(),
+            event_data: value.clone(),
+            conversation_id: Some(conversation_id),
+            recovery: false,
+        });
+    }
+
+    // Mostra notifica all'utente
+    let message = format!("✅ {} è stato aggiunto al gruppo", username);
+    let _ = tx.send(UiEvent::Info(message));
+
+    // Richiedi aggiornamento della lista conversazioni per vedere il nuovo membro
+    let _ = tx.send(UiEvent::ConversationListUpdated);
+}
+
 // Utility functions
 fn parse_uuid_field(value: &Value, field_name: &str) -> Option<Uuid> {
     value
@@ -905,6 +961,38 @@ fn parse_conversation_id(value: &Value) -> Option<Uuid> {
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
 }
+
+/// Handler per messaggi user_notification dal server
+fn handle_user_notification(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let sequence = value.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+    
+    let event_type = value
+        .get("event_type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    
+    let event_data = value.get("event_data").cloned().unwrap_or(value.clone());
+    
+    let conversation_id = value
+        .get("conversation_id")
+        .and_then(|id| id.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    info!(
+        "📬 Received user_notification: type={}, seq={}, conv={:?}",
+        event_type, sequence, conversation_id
+    );
+
+    let _ = tx.send(UiEvent::UserNotification {
+        sequence,
+        event_type,
+        event_data,
+        conversation_id,
+        recovery: false,
+    });
+}
+
 /// 🆕 Handler per eventi new_message (real-time con user_sequence)
 /// Riusa completamente la logica esistente di UserNotification
 fn handle_new_message_event(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

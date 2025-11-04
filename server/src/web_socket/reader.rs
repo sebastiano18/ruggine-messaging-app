@@ -567,6 +567,28 @@ pub fn spawn_reader(
                             }
                         }
 
+                        "invite_user" => {
+                            debug!("Invite user request from user {}", user_id);
+                            last_heartbeat = Instant::now();
+
+                            match handle_incoming_message(&state, &mut value, user_id, &username).await {
+                                Ok(()) => {
+                                    debug!("Successfully invited user to group by {}", user_id);
+                                }
+                                Err(e) => {
+                                    error!("Failed to invite user: {}", e);
+                                    let error_response = json!({
+                                        "type": "error",
+                                        "message": e.to_string(),
+                                        "error_code": "INVITE_USER_FAILED"
+                                    });
+                                    if let Ok(txt) = serde_json::to_string(&error_response) {
+                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    }
+                                }
+                            }
+                        }
+
 
                         _ => {
                             warn!(
