@@ -226,6 +226,11 @@ impl EventDispatcher {
                 state.last_created_invite = Some(token);
             }
 
+            UiEvent::MembersLoaded(members) => {
+                state.members_list = members;
+                state.is_loading_members = false;
+            }
+
             UiEvent::TriggerConversationFetch(cid, reason) => {
                 ConversationHandler::handle_trigger_conversation_fetch(state, cid, reason);
             }
@@ -241,10 +246,6 @@ impl EventDispatcher {
             UiEvent::SendPing => {
                 debug!("Manual ping requested");
                 SequenceHandler::send_ping(state);
-            }
-
-            _ => {
-                debug!("Unhandled event: {:?}", event);
             }
         }
     }

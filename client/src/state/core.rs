@@ -151,6 +151,11 @@ pub struct AppState {
     // Invite popup state
     pub show_invite_popup: bool,
     pub invite_username_input: String,
+  
+    // Members popup state
+    pub show_members_popup: bool,
+    pub members_list: Vec<ParticipantInfo>,
+    pub is_loading_members: bool,
 
     // Create group popup state
     pub show_create_group_modal: bool,
@@ -255,6 +260,10 @@ impl AppState {
 
             // DM management
             dm_username: String::new(),
+
+            show_members_popup: false,
+            members_list: Vec::new(),
+            is_loading_members: false,
         }
     }
 
@@ -562,6 +571,27 @@ impl AppState {
         });
     }
 
+    pub fn load_conversation_members(&mut self, conversation_id: Uuid, token: String) {
+        if self.is_loading_members {
+            return;
+        }
+
+        self.is_loading_members = true;
+        let base = self.base.clone();
+        let tx = self.ui_tx.clone();
+
+        self.rt.spawn(async move {
+            match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
+                Ok(members) => {
+                    let _ = tx.send(UiEvent::MembersLoaded(members));
+                }
+                Err(e) => {
+                    error!("Failed to load members: {}", e);
+                    let _ = tx.send(UiEvent::Error(format!("Errore caricamento membri: {}", e)));
+                }
+            }
+        });
+    }
     // UI Message handling
     pub fn set_ui_message(&mut self, msg: String) {
         // Messaggi per le pagine interne (dopo login)
