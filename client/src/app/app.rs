@@ -69,6 +69,14 @@ impl eframe::App for App {
             self.state.show_account_modal = open;
         }
 
+        // Pop-up creazione gruppo
+        if self.state.show_create_group_modal {
+            crate::app::components::conversation_management::show_create_group_modal(
+                ctx,
+                &mut self.state
+            );
+        }
+
         self.periodic_cleanup();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }

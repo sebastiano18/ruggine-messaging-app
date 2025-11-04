@@ -495,8 +495,8 @@ impl UserNotificationHandler {
 
             let conversation = ConversationDto {
                 id,
-                kind,
-                title,
+                kind: kind.clone(),
+                title: title.clone(),
                 owner_id,
                 created_at,
                 last_read_sequence,
@@ -504,28 +504,103 @@ impl UserNotificationHandler {
                 last_msg_seq,
             };
 
+            // ✅ NUOVO: Gestione stub per gruppi
+            let stub_to_replace = if kind == "group" {
+                // Cerca stub usando client_temp_id
+                conv_obj
+                    .get("client_temp_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .filter(|stub_id| state.group_stubs.contains_key(stub_id))
+            } else {
+                None
+            };
+
+            // ✅ Sostituisci stub se trovato
+            if let Some(stub_id) = stub_to_replace {
+                info!("🔄 Replacing group stub {} with real group {}", stub_id, id);
+
+                // Rimuovi stub dalla lista conversazioni
+                if let Some(ref mut convs) = state.conversations {
+                    convs.retain(|c| c.id != stub_id);
+                }
+
+                // Rimuovi stub dal tracking
+                state.group_stubs.remove(&stub_id);
+
+                // Sposta messaggi dallo stub al gruppo reale (escludi messaggi di sistema)
+                if let Some(stub_messages) = state.conversation_messages.remove(&stub_id) {
+                    let real_messages: Vec<_> = stub_messages
+                        .into_iter()
+                        .filter(|m| !m.is_system_message())
+                        .collect();
+
+                    if !real_messages.is_empty() {
+                        info!("📦 Moving {} messages from stub to real group", real_messages.len());
+                        state
+                            .conversation_messages
+                            .entry(id)
+                            .or_insert_with(Vec::new)
+                            .extend(real_messages);
+                    }
+                }
+
+                // Rimuovi altre entry dello stub
+                state.conversation_unread_counts.remove(&stub_id);
+                state.conversation_sequences.remove(&stub_id);
+                state.conversation_sequences_confirmed.remove(&stub_id);
+
+                // ✅ Aggiorna cid se stavi visualizzando lo stub
+                if state.cid == Some(stub_id) {
+                    state.cid = Some(id);
+                    state.conv_title = title.clone();
+                    state.page = Page::Chat;
+
+                    // Aggiorna anche la vista corrente
+                    state.messages = state
+                        .conversation_messages
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    info!("👁️ Switched view from stub {} to real group {}", stub_id, id);
+                }
+
+                info!("✅ Stub {} replaced with real group {}", stub_id, id);
+            }
+
             info!("📩 Aggiunta alla conversazione '{}' ({})", conversation.title, id);
 
-            // Aggiungi la conversazione alla lista
+            // Aggiungi la conversazione reale alla lista
             if let Some(ref mut convs) = state.conversations {
-                if !convs.iter().any(|c| c.id == id) {
-                    convs.push(conversation.clone());
-                    state.conversation_unread_counts.insert(id, 0);
-                    state.conversation_sequences.insert(id, 0);
-                    state.conversation_sequences_confirmed.insert(id, 0);
-                    state.conversation_messages.insert(id, Vec::new());
+                // Rimuovi duplicati per sicurezza
+                convs.retain(|c| c.id != id);
 
+                if stub_to_replace.is_some() {
+                    // Se sostituisci uno stub, metti all'inizio
+                    convs.insert(0, conversation.clone());
+                } else {
+                    // Altrimenti aggiungi normalmente
+                    convs.push(conversation.clone());
+                }
+
+                // Inizializza entry se non esistono
+                state.conversation_unread_counts.entry(id).or_insert(0);
+                state.conversation_sequences.entry(id).or_insert(0);
+                state.conversation_sequences_confirmed.entry(id).or_insert(0);
+                state.conversation_messages.entry(id).or_insert_with(Vec::new);
+
+                if stub_to_replace.is_none() {
+                    // Solo se NON è uno stub, mostra il messaggio di sistema
                     helpers::add_system_message(
                         state,
                         format!("✅ Sei stato aggiunto al gruppo '{}'", conversation.title),
                     );
-
-                    super::utils::move_conversation_to_top(state, id);
-
-                    info!("New conversation '{}' added to list", conversation.title);
-                } else {
-                    debug!("Conversation {} already exists, skipping", id);
                 }
+
+                super::utils::move_conversation_to_top(state, id);
+
+                info!("New conversation '{}' added to list", conversation.title);
             }
         } else {
             warn!("new_conversation event missing conversation object");

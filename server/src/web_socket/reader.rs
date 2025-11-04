@@ -456,15 +456,15 @@ pub fn spawn_reader(
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                            if msg.contains("database") || msg.contains("sql") =>
-                                        {
-                                            error!(
+                                        if msg.contains("database") || msg.contains("sql") =>
+                                            {
+                                                error!(
                                                 "Database-related internal error for user {}, closing connection",
                                                 user_id
                                             );
-                                            let _ = stop_tx.send(true);
-                                            break;
-                                        }
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            }
                                         crate::error::AppError::Unauthorized => {
                                             warn!(
                                                 "Unauthorized action by user {}, closing connection",
@@ -546,7 +546,7 @@ pub fn spawn_reader(
                                     participants.clone(),
                                     true,
                                 )
-                                .await;
+                                    .await;
                             }
 
                             // (Opzionale) ack esplicito
@@ -581,6 +581,28 @@ pub fn spawn_reader(
                                         "type": "error",
                                         "message": e.to_string(),
                                         "error_code": "INVITE_USER_FAILED"
+                                    });
+                                    if let Ok(txt) = serde_json::to_string(&error_response) {
+                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    }
+                                }
+                            }
+                        }
+
+                        "create_group_with_participants" => {
+                            debug!("Create group with participants request from user {}", user_id);
+                            last_heartbeat = Instant::now();
+
+                            match handle_create_group_with_participants(&state, &mut value, user_id, &username, &out_tx).await {
+                                Ok(()) => {
+                                    debug!("Successfully created group with participants by {}", user_id);
+                                }
+                                Err(e) => {
+                                    error!("Failed to create group with participants: {}", e);
+                                    let error_response = json!({
+                                        "type": "error",
+                                        "message": e.to_string(),
+                                        "error_code": "CREATE_GROUP_FAILED"
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
                                         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
@@ -842,10 +864,10 @@ async fn get_initial_state(
     let user_sequence: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(sequence_num), 0) FROM user_events WHERE user_id = ?",
     )
-    .bind(&user_id_str)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+        .bind(&user_id_str)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
 
     info!(
         "Loaded {} conversations for user {} (only including last_message where messages exist)",
@@ -858,4 +880,166 @@ async fn get_initial_state(
         user_sequence: user_sequence as u64,
         pending_events: Vec::new(),
     })
+}
+
+async fn handle_create_group_with_participants(
+    state: &AppState,
+    value: &mut serde_json::Value,
+    creator_id: Uuid,
+    creator_username: &str,
+    out_tx: &mpsc::Sender<OutboundMsg>,
+) -> crate::error::Result<()> {
+    use crate::services::conversation_service::ConversationService;
+
+    // Estrai parametri
+    let group_name = value
+        .get("group_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| crate::error::AppError::BadRequest("Missing group_name".into()))?;
+
+    let participant_usernames = value
+        .get("participant_usernames")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| crate::error::AppError::BadRequest("Missing participant_usernames".into()))?;
+
+    // Estrai client_temp_id se presente
+    let client_temp_id = value
+        .get("client_temp_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    info!(
+        "Creating group '{}' by {} with {} participants (client_temp_id: {:?})",
+        group_name,
+        creator_username,
+        participant_usernames.len(),
+        client_temp_id
+    );
+
+    // 1. Crea il gruppo
+    let group_id = ConversationService::create_group(&state.pool, group_name, creator_id).await?;
+    info!("Group created with ID: {}", group_id);
+
+    // 2. Raccogli tutti i participant IDs (creatore + invitati)
+    let mut all_participant_ids = vec![creator_id];
+
+    for username_value in participant_usernames {
+        if let Some(username) = username_value.as_str() {
+            // Cerca l'utente per username
+            match sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&state.pool)
+                .await?
+            {
+                Some(user_id_str) => {
+                    match Uuid::parse_str(&user_id_str) {
+                        Ok(user_id) => {
+                            if user_id != creator_id {
+                                all_participant_ids.push(user_id);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Invalid UUID for user {}: {}", username, e);
+                        }
+                    }
+                }
+                None => {
+                    warn!("User {} not found, skipping", username);
+                }
+            }
+        }
+    }
+
+    info!(
+        "Adding {} participants to group {}",
+        all_participant_ids.len(),
+        group_id
+    );
+
+    // 3. Aggiungi tutti i partecipanti al gruppo (usa add_member con requester_id = creator)
+    for participant_id in &all_participant_ids {
+        if *participant_id != creator_id {
+            ConversationService::add_member(&state.pool, group_id, *participant_id, creator_id).await?;
+        }
+    }
+
+    // 4. Carica la conversazione completa per broadcast (usa get_conversation)
+    let conversation_opt = ConversationService::get_conversation(&state.pool, group_id, creator_id).await?;
+
+    let (id, kind, title, owner_id, created_at, last_read_seq, last_activity, last_msg_seq) = match conversation_opt {
+        Some(data) => data,
+        None => {
+            return Err(crate::error::AppError::Internal("Failed to load created group".into()));
+        }
+    };
+
+    let mut conversation = json!({
+        "id": id,
+        "kind": kind,
+        "title": title,
+        "owner_id": owner_id,
+        "created_at": created_at,
+        "last_read_sequence": last_read_seq,
+        "last_activity": last_activity,
+        "last_msg_seq": last_msg_seq
+    });
+
+    // Aggiungi client_temp_id se presente
+    if let Some(ref temp_id) = client_temp_id {
+        conversation["client_temp_id"] = json!(temp_id);
+    }
+
+    // 5. Crea eventi user_events con sequenze per TUTTI i partecipanti (incluso il creatore)
+    for participant_id in &all_participant_ids {
+        // Genera sequenza per questo utente
+        let user_sequence = state.get_next_user_sequence(*participant_id).await?;
+
+        // Salva evento nella tabella user_events
+        sqlx::query(
+            "INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)"
+        )
+            .bind(participant_id.to_string())
+            .bind(user_sequence as i64)
+            .bind("new_conversation")
+            .bind(conversation.to_string())
+            .bind(group_id.to_string())
+            .bind(created_at)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| crate::error::AppError::from(e))?;
+
+        info!(
+            "Created user_event for participant {} with sequence {}",
+            participant_id, user_sequence
+        );
+
+        // Invia notifica in tempo reale se l'utente è connesso
+        let notification = json!({
+            "type": "user_notification",
+            "sequence": user_sequence,
+            "event_type": "new_conversation",
+            "event_data": {
+                "conversation": conversation.clone()
+            },
+            "conversation_id": group_id
+        });
+
+        if let Some(user_tx) = state.user_notification_channels.read().await.get(participant_id) {
+            match user_tx.send(notification) {
+                Ok(_) => info!("Sent user_notification to participant {}", participant_id),
+                Err(e) => warn!("Failed to send notification to participant {}: {}", participant_id, e),
+            }
+        } else {
+            info!("Participant {} not connected, will receive event on reconnect", participant_id);
+        }
+    }
+
+    info!(
+        "Group '{}' created successfully with {} participants",
+        group_name,
+        all_participant_ids.len()
+    );
+
+    Ok(())
 }

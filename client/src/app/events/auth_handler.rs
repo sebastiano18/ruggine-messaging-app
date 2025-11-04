@@ -54,6 +54,8 @@ impl AuthHandler {
         state.page = Page::Auth;
         state.cid = None;
         state.show_account_modal = false;
+        state.show_create_group_modal = false; // Reset popup creazione gruppo
+        state.create_group_popup.reset(); // Reset stato interno del popup
         state.messages.clear();
         state.conversations = None;
         state.conversation_messages.clear();

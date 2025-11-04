@@ -1,7 +1,7 @@
 use crate::api::ws::WsControl;
 use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
@@ -22,6 +22,25 @@ pub struct SequenceStats {
 #[derive(Debug, Clone)]
 pub struct PendingDeletion {
     pub conversation: ConversationDto,
+}
+
+#[derive(Default)]
+pub struct CreateGroupPopupState {
+    pub group_name: String,
+    pub manual_username_input: String,
+    pub selected_participants: HashSet<String>,
+}
+
+impl CreateGroupPopupState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.group_name.clear();
+        self.manual_username_input.clear();
+        self.selected_participants.clear();
+    }
 }
 
 pub struct AppState {
@@ -76,6 +95,9 @@ pub struct AppState {
     // DM stub tracking - conversation_id -> target_username
     pub dm_stubs: HashMap<Uuid, String>,
 
+    // Group stub tracking - conversation_id -> group_name
+    pub group_stubs: HashMap<Uuid, String>,
+
     // Message confirmation tracking
     pub pending_confirmations: HashMap<String, MessageDto>, // client_msg_id -> messaggio ottimistico
     pub confirmation_timeout: Duration,
@@ -104,7 +126,7 @@ pub struct AppState {
 
     pub is_loading_more: bool,
     pub has_more_messages: HashMap<Uuid, bool>,
-    
+
     #[allow(dead_code)]
     pub pending_conversations: HashMap<String, ConversationDto>,
 
@@ -127,8 +149,14 @@ pub struct AppState {
     // Invite popup state
     pub show_invite_popup: bool,
     pub invite_username_input: String,
-}
 
+    // Create group popup state
+    pub show_create_group_modal: bool,
+    pub create_group_popup: CreateGroupPopupState,
+
+    // DM management
+    pub dm_username: String,
+}
 impl AppState {
     pub fn new() -> Self {
         let rt = Runtime::new().expect("tokio runtime");
@@ -180,6 +208,7 @@ impl AppState {
             is_loading: false,
 
             dm_stubs: HashMap::new(),
+            group_stubs: HashMap::new(),
 
             // Message confirmation
             pending_confirmations: HashMap::new(),
@@ -215,6 +244,13 @@ impl AppState {
 
             show_invite_popup: false,
             invite_username_input: String::new(),
+
+            // Create group popup
+            show_create_group_modal: false,
+            create_group_popup: CreateGroupPopupState::new(),
+
+            // DM management
+            dm_username: String::new(),
         }
     }
 
@@ -306,6 +342,7 @@ impl AppState {
                 cid,
                 content,
                 target_username,
+                target_usernames: None,
                 client_msg_id,
             });
         }
