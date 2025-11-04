@@ -186,100 +186,52 @@ impl App {
                     ui.separator();
 
                     let stats = &self.state.sequence_stats;
-                    ui.label(format!("Total Events: {}", stats.total_events_received));
-                    ui.label(format!("Pings Sent: {}", stats.ping_count));
-                    ui.label(format!("Pongs Received: {}", stats.pong_count));
-                    ui.label(format!("Gaps Detected: {}", stats.gaps_detected));
-                    ui.label(format!("Events Recovered: {}", stats.events_recovered));
+                    ui.label(format!("Total events received: {}", stats.total_events_received));
+                    ui.label(format!("Gaps detected: {}", stats.gaps_detected));
+                    ui.label(format!("Pings sent: {}", stats.ping_count));
+                    ui.label(format!("Pongs received: {}", stats.pong_count));
 
-                    if stats.ping_count > 0 {
-                        let pong_rate = (stats.pong_count as f64 / stats.ping_count as f64) * 100.0;
-                        ui.label(format!("Pong Success Rate: {:.1}%", pong_rate));
-                    }
+                    ui.add_space(10.0);
 
-                    if stats.gaps_detected > 0 {
-                        ui.label(format!("Avg Gap Size: {:.1}", stats.average_gap_size));
+                    ui.strong("💬 Message Cache");
+                    ui.separator();
 
-                        if let Some(last_gap) = stats.last_gap_time {
-                            let gap_ago = last_gap.elapsed().as_secs();
-                            ui.label(format!("Last Gap: {}s ago", gap_ago));
+                    ui.label(format!("Conversations cached: {}", self.state.conversation_messages.len()));
+                    let total_messages: usize = self.state.conversation_messages.values().map(|v| v.len()).sum();
+                    ui.label(format!("Total messages cached: {}", total_messages));
+
+                    if let Some(cid) = self.state.cid {
+                        if let Some(messages) = self.state.conversation_messages.get(&cid) {
+                            ui.label(format!("Current conversation messages: {}", messages.len()));
+
+                            let sequenced = messages.iter().filter(|m| m.sequence_num.is_some()).count();
+                            ui.label(format!("  With sequence: {}", sequenced));
+                            ui.label(format!("  Without sequence: {}", messages.len() - sequenced));
                         }
                     }
 
                     ui.add_space(10.0);
 
-                    ui.strong("💾 Cache Info");
-                    ui.separator();
-
-                    ui.label(format!("Conversations: {}",
-                                     self.state.conversations.as_ref().map(|c| c.len()).unwrap_or(0)));
-                    ui.label(format!("Cached Messages: {}", self.state.get_total_cached_messages()));
-                    ui.label(format!("DM Stubs: {}", self.state.dm_stubs.len()));
-                    ui.label(format!("Cached Conversations: {}", self.state.conversation_messages.len()));
-
-                    ui.add_space(10.0);
-
-                    ui.strong("📈 Connection Stats");
+                    ui.strong("🔄 Connection Stats");
                     ui.separator();
 
                     let conn_stats = self.ws_manager.get_connection_stats();
-                    ui.label(format!("Messages Sent: {}", conn_stats.total_messages_sent));
-                    ui.label(format!("Messages Received: {}", conn_stats.total_messages_received));
-                    ui.label(format!("Connection Attempts: {}", conn_stats.connection_attempts));
-                    ui.label(format!("Successful Connections: {}", conn_stats.successful_connections));
-                    ui.label(format!("Disconnections: {}", conn_stats.disconnections));
 
-                    if conn_stats.connection_attempts > 0 {
-                        ui.label(format!("Success Rate: {:.1}%",
-                                         conn_stats.connection_success_rate() * 100.0));
+                    if let Some(uptime) = conn_stats.current_uptime() {
+                        ui.label(format!("Current uptime: {:?}", uptime));
                     }
 
-                    if let Some(ref error) = conn_stats.last_error {
-                        ui.colored_label(egui::Color32::RED, format!("Last Error: {}", error));
-                    }
+                    ui.add_space(10.0);
 
-                    ui.add_space(15.0);
-
-                    ui.strong("🎮 Manual Controls");
+                    ui.strong("🛠️ Actions");
                     ui.separator();
 
                     ui.horizontal(|ui| {
-                        if ui.button("📡 Force Ping").clicked() {
-                            SequenceHandler::send_ping(&mut self.state);
+                        if ui.button("🗑️ Clear Cache").clicked() {
+                            self.state.conversation_messages.clear();
+                            tracing::info!("Message cache cleared");
                         }
 
-                        if ui.button("🔌 Reconnect").clicked() {
-                            self.state.request_ws_reconnect = true;
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        if ui.button("📋 Refresh Convs").clicked() {
-                            self.state.request_conversations_refresh = true;
-                        }
-
-                        if ui.button("🧹 Cleanup").clicked() {
-                            self.state.cleanup_old_data();
-                            self.state.cleanup_dm_stubs();
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        if ui.button("🔄 Request User Resume").clicked() {
-                            let confirmed_seq = self.state.user_sequence_confirmed;
-                            SequenceHandler::request_user_events_resume(&mut self.state, confirmed_seq);
-                        }
-
-                        if let Some(cid) = self.state.cid {
-                            if ui.button("🔄 Request Msg Resume").clicked() {
-                                let seq = self.state.conversation_sequences_confirmed
-                                    .get(&cid).copied().unwrap_or(0);
-                                SequenceHandler::request_messages_resume(&mut self.state, cid, seq);
-                            }
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
                         if ui.button("📊 Reset Seq Stats").clicked() {
                             self.state.sequence_stats = Default::default();
                             tracing::info!("Sequence statistics reset");
@@ -305,40 +257,12 @@ impl App {
     }
 
     fn show_auth_layout(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(100.0);
-
-                ui.label(egui::RichText::new("🦀").size(64.0));
-                ui.add_space(16.0);
-                ui.heading(egui::RichText::new("Ruggine Chat").size(32.0));
-                ui.add_space(20.0);
-
-                ui.group(|ui| {
-                    ui.set_max_width(400.0);
-                    components::auth::panel(ui, &mut self.state);
-                });
-
-                ui.add_space(20.0);
-                match self.state.ws_status {
-                    WsStatus::Connecting => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Connessione in corso...");
-                        });
-                    }
-                    WsStatus::Disconnected => {
-                        ui.colored_label(egui::Color32::GRAY, "🔴 Disconnesso");
-                    }
-                    WsStatus::Connected => {
-                        ui.colored_label(egui::Color32::GREEN, "🟢 Connesso");
-                        if self.state.user_sequence_confirmed > 0 {
-                            ui.label(format!("Sequenza utente: #{}", self.state.user_sequence_confirmed));
-                        }
-                    }
-                }
+        // Lascia che auth::panel gestisca tutto il fullscreen
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none())
+            .show(ctx, |ui| {
+                components::auth::panel(ui, &mut self.state);
             });
-        });
     }
 
     fn show_main_layout(&mut self, ctx: &egui::Context) {
