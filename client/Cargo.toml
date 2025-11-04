@@ -7,6 +7,7 @@ edition = "2021"
 # GUI
 eframe = { version = "0.27", features = ["persistence"] }
 egui = "0.27"
+egui-remixicon = "0.27.2"
 
 # Async / rete
 

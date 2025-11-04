@@ -1,4 +1,5 @@
 // events/auth_handler.rs
+// events/auth_handler.rs
 use crate::models::*;
 use crate::state::core::AppState;
 use reqwest::StatusCode;
@@ -35,6 +36,9 @@ impl AuthHandler {
         state.page = Page::Conversations;
         state.sequence_stats = Default::default();
         state.request_ws_reconnect = true;
+
+        // Pulisci eventuali messaggi di errore dalla schermata di login
+        state.clear_ui_message();
     }
 
     pub fn handle_logged_out(state: &mut AppState) {
@@ -46,8 +50,10 @@ impl AuthHandler {
 
         state.token = None;
         state.user_id = None;
+        // NON pulire username/password - l'utente potrebbe voler riprovare
         state.page = Page::Auth;
         state.cid = None;
+        state.show_account_modal = false;
         state.messages.clear();
         state.conversations = None;
         state.conversation_messages.clear();

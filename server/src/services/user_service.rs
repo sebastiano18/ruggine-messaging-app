@@ -18,6 +18,19 @@ pub struct UserService;
 
 impl UserService {
     pub async fn register(pool: &sqlx::SqlitePool, username: &str, password: &str) -> Result<Uuid> {
+        // Validazione input
+        if username.trim().is_empty() {
+            return Err(AppError::BadRequest("Username non può essere vuoto".to_string()));
+        }
+        if password.len() < 4 {
+            return Err(AppError::BadRequest("Password deve essere almeno 4 caratteri".to_string()));
+        }
+
+        // Controlla se username già esistente
+        if UserRepo::find_by_name(pool, username).await?.is_some() {
+            return Err(AppError::Conflict("Username già registrato".to_string()));
+        }
+
         let salt = SaltString::generate(rand::thread_rng());
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -32,6 +45,11 @@ impl UserService {
         username: &str,
         password: &str,
     ) -> Result<(String, Uuid)> {
+        // Validazione input
+        if username.trim().is_empty() || password.is_empty() {
+            return Err(AppError::BadRequest("Username e password richiesti".to_string()));
+        }
+
         let Some((uid, pwd_hash)) = UserRepo::find_by_name(pool, username).await? else {
             return Err(AppError::Unauthorized);
         };

@@ -29,6 +29,7 @@ pub struct AppState {
     pub base: String,
     pub username: String,
     pub password: String,
+    pub password_confirm: String,
     pub token: Option<String>,
     pub user_id: Option<Uuid>,
     pub page: Page,
@@ -110,6 +111,12 @@ pub struct AppState {
     // User Manag
     pub confirm_delete_account: bool,
 
+    // UI Modals
+    pub show_account_modal: bool,
+
+    // UI Messages
+    pub ui_message: Option<String>,
+
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
     pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
@@ -133,6 +140,7 @@ impl AppState {
             base: std::env::var("RUGGINE_BASE").unwrap_or_else(|_| "http://127.0.0.1:8080".into()),
             username: std::env::var("RUGGINE_USER").unwrap_or_else(|_| "alice".into()),
             password: std::env::var("RUGGINE_PASS").unwrap_or_else(|_| "password".into()),
+            password_confirm: String::new(),
             token: None,
             user_id: None,
             page: Page::Auth,
@@ -158,6 +166,9 @@ impl AppState {
 
             login_state: LoginState::Idle,
             confirm_delete_account: false,
+            show_account_modal: false,
+
+            ui_message: None,
 
             ui_tx: tx,
             ui_rx: rx,
@@ -508,6 +519,15 @@ impl AppState {
                 }
             }
         });
+    }
+
+    // UI Message handling
+    pub fn set_ui_message(&mut self, msg: String) {
+        self.ui_message = Some(msg);
+    }
+
+    pub fn clear_ui_message(&mut self) {
+        self.ui_message = None;
     }
 
 }
