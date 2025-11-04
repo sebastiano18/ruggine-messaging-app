@@ -1,4 +1,3 @@
-use crate::api;
 use crate::models::{Page, UiEvent};
 use crate::state::AppState;
 use eframe::egui;
@@ -60,7 +59,8 @@ impl ConversationsSidebar {
 
     fn show_header(&self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("💬 Conversazioni").heading().strong());
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("{} Conversazioni", egui_remixicon::icons::CHAT_4_FILL)).heading().strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
@@ -196,19 +196,19 @@ impl ConversationsSidebar {
             (
                 egui::Color32::from_rgb(200, 100, 40),
                 egui::Color32::WHITE,
-                egui::Color32::from_rgb(255, 220, 180),
+                egui::Color32::WHITE,
             )
         } else if response.hovered() {
             (
                 egui::Color32::from_rgb(240, 140, 80),
-                egui::Color32::WHITE,
-                egui::Color32::from_rgb(255, 200, 150),
+                egui::Color32::BLACK,
+                egui::Color32::BLACK,
             )
         } else {
             (
                 egui::Color32::TRANSPARENT,
-                egui::Color32::from_rgb(220, 160, 100),
-                egui::Color32::from_rgb(180, 120, 70),
+                egui::Color32::from_rgb(200, 100, 40),
+                egui::Color32::from_rgb(200, 100, 40),
             )
         };
 
@@ -223,9 +223,36 @@ impl ConversationsSidebar {
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
                 let (icon, icon_color) = match conv.kind.as_str() {
-                    "group" => ("👥", egui::Color32::from_rgb(255, 140, 60)),
-                    "dm" => ("💬", egui::Color32::from_rgb(255, 180, 100)),
-                    _ => ("📄", egui::Color32::from_rgb(200, 120, 80)),
+                    "group" => {
+                        let color = if is_selected {
+                            egui::Color32::WHITE
+                        } else if response.hovered() {
+                            egui::Color32::BLACK
+                        } else {
+                            egui::Color32::from_rgb(200, 100, 40)
+                        };
+                        (egui_remixicon::icons::TEAM_FILL, color)
+                    },
+                    "dm" => {
+                        let color = if is_selected {
+                            egui::Color32::WHITE
+                        } else if response.hovered() {
+                            egui::Color32::BLACK
+                        } else {
+                            egui::Color32::from_rgb(200, 100, 40)
+                        };
+                        (egui_remixicon::icons::CHAT_1_FILL, color)
+                    },
+                    _ => {
+                        let color = if is_selected {
+                            egui::Color32::WHITE
+                        } else if response.hovered() {
+                            egui::Color32::BLACK
+                        } else {
+                            egui::Color32::from_rgb(200, 100, 40)
+                        };
+                        (egui_remixicon::icons::FILE_TEXT_FILL, color)
+                    },
                 };
 
                 ui.label(RichText::new(icon).size(18.0).color(icon_color));
@@ -244,7 +271,66 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // ⭐ NUOVO: Badge con contatore unread (a destra, prima della X)
+                    // Mostra prima la X (che apparirà più a destra nel layout right_to_left)
+                    if conv.kind == "group" {
+                        // Mostra la 'X' solo quando il mouse è sopra la riga e solo se l'utente è owner
+                        if show_delete_button && pointer_over_row {
+                            let delete_button = egui::Button::new(RichText::new("X").size(16.0).color(egui::Color32::BLACK))
+                                .small()
+                                .frame(false)
+                                .fill(egui::Color32::TRANSPARENT);
+
+                            let del_resp = ui.add(delete_button).on_hover_text("Elimina gruppo");
+                            
+                            if del_resp.hovered() {
+                                ui.painter().text(
+                                    del_resp.rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "X",
+                                    egui::FontId::proportional(16.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+
+                            if del_resp.clicked() {
+                                delete_clicked = true;
+                                state.request_delete_confirmation(conv);
+                            }
+
+                            ui.add_space(8.0);
+                        }
+                    } else {
+                        // Per le chat private mostra la 'X' solo quando il mouse è sopra la riga
+                        if pointer_over_row {
+                            let delete_button = egui::Button::new(RichText::new("X").size(16.0).color(egui::Color32::BLACK))
+                                .small()
+                                .frame(false)
+                                .fill(egui::Color32::TRANSPARENT);
+
+                            let del_resp = ui
+                                .add(delete_button)
+                                .on_hover_text("Elimina conversazione");
+                            
+                            if del_resp.hovered() {
+                                ui.painter().text(
+                                    del_resp.rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "X",
+                                    egui::FontId::proportional(16.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+
+                            if del_resp.clicked() {
+                                delete_clicked = true;
+                                state.request_delete_confirmation(conv);
+                            }
+
+                            ui.add_space(8.0);
+                        }
+                    }
+
+                    // ⭐ Badge con contatore unread (apparirà a sinistra della X nel layout right_to_left)
                     if let Some(&unread_count) = state.conversation_unread_counts.get(&conv.id) {
                         if unread_count > 0 {
                             let badge_text = if unread_count > 99 {
@@ -271,44 +357,6 @@ impl ConversationsSidebar {
                                 egui::FontId::proportional(11.0),
                                 egui::Color32::WHITE,
                             );
-
-                            ui.add_space(8.0);
-                        }
-                    }
-
-                    if conv.kind == "group" {
-                        // Mostra la 'X' solo quando il mouse è sopra la riga e solo se l'utente è owner
-                        if show_delete_button && pointer_over_row {
-                            let delete_button = egui::Button::new(RichText::new("X").size(16.0))
-                                .small()
-                                .frame(false)
-                                .fill(egui::Color32::TRANSPARENT);
-
-                            let del_resp = ui.add(delete_button).on_hover_text("Elimina gruppo");
-
-                            if del_resp.clicked() {
-                                delete_clicked = true;
-                                state.request_delete_confirmation(conv);
-                            }
-
-                            ui.add_space(8.0);
-                        }
-                    } else {
-                        // Per le chat private mostra la 'X' solo quando il mouse è sopra la riga
-                        if pointer_over_row {
-                            let delete_button = egui::Button::new(RichText::new("X").size(16.0))
-                                .small()
-                                .frame(false)
-                                .fill(egui::Color32::TRANSPARENT);
-
-                            let del_resp = ui
-                                .add(delete_button)
-                                .on_hover_text("Elimina conversazione");
-
-                            if del_resp.clicked() {
-                                delete_clicked = true;
-                                state.request_delete_confirmation(conv);
-                            }
 
                             ui.add_space(8.0);
                         }
@@ -346,9 +394,9 @@ impl ConversationsSidebar {
         let detail_message = if is_stub {
             "Si tratta di uno stub locale: verrà semplicemente rimosso dalla tua lista."
         } else if conversation.kind == "group" {
-            "L'eliminazione rimuoverà il gruppo per tutti i partecipanti. L'azione è irreversibile."
+            "L'eliminazione rimuoverà il gruppo per tutti i partecipanti."
         } else {
-            "L'eliminazione rimuoverà definitivamente la conversazione. L'azione è irreversibile."
+            "L'eliminazione rimuoverà definitivamente la conversazione."
         };
 
         egui::Window::new("Conferma eliminazione")

@@ -16,6 +16,8 @@ pub enum AppError {
     NotFound,
     #[error("Bad Request: {0}")]
     BadRequest(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
     #[error("Internal Server Error: {0}")]
     Internal(String),
     #[error(transparent)]
@@ -31,6 +33,7 @@ impl IntoResponse for AppError {
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,

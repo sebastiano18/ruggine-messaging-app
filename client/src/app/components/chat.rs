@@ -199,17 +199,15 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) 
                 if s.ws_status == WsStatus::Disconnected {
                     if ui
                         .button("🔌 Riconnetti")
-                        .on_hover_text("Riprova a collegare il WebSocket")
+                        .on_hover_text("Riconnetti WebSocket")
                         .clicked()
                     {
                         s.request_ws_reconnect = true;
                     }
-                }
-
-                if s.is_loading && !s.is_initial_load_complete {
-                    ui.add_space(8.0);
-                    ui.spinner();
-                    ui.label("Caricamento...");
+                } else if s.ws_status == WsStatus::Connecting {
+                    ui.label("🔌 Connessione...");
+                } else {
+                    ui.label("🟢");
                 }
             });
         },
@@ -378,17 +376,20 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
                         );
                         ui.add_space(3.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Stato conferma
-                            let status_icon = match message.is_confirmed {
-                                Some(true) => "✔✔",  // Confermato
-                                Some(false) => "✔",   // Non confermato/in attesa
-                                None => "⏳",         // Sconosciuto/in invio
-                            };
-
-                            let status_color = match message.is_confirmed {
-                                Some(true) => egui::Color32::from_rgb(255, 220, 180),
-                                Some(false) => egui::Color32::from_rgb(255, 150, 100),
-                                None => egui::Color32::from_rgb(200, 200, 200),
+                            // Stato conferma con gestione fallimento
+                            let (status_icon, status_color) = match message.is_confirmed {
+                                Some(true) => {
+                                    // Confermato - doppia spunta arancione
+                                    ("✔✔", egui::Color32::from_rgb(255, 220, 180))
+                                }
+                                Some(false) => {
+                                    // Fallito - X rossa
+                                    ("❌", egui::Color32::from_rgb(255, 80, 80))
+                                }
+                                None => {
+                                    // Appena inviato, in attesa - spunta singola grigia
+                                    ("✔", egui::Color32::from_rgb(200, 200, 200))
+                                }
                             };
 
                             ui.colored_label(status_color, status_icon);

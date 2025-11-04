@@ -11,17 +11,83 @@ impl MessageHandler {
     pub fn handle_message_send_failed(state: &mut AppState, msg_id: Uuid) {
         warn!("Message send failed: {}", msg_id);
 
-        if let Some(pos) = state.messages.iter().position(|m| m.id == msg_id) {
-            state.messages.remove(pos);
+        // Trova il client_msg_id, conversazione E CONTENUTO del messaggio fallito
+        let (client_msg_id, conversation_id, failed_content) = state.messages
+            .iter()
+            .find(|m| m.id == msg_id)
+            .map(|m| (m.client_msg_id.clone(), m.conversation_id, m.content.clone()))
+            .unwrap_or((None, uuid::Uuid::nil(), String::new()));
+
+        // Verifica che abbiamo una conversazione valida
+        if conversation_id.is_nil() {
+            warn!("Cannot handle failed message: conversation_id is nil");
+            return;
         }
 
-        if let Some(cid) = state.cid {
-            if let Some(messages) = state.conversation_messages.get_mut(&cid) {
-                if let Some(pos) = messages.iter().position(|m| m.id == msg_id) {
-                    messages.remove(pos);
+        // Marca il messaggio come fallito nella UI
+        let mut marked_in_ui = false;
+        for msg in &mut state.messages {
+            if msg.id == msg_id {
+                msg.is_confirmed = Some(false); // false = fallito
+                marked_in_ui = true;
+                info!("Marked message {} as failed in UI", msg_id);
+                break;
+            }
+        }
+
+        // Marca anche nella cache
+        let mut marked_in_cache = false;
+        if let Some(messages) = state.conversation_messages.get_mut(&conversation_id) {
+            for msg in messages.iter_mut() {
+                if msg.id == msg_id {
+                    msg.is_confirmed = Some(false); // false = fallito
+                    marked_in_cache = true;
+                    info!("Marked message {} as failed in cache", msg_id);
+                    break;
                 }
             }
         }
+
+        // IMPORTANTE: Rimuovi da pending_confirmations per evitare memory leak
+        if let Some(client_id) = client_msg_id {
+            if let Some(_failed_msg) = state.pending_confirmations.remove(&client_id) {
+                info!("Removed failed message {} from pending_confirmations", client_id);
+            }
+        }
+
+        // Crea messaggio di errore con ANTEPRIMA del contenuto fallito
+        let error_text = if !failed_content.is_empty() {
+            // Mostra i primi 50 caratteri del messaggio fallito
+            let preview = if failed_content.len() > 50 {
+                format!("{}...", &failed_content[..50])
+            } else {
+                failed_content.clone()
+            };
+            format!("⚠️ Messaggio non inviato: \"{}\"", preview)
+        } else {
+            "⚠️ Messaggio non inviato - errore di connessione".to_string()
+        };
+
+        // Crea il messaggio di sistema manualmente con la conversation_id corretta
+        let mut system_msg = MessageDto::system_message(error_text.clone());
+        system_msg.conversation_id = conversation_id; // IMPORTANTE: Imposta la conversation_id corretta
+
+        // Aggiungi alla UI se siamo nella conversazione giusta
+        if state.cid == Some(conversation_id) {
+            state.messages.push(system_msg.clone());
+            info!("Added system error message to UI for conversation {}", conversation_id);
+        }
+
+        // Aggiungi sempre alla cache della conversazione
+        if let Some(messages) = state.conversation_messages.get_mut(&conversation_id) {
+            messages.push(system_msg);
+            info!("Added system error message to cache for conversation {}", conversation_id);
+        }
+
+        info!(
+            "Handled message send failure: msg_id={}, marked_ui={}, marked_cache={}, cid={}",
+            msg_id, marked_in_ui, marked_in_cache, conversation_id
+        );
     }
 
     pub fn handle_message_confirmation(

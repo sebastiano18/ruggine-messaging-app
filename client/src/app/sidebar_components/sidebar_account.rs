@@ -10,18 +10,14 @@ impl AccountSidebar {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
-        ui.heading("⚙️Account");
-        ui.separator();
-        ui.add_space(8.0);
-
         if let Some(ref username) = state.token.as_ref().map(|_| &state.username) {
             self.show_user_info(ui, state, username);
             ui.add_space(12.0);
 
-            self.show_configuration(ui, state);
+            self.show_statistics(ui, state);
             ui.add_space(12.0);
 
-            self.show_statistics(ui, state);
+            self.show_configuration(ui, state);
             ui.add_space(12.0);
 
             self.show_logout_button(ui, state);
@@ -32,30 +28,23 @@ impl AccountSidebar {
 
     fn show_user_info(&self, ui: &mut egui::Ui, state: &AppState, username: &str) {
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Informazioni Utente").strong());
+            ui.label(egui::RichText::new("Informazioni Utente").strong().color(egui::Color32::from_rgb(200, 100, 40)));
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("👤 Username:");
+                ui.label(format!("{} Username:", egui_remixicon::icons::USER_FILL));
                 ui.label(egui::RichText::new(username).strong());
             });
-
-            if let Some(user_id) = state.user_id {
-                ui.horizontal(|ui| {
-                    ui.label("🆔 ID:");
-                    ui.label(egui::RichText::new(&user_id.to_string()[..8]).code());
-                });
-            }
         });
     }
 
     fn show_configuration(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Configurazione").strong());
+            ui.label(egui::RichText::new("Configurazione").strong().color(egui::Color32::from_rgb(200, 100, 40)));
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("🌍 Server:");
+                ui.label(format!("{} Server:", egui_remixicon::icons::GLOBAL_FILL));
                 ui.add(egui::TextEdit::singleline(&mut state.base).desired_width(200.0));
             });
 
@@ -67,7 +56,7 @@ impl AccountSidebar {
 
     fn show_websocket_config(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
-            ui.label("🔌 WebSocket:");
+            ui.label(format!("{} WebSocket:", egui_remixicon::icons::PLUG_FILL));
             match state.ws_status {
                 WsStatus::Connected => ui.colored_label(egui::Color32::GREEN, "Connesso"),
                 WsStatus::Connecting => ui.colored_label(egui::Color32::YELLOW, "Connessione..."),
@@ -75,7 +64,7 @@ impl AccountSidebar {
             };
 
             if state.ws_status == WsStatus::Disconnected {
-                if ui.small_button("🔄").on_hover_text("Riconnetti").clicked() {
+                if ui.small_button(egui_remixicon::icons::REFRESH_LINE).on_hover_text("Riconnetti").clicked() {
                     state.request_ws_reconnect = true;
                 }
             }
@@ -85,71 +74,85 @@ impl AccountSidebar {
     fn show_statistics(&self, ui: &mut egui::Ui, state: &AppState) {
         if let Some(ref conversations) = state.conversations {
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Statistiche").strong());
+                ui.label(egui::RichText::new("Statistiche").strong().color(egui::Color32::from_rgb(200, 100, 40)));
                 ui.separator();
 
                 let groups = conversations.iter().filter(|c| c.kind == "group").count();
                 let dms = conversations.iter().filter(|c| c.kind == "dm").count();
-                let total_messages = state.conversation_messages.values().map(|msgs| msgs.len()).sum::<usize>();
 
                 ui.horizontal(|ui| {
-                    ui.label("👥 Gruppi:");
+                    ui.label(format!("{} Gruppi:", egui_remixicon::icons::TEAM_FILL));
                     ui.label(egui::RichText::new(groups.to_string()).strong());
                 });
                 ui.horizontal(|ui| {
-                    ui.label("💬 Chat private:");
+                    ui.label(format!("{} Chat private:", egui_remixicon::icons::CHAT_1_FILL));
                     ui.label(egui::RichText::new(dms.to_string()).strong());
-                });
-                ui.horizontal(|ui| {
-                    ui.label("📝 Messaggi totali:");
-                    ui.label(egui::RichText::new(total_messages.to_string()).strong());
                 });
             });
         }
     }
 
     fn show_logout_button(&self, ui: &mut egui::Ui, state: &mut AppState) {
-        if ui.button(egui::RichText::new("🚪 Logout").color(egui::Color32::WHITE))
-            .on_hover_text("Esci dall'applicazione")
-            .clicked() {
-            if let Some(token) = &state.token {
-                let base = state.base.clone();
-                let token = token.clone();
-                let tx = state.ui_tx.clone();
-                state.rt.spawn(async move {
-                    if let Err(e) = crate::api::auth::logout(&base, &token).await {
-                        let _ = tx.send(UiEvent::Info(format!("logout note: {e}")));
-                    }
-                    let _ = tx.send(UiEvent::LoggedOut);
-                });
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Esci dall'account").strong().color(egui::Color32::from_rgb(200, 100, 40)));
+            ui.separator();
+
+            let logout_btn = egui::Button::new(
+                egui::RichText::new(format!("{} Logout", egui_remixicon::icons::LOGOUT_BOX_R_FILL))
+                    .color(egui::Color32::WHITE)
+            )
+            .fill(egui::Color32::from_rgb(180, 80, 30))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+            .min_size(egui::vec2(100.0, 32.0)); 
+
+            if ui
+                .add(logout_btn)
+                .clicked()
+            {
+                if let Some(token) = &state.token {
+                    let base = state.base.clone();
+                    let token = token.clone();
+                    let tx = state.ui_tx.clone();
+                    state.rt.spawn(async move {
+                        if let Err(e) = crate::api::auth::logout(&base, &token).await {
+                            let _ = tx.send(UiEvent::Info(format!("logout note: {e}")));
+                        }
+                        let _ = tx.send(UiEvent::LoggedOut);
+                    });
+                }
             }
-        }
+        });
     }
 
     fn show_delete_account(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Elimina account").strong());
+            ui.label(egui::RichText::new("Elimina account").strong().color(egui::Color32::from_rgb(200, 100, 40)));
             ui.separator();
 
             if !state.confirm_delete_account {
-                let confirm_style = egui::Button::new("Elimina account")
-                    .fill(egui::Color32::from_rgb(180, 30, 30))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
-                    .min_size(egui::vec2(200.0, 32.0));
+                ui.small("Questa azione è irreversibile. Ti verrà chiesta conferma.");
+                
+                let confirm_style = egui::Button::new(
+                    egui::RichText::new(format!("{} Elimina", egui_remixicon::icons::DELETE_BIN_FILL))
+                        .color(egui::Color32::WHITE)
+                )
+                .fill(egui::Color32::from_rgb(180, 30, 30))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                .min_size(egui::vec2(100.0, 32.0));
 
                 if ui.add(confirm_style).clicked() {
                     let _ = state.ui_tx.send(UiEvent::DeleteAccountStart);
                 }
-
-                ui.small("Questa azione è irreversibile. Ti verrà chiesta conferma.");
                 return;
             }
 
             ui.horizontal(|ui| {
-                let confirm_style = egui::Button::new("Conferma eliminazione")
-                    .fill(egui::Color32::from_rgb(220, 20, 20))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
-                    .min_size(egui::vec2(220.0, 32.0));
+                let confirm_style = egui::Button::new(
+                    egui::RichText::new("Conferma eliminazione").color(egui::Color32::WHITE)
+                )
+                .fill(egui::Color32::from_rgb(220, 20, 20))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
+                .min_size(egui::vec2(220.0, 32.0));
 
                 if ui.add(confirm_style).clicked() {
                     let _ = state.ui_tx.send(UiEvent::DeleteAccountConfirm);
