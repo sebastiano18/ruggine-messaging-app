@@ -1,6 +1,6 @@
 use eframe::egui;
 use crate::app::components;
-
+use crate::app::events::sequence_handler::SequenceHandler;
 use crate::app::header::HeaderManager;
 use crate::app::ws_manager::ws_manager::WebSocketManager;
 use crate::app::sidebar::SidebarManager;
@@ -193,7 +193,7 @@ impl App {
                     ui.strong("📡 Ping/Pong");
                     ui.separator();
 
-                    ui.label(format!("Sequence Health: {:.2}", self.state.get_sequence_health()));
+                    ui.label(format!("Sequence Health: {:.2}", SequenceHandler::get_sequence_health(&self.state)));
                     ui.label(format!("Missed Pings: {}/{}", self.state.missed_pings, self.state.max_missed_pings));
 
                     let next_ping_secs = (self.state.ping_interval.as_secs() as f64 -
@@ -266,7 +266,7 @@ impl App {
 
                     ui.horizontal(|ui| {
                         if ui.button("📡 Force Ping").clicked() {
-                            self.state.send_ping();
+                            SequenceHandler::send_ping(&mut self.state);
                         }
 
                         if ui.button("🔌 Reconnect").clicked() {
@@ -287,14 +287,15 @@ impl App {
 
                     ui.horizontal(|ui| {
                         if ui.button("🔄 Request User Resume").clicked() {
-                            self.state.request_user_events_resume(self.state.user_sequence_confirmed);
+                            let confirmed_seq = self.state.user_sequence_confirmed;
+                            SequenceHandler::request_user_events_resume(&mut self.state, confirmed_seq);
                         }
 
                         if let Some(cid) = self.state.cid {
                             if ui.button("🔄 Request Msg Resume").clicked() {
                                 let seq = self.state.conversation_sequences_confirmed
                                     .get(&cid).copied().unwrap_or(0);
-                                self.state.request_messages_resume(cid, seq);
+                                SequenceHandler::request_messages_resume(&mut self.state, cid, seq);
                             }
                         }
                     });
@@ -408,7 +409,7 @@ impl App {
                         ui.label(format!("Ultimo evento utente: #{}", self.state.user_sequence_confirmed));
                     }
 
-                    let health = self.state.get_sequence_health();
+                    let health = SequenceHandler::get_sequence_health(&self.state);
                     if health < 1.0 {
                         let health_color = if health > 0.8 { egui::Color32::YELLOW } else { egui::Color32::RED };
                         ui.colored_label(health_color, format!("Salute sincronizzazione: {:.1}%", health * 100.0));

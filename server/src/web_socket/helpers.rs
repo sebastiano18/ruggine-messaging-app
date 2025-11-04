@@ -647,6 +647,24 @@ pub async fn handle_chat_message(
         msg_id, message_sequence
     );
 
+    // ⭐ NUOVO: Auto-marca il messaggio come letto per l'autore
+    sqlx::query(
+        "UPDATE participants
+         SET last_read_sequence = ?
+         WHERE conversation_id = ? AND user_id = ?"
+    )
+        .bind(message_sequence as i64)
+        .bind(&conversation_id_str)
+        .bind(&user_id_str)
+        .execute(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    debug!(
+        "Auto-marked message seq {} as read for author {}",
+        message_sequence, user_id
+    );
+
     // Salva client_msg_id in cache se presente
     if let Some(ref client_id) = client_msg_id {
         state
@@ -666,7 +684,7 @@ pub async fn handle_chat_message(
         ts,
         user_id,
     )
-    .await?;
+        .await?;
 
     // ========================================================================
     // Crea eventi user per TUTTI i partecipanti

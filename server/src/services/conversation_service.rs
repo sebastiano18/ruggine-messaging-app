@@ -18,7 +18,7 @@ impl ConversationService {
     }
 
     // Ottieni le conversazioni di un utente con tutti i campi necessari
-    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64)>> {
+    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
         ConversationRepo::by_user(pool, user_id).await
     }
 
@@ -27,7 +27,7 @@ impl ConversationService {
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
         user_id: Uuid
-    ) -> Result<Option<(Uuid, String, String, Uuid, i64)>> {
+    ) -> Result<Option<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
         ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await
     }
 

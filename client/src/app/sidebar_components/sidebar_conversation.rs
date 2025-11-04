@@ -271,6 +271,38 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // ⭐ NUOVO: Badge con contatore unread (a destra, prima della X)
+                    if let Some(&unread_count) = state.conversation_unread_counts.get(&conv.id) {
+                        if unread_count > 0 {
+                            let badge_text = if unread_count > 99 {
+                                "99+".to_string()
+                            } else {
+                                unread_count.to_string()
+                            };
+
+                            let badge_size = egui::vec2(24.0, 24.0);
+                            let (rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
+
+                            // Cerchio arancione
+                            ui.painter().circle_filled(
+                                rect.center(),
+                                12.0,
+                                egui::Color32::from_rgb(255, 100, 30)
+                            );
+
+                            // Testo bianco centrato
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                &badge_text,
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+
+                            ui.add_space(8.0);
+                        }
+                    }
+
                     if conv.kind == "group" {
                         // Mostra la 'X' solo quando il mouse è sopra la riga e solo se l'utente è owner
                         if show_delete_button && pointer_over_row {
@@ -338,6 +370,7 @@ impl ConversationsSidebar {
             state.page = Page::Chat;
         }
     }
+    
 
     // Gestione pop-up di eliminazione dm/group
     fn show_delete_confirmation_popup(&self, ui: &mut egui::Ui, state: &mut AppState) {

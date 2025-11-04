@@ -17,6 +17,70 @@ use super::{
 };
 use crate::state::AppState;
 
+/// Gestisce il messaggio mark_read dal client
+async fn handle_mark_read(
+    state: &AppState,
+    user_id: Uuid,
+    msg: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Estrai conversation_id dal messaggio
+    let conversation_id_str = msg
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing conversation_id")?;
+
+    let conversation_id = Uuid::parse_str(conversation_id_str)
+        .map_err(|_| "Invalid conversation_id format")?;
+
+    // 2. Estrai sequence_num dal messaggio
+    let sequence_num = msg
+        .get("sequence_num")
+        .and_then(|v| v.as_i64())
+        .ok_or("Missing or invalid sequence_num")?;
+
+    let user_id_str = user_id.to_string();
+    let conv_id_str = conversation_id.to_string();
+
+    // 3. Valida che l'utente sia partecipante (security check)
+    let is_participant: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ?)"
+    )
+        .bind(&conv_id_str)
+        .bind(&user_id_str)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(false);
+
+    if !is_participant {
+        warn!(
+            "User {} attempted to mark_read conversation {} (not a participant)",
+            user_id, conversation_id
+        );
+        return Ok(()); // Ignora silenziosamente per sicurezza
+    }
+
+    // 4. Aggiorna last_read_sequence nel database
+    sqlx::query(
+        r#"
+        UPDATE participants
+        SET last_read_sequence = MAX(last_read_sequence, ?)
+        WHERE conversation_id = ? AND user_id = ?
+        "#
+    )
+        .bind(sequence_num)
+        .bind(&conv_id_str)
+        .bind(&user_id_str)
+        .execute(&state.pool)
+        .await?;
+
+    info!(
+        "User {} marked conversation {} as read up to sequence {}",
+        user_id, conversation_id, sequence_num
+    );
+
+    Ok(())
+}
+
 pub fn spawn_reader(
     mut ws_rx: SplitStream<WebSocket>,
     state: AppState,
@@ -497,6 +561,12 @@ pub fn spawn_reader(
 
                             continue;
                         }
+                        "mark_read" => {
+                            if let Err(e) = handle_mark_read(&state, user_id, &value).await {
+                                error!("Failed to handle mark_read from user {}: {}", user_id, e);
+                            }
+                        }
+
 
                         _ => {
                             warn!(
@@ -615,63 +685,62 @@ async fn get_initial_state(
 
     // Query ottimizzata che gestisce correttamente i titoli DM e include author_id
     let query = r#"
-        SELECT
-            c.id as conv_id,
-            c.title as conv_title,
-            c.kind as conv_kind,
-            c.owner_id as conv_owner_id,
-            c.created_at as conv_created_at,
-            -- Per DM, ottieni il nome dell'altro partecipante
-            CASE
-                WHEN c.kind = 'dm' AND (c.title IS NULL OR c.title = '') THEN (
-                    SELECT u.username
-                    FROM participants p2
-                    INNER JOIN users u ON p2.user_id = u.id
-                    WHERE p2.conversation_id = c.id
-                    AND p2.user_id != ?
-                    LIMIT 1
-                )
-                WHEN c.title IS NULL OR c.title = '' THEN 'Untitled'
-                ELSE c.title
-            END as display_title,
-            -- ✅ MODIFICA 1: Aggiunta query per UUID del messaggio
-            (SELECT m.id
-             FROM messages m
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_msg_id,
-            (SELECT m.content
-             FROM messages m
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_content,
-            (SELECT m.author_id
-             FROM messages m
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_author_id,
-            (SELECT u.username
-             FROM messages m
-             INNER JOIN users u ON m.author_id = u.id
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_author,
-            (SELECT m.created_at
-             FROM messages m
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_msg_time,
-            (SELECT m.sequence_num
-             FROM messages m
-             WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1) as last_sequence,
-            (SELECT COUNT(*)
-             FROM messages m2
-             WHERE m2.conversation_id = c.id) as message_count
-        FROM conversations c
-        INNER JOIN participants p ON c.id = p.conversation_id
-        WHERE p.user_id = ?
-        ORDER BY COALESCE(
-            (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id
-             ORDER BY m.created_at DESC LIMIT 1),
-            c.created_at
-        ) DESC
-    "#;
+            SELECT
+                c.id as conv_id,
+                c.title as conv_title,
+                c.kind as conv_kind,
+                c.owner_id as conv_owner_id,
+                c.created_at as conv_created_at,
+                CASE
+                    WHEN c.kind = 'dm' AND (c.title IS NULL OR c.title = '') THEN (
+                        SELECT u.username
+                        FROM participants p2
+                        INNER JOIN users u ON p2.user_id = u.id
+                        WHERE p2.conversation_id = c.id
+                        AND p2.user_id != ?
+                        LIMIT 1
+                    )
+                    WHEN c.title IS NULL OR c.title = '' THEN 'Untitled'
+                    ELSE c.title
+                END as display_title,
+                (SELECT m.id
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_msg_id,
+                (SELECT m.content
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_content,
+                (SELECT m.author_id
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_author_id,
+                (SELECT u.username
+                 FROM messages m
+                 INNER JOIN users u ON m.author_id = u.id
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_author,
+                (SELECT m.created_at
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_msg_time,
+                (SELECT m.sequence_num
+                 FROM messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1) as last_sequence,
+                p.last_read_sequence,
+                (SELECT COUNT(*)
+                 FROM messages m2
+                 WHERE m2.conversation_id = c.id) as message_count
+            FROM conversations c
+            INNER JOIN participants p ON c.id = p.conversation_id
+            WHERE p.user_id = ?
+            ORDER BY COALESCE(
+                (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id
+                 ORDER BY m.created_at DESC LIMIT 1),
+                c.created_at
+            ) DESC
+        "#;
 
     let rows = sqlx::query(query)
         .bind(&user_id_str) // Primo parametro per il CASE WHEN
@@ -687,8 +756,8 @@ async fn get_initial_state(
         let owner_id: String = row.try_get("conv_owner_id").unwrap_or_default();
         let created_at: i64 = row.try_get("conv_created_at").unwrap_or(0);
         let message_count: i64 = row.try_get("message_count").unwrap_or(0);
+        let last_read_seq: i64 = row.try_get("last_read_sequence").unwrap_or(0);
 
-        // Usa display_title che è già stato calcolato dalla query
         let display_title: String = row.try_get("display_title").unwrap_or_else(|_| {
             if kind == "dm" {
                 "Direct Message".to_string()
@@ -703,7 +772,8 @@ async fn get_initial_state(
             "title": display_title,
             "owner_id": owner_id,
             "created_at": created_at,
-            "message_count": message_count
+            "message_count": message_count,
+            "last_read_sequence": last_read_seq
         });
 
         // Aggiungi ultimo messaggio SOLO se esiste veramente

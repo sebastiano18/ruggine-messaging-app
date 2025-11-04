@@ -24,6 +24,7 @@ pub struct Participant {
     pub user_id: Uuid,
     pub role: String,
     pub last_read_msg: Option<Uuid>,
+    pub last_read_sequence: i64,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]

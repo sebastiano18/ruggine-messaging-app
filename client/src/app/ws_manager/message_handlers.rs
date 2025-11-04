@@ -113,12 +113,37 @@ fn handle_conversation_confirmation(
             .unwrap_or("")
             .to_string();
 
+        let last_read_sequence = conv_obj
+            .get("last_read_sequence")
+            .and_then(|s| s.as_i64())
+            .unwrap_or(0);
+
+        // Calcola last_activity
+        let last_message_time = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("created_at"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+        let last_activity = std::cmp::max(created_at, last_message_time);
+
+        let last_msg_seq = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("sequence_num"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+
+
         let conversation = ConversationDto {
             id,
             kind,
             title,
             owner_id,
             created_at,
+            last_read_sequence,
+            last_activity,
+            last_msg_seq
         };
 
         // Parse dell'ultimo messaggio se presente
@@ -199,6 +224,11 @@ fn handle_conversation_created_complete(
         let kind = conv_obj.get("kind")?.as_str()?.to_string();
         let owner_id = parse_uuid_field(conv_obj, "owner_id")?;
         let created_at = conv_obj.get("created_at")?.as_i64()?;
+        let last_read_sequence = conv_obj
+            .get("last_read_sequence")
+            .and_then(|s| s.as_i64())
+            .unwrap_or(0);
+
 
         // Usa display_title per DM, altrimenti usa title normale
         let title = conv_obj
@@ -208,12 +238,31 @@ fn handle_conversation_created_complete(
             .unwrap_or("")
             .to_string();
 
+        // Calcola last_activity
+        let last_message_time = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("created_at"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
+        let last_activity = std::cmp::max(created_at, last_message_time);
+
+
+        let last_msg_seq = conv_obj
+            .get("last_message")
+            .and_then(|msg| msg.get("sequence_num"))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+
         Some(ConversationDto {
             id,
             kind,
             title,
             owner_id,
             created_at,
+            last_read_sequence,
+            last_activity,
+            last_msg_seq,
         })
     });
 
@@ -297,7 +346,7 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
 
 // Resto delle funzioni esistenti rimangono invariate...
 fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
-    // Codice esistente...
+
     let conversations: Vec<ConversationDto> = value
         .get("conversations")
         .and_then(|c| c.as_array())
@@ -315,17 +364,43 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         .unwrap_or("")
                         .to_string();
 
+                    // ⭐ AGGIUNGI: Leggi last_read_sequence dal JSON
+                    let last_read_sequence = conv
+                        .get("last_read_sequence")
+                        .and_then(|s| s.as_i64())
+                        .unwrap_or(0);  // Default 0 se manca
+
+                    let last_message_time = conv
+                        .get("last_message")
+                        .and_then(|msg| msg.get("created_at"))
+                        .and_then(|t| t.as_i64())
+                        .unwrap_or(0);
+
+                    let last_activity = std::cmp::max(created_at, last_message_time);
+
+                    let last_msg_seq = conv
+                        .get("last_message")
+                        .and_then(|msg| msg.get("sequence_num"))
+                        .and_then(|t| t.as_i64())
+                        .unwrap_or(0);
+
                     Some(ConversationDto {
                         id,
                         kind,
                         title,
                         owner_id,
                         created_at,
+                        last_read_sequence,
+                        last_activity,
+                        last_msg_seq,
                     })
                 })
                 .collect()
         })
         .unwrap_or_default();
+
+    let mut conversations = conversations;
+    conversations.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
 
     let user_sequence = value
         .get("user_sequence")
@@ -463,7 +538,7 @@ fn handle_pong(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) 
         .get("current_user_sequence")
         .and_then(|s| s.as_u64())
         .unwrap_or(0);
-    
+
 
     let gaps_detected = value
         .get("gaps_detected")

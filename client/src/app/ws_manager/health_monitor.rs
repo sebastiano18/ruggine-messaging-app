@@ -2,7 +2,7 @@ use crate::state::AppState;
 use crate::models::WsStatus;
 use std::time::{Duration, Instant};
 use tracing::{info, warn, debug};
-
+use crate::app::events::sequence_handler::SequenceHandler;
 use super::connection_manager::ConnectionManager;
 
 pub struct HealthMonitor {
@@ -26,7 +26,7 @@ impl HealthMonitor {
 
         self.last_health_check = Instant::now();
 
-        let health = state.get_sequence_health();
+        let health = SequenceHandler::get_sequence_health(state);
         let total_messages = state.get_total_cached_messages();
         let ws_connected = state.ws_status == WsStatus::Connected;
 
@@ -144,7 +144,7 @@ impl HealthMonitor {
 
     /// Restituisce un rapporto di salute completo
     pub fn get_health_report(&self, state: &AppState, connection_manager: &ConnectionManager) -> HealthReport {
-        let sequence_health = state.get_sequence_health();
+        let sequence_health = SequenceHandler::get_sequence_health(state);
         let memory_usage = state.get_total_cached_messages();
         let connection_stats = connection_manager.get_stats();
 

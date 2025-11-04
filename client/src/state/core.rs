@@ -1,4 +1,5 @@
 use crate::api::ws::WsControl;
+use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -6,7 +7,6 @@ use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::data_loader::DataLoader;
 
 #[derive(Debug, Default)]
 pub struct SequenceStats {
@@ -114,6 +114,9 @@ pub struct AppState {
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
     pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
+
+    //Unread message counter
+    pub conversation_unread_counts: HashMap<Uuid, i64>,
 }
 
 impl AppState {
@@ -194,6 +197,8 @@ impl AppState {
 
             message_reorder_buffer: BTreeMap::new(),
             user_event_reorder_buffer: BTreeMap::new(),
+
+            conversation_unread_counts: HashMap::new(),
         }
     }
 
@@ -209,9 +214,6 @@ impl AppState {
         }
     }
 
-    pub fn load_single_conversation_messages(&self, cid: Uuid) {
-        DataLoader::load_single_conversation_messages(self, cid);
-    }
 
     pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
         self.pending_deletion = Some(PendingDeletion {
@@ -328,237 +330,6 @@ impl AppState {
 
     // ===Ping System ===
 
-    pub fn send_ping(&mut self) {
-        let user_seq = Some(self.user_sequence_confirmed);
-        debug!("Sending ping - user_seq: {:?}", user_seq);
-        self.sequence_stats.ping_count += 1;
-        self.send_via_websocket(Outgoing::Ping {
-            user_sequence: user_seq,
-        });
-    }
-
-    // ... resto dei metodi esistenti rimangono invariati ...
-
-    pub fn update_user_sequence(&mut self, sequence: u64) {
-        let current = self.user_sequence_received;
-
-        if sequence > current + 1 {
-            let gap_size = sequence - current - 1;
-            warn!(
-                "User events gap detected! Expected {}, got {} (missing {} events)",
-                current + 1,
-                sequence,
-                gap_size
-            );
-            self.sequence_stats.gaps_detected += 1;
-            self.sequence_stats.last_gap_time = Some(Instant::now());
-
-            if gap_size >= 3 {
-                warn!(
-                    "Large user events gap ({}), requesting immediate resume",
-                    gap_size
-                );
-                self.request_user_events_resume(current);
-            } else {
-                debug!(
-                    "Small user events gap ({}), will handle at next ping",
-                    gap_size
-                );
-            }
-        }
-
-        if sequence > self.user_sequence_received {
-            self.user_sequence_received = sequence;
-            self.sequence_stats.total_events_received += 1;
-        }
-
-        if sequence == self.user_sequence_confirmed + 1 {
-            self.user_sequence_confirmed = sequence;
-            debug!("User sequence {} confirmed (continuous)", sequence);
-        }
-    }
-
-    pub fn update_conversation_sequence(&mut self, conversation_id: Uuid, sequence: u64) {
-        let current = self
-            .conversation_sequences
-            .get(&conversation_id)
-            .copied()
-            .unwrap_or(0);
-
-        if sequence > current + 1 {
-            let gap_size = sequence - current - 1;
-            warn!(
-                "Messages gap in conversation {}! Expected {}, got {} (missing {} messages)",
-                conversation_id,
-                current + 1,
-                sequence,
-                gap_size
-            );
-            self.sequence_stats.gaps_detected += 1;
-            self.sequence_stats.last_gap_time = Some(Instant::now());
-
-            if gap_size >= 5 {
-                warn!(
-                    "Large messages gap ({}) in conversation {}, requesting immediate resume",
-                    gap_size, conversation_id
-                );
-                self.request_messages_resume(conversation_id, current);
-            } else {
-                debug!(
-                    "Small messages gap ({}) in conversation {}, will handle at next ping",
-                    gap_size, conversation_id
-                );
-            }
-        }
-
-        if sequence > current {
-            self.conversation_sequences
-                .insert(conversation_id, sequence);
-        }
-
-        let confirmed = self
-            .conversation_sequences_confirmed
-            .get(&conversation_id)
-            .copied()
-            .unwrap_or(0);
-        if sequence == confirmed + 1 {
-            self.conversation_sequences_confirmed
-                .insert(conversation_id, sequence);
-            debug!(
-                "Conversation {} sequence {} confirmed",
-                conversation_id, sequence
-            );
-        }
-    }
-
-    pub fn request_user_events_resume(&mut self, from_sequence: u64) {
-        if self.is_recovering_user_events {
-            debug!("User events resume already in progress");
-            return;
-        }
-
-        self.is_recovering_user_events = true;
-        self.pending_resume_requests += 1;
-
-        self.send_via_websocket(Outgoing::RequestUserResume {
-            from_sequence,
-            limit: 100,
-        });
-
-        info!(
-            "Requested user events resume from sequence {}",
-            from_sequence
-        );
-    }
-
-    pub fn request_messages_resume(&mut self, conversation_id: Uuid, from_sequence: u64) {
-        if *self
-            .is_recovering_messages
-            .get(&conversation_id)
-            .unwrap_or(&false)
-        {
-            debug!(
-                "Messages resume already in progress for {}",
-                conversation_id
-            );
-            return;
-        }
-
-        self.is_recovering_messages.insert(conversation_id, true);
-        self.pending_resume_requests += 1;
-
-        self.send_via_websocket(Outgoing::RequestMessagesResume {
-            conversation_id,
-            from_sequence,
-            limit: 100,
-        });
-
-        info!(
-            "Requested messages resume for {} from sequence {}",
-            conversation_id, from_sequence
-        );
-    }
-
-    pub fn check_for_gaps(&mut self) -> (bool, bool) {
-        let user_gap = self.user_sequence_received > self.user_sequence_confirmed;
-
-        let conversation_gap = if let Some(cid) = self.cid {
-            let received = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let confirmed = self
-                .conversation_sequences_confirmed
-                .get(&cid)
-                .copied()
-                .unwrap_or(0);
-            received > confirmed
-        } else {
-            false
-        };
-
-        (user_gap, conversation_gap)
-    }
-
-    pub fn should_send_ping(&self) -> bool {
-        self.ws_status == WsStatus::Connected && self.last_ping_time.elapsed() >= self.ping_interval
-    }
-
-    pub fn update_ping_time(&mut self) {
-        self.last_ping_time = Instant::now();
-    }
-
-    pub fn handle_pong_timeout(&mut self) {
-        self.missed_pings += 1;
-        warn!(
-            "Pong timeout! Missed pings: {}/{}",
-            self.missed_pings, self.max_missed_pings
-        );
-
-        if self.missed_pings >= self.max_missed_pings {
-            error!(
-                "Too many missed pongs ({}), forcing reconnection",
-                self.missed_pings
-            );
-            self.request_ws_reconnect = true;
-            self.missed_pings = 0;
-        }
-    }
-
-    pub fn reset_sequence_system(&mut self) {
-        self.is_recovering_user_events = false;
-        self.is_recovering_messages.clear();
-        self.pending_resume_requests = 0;
-        self.sequence_stats = Default::default();
-        self.message_reorder_buffer.clear();
-        self.user_event_reorder_buffer.clear();
-
-        info!(
-            "Sequence system reset - user_seq: {}, conv_seqs: {}",
-            self.user_sequence_confirmed,
-            self.conversation_sequences.len()
-        );
-    }
-
-    pub fn reset_sequence_on_disconnect(&mut self) {
-        debug!(
-            "WebSocket disconnected, preserving sequences - user: {}, conversations: {}",
-            self.user_sequence_confirmed,
-            self.conversation_sequences.len()
-        );
-        self.reset_sequence_system();
-    }
-
-    pub fn get_sequence_health(&self) -> f64 {
-        if self.sequence_stats.ping_count == 0 {
-            return 1.0;
-        }
-
-        let pong_rate =
-            self.sequence_stats.pong_count as f64 / self.sequence_stats.ping_count as f64;
-        let gap_penalty = (self.sequence_stats.gaps_detected as f64 * 0.1).min(0.5);
-        let missed_penalty = (self.missed_pings as f64 / self.max_missed_pings as f64) * 0.3;
-
-        (pong_rate - gap_penalty - missed_penalty).max(0.0)
-    }
-
     pub fn get_total_cached_messages(&self) -> usize {
         self.conversation_messages.values().map(|v| v.len()).sum()
     }
@@ -600,7 +371,7 @@ impl AppState {
 
         info.insert(
             "sequence_health".to_string(),
-            format!("{:.2}", self.get_sequence_health()),
+            format!("{:.2}", SequenceHandler::get_sequence_health(self)),
         );
         info.insert(
             "ping_count".to_string(),
@@ -729,89 +500,4 @@ impl AppState {
         });
     }
 
-    pub fn try_deliver_buffered_messages(&mut self, conversation_id: Uuid) -> Vec<MessageDto> {
-        let mut messages_to_deliver = Vec::new();
-
-        if let Some(buffer) = self.message_reorder_buffer.get_mut(&conversation_id) {
-            let mut current_expected = self
-                .conversation_sequences_confirmed
-                .get(&conversation_id)
-                .copied()
-                .unwrap_or(0)
-                + 1;
-
-            let mut sequences_to_remove = Vec::new();
-
-            while let Some(msg) = buffer.get(&current_expected) {
-                messages_to_deliver.push(msg.clone());
-                sequences_to_remove.push(current_expected);
-                current_expected += 1;
-            }
-
-            for seq in sequences_to_remove {
-                buffer.remove(&seq);
-            }
-
-            if buffer.is_empty() {
-                self.message_reorder_buffer.remove(&conversation_id);
-            }
-        }
-
-        messages_to_deliver
-    }
-
-    pub fn try_deliver_buffered_user_events(&mut self) -> Vec<serde_json::Value> {
-        let mut events_to_deliver = Vec::new();
-
-        let mut current_expected = self.user_sequence_confirmed + 1;
-        let mut sequences_to_remove = Vec::new();
-
-        while let Some(events) = self.user_event_reorder_buffer.get(&current_expected) {
-            events_to_deliver.extend(events.clone());
-            sequences_to_remove.push(current_expected);
-            current_expected += 1;
-        }
-
-        for seq in sequences_to_remove {
-            self.user_event_reorder_buffer.remove(&seq);
-        }
-
-        events_to_deliver
-    }
-
-    pub fn buffer_message_for_reorder(&mut self, msg: MessageDto) {
-        if let Some(seq) = msg.sequence_num {
-            let expected = self
-                .conversation_sequences_confirmed
-                .get(&msg.conversation_id)
-                .copied()
-                .unwrap_or(0)
-                + 1;
-
-            if seq > expected {
-                debug!(
-                    "Buffering message seq {} for conversation {} (expected {})",
-                    seq, msg.conversation_id, expected
-                );
-
-                self.message_reorder_buffer
-                    .entry(msg.conversation_id)
-                    .or_insert_with(BTreeMap::new)
-                    .insert(seq, msg);
-            }
-        }
-    }
-
-    pub fn buffer_user_event_for_reorder(&mut self, seq: u64, event: serde_json::Value) {
-        let expected = self.user_sequence_confirmed + 1;
-
-        if seq > expected {
-            debug!("Buffering user event seq {} (expected {})", seq, expected);
-
-            self.user_event_reorder_buffer
-                .entry(seq)
-                .or_insert_with(Vec::new)
-                .push(event);
-        }
-    }
 }

@@ -47,9 +47,28 @@ impl MessageProcessor {
                             }
                             Err(e) => {
                                 error!("Failed to send WebSocket message: {}", e);
+
+                                // Se è un messaggio chat, notifica il fallimento IMMEDIATAMENTE
+                                if let Outgoing::ChatMessage { client_msg_id: Some(msg_id), .. } = &outgoing {
+                                    // Trova il messaggio pending per ottenere il suo UUID
+                                    if let Some(pending) = state.pending_confirmations.get(msg_id) {
+                                        let _ = state.ui_tx.send(UiEvent::MessageSendFailed(pending.id));
+                                        info!(
+                                            "Sent MessageSendFailed event for client_msg_id: {} (UUID: {})",
+                                            msg_id, pending.id
+                                        );
+                                    } else {
+                                        warn!(
+                                            "Cannot send MessageSendFailed: pending message not found for client_msg_id: {}",
+                                            msg_id
+                                        );
+                                        warn!("This might indicate a race condition or the message was already confirmed/failed");
+                                    }
+                                }
+
                                 let _ = state
                                     .ui_tx
-                                    .send(UiEvent::Error("Connessione WebSocket persa".into()));
+                                    .send(UiEvent::Error("Errore di connessione".into()));
                                 break;
                             }
                         }
@@ -223,6 +242,22 @@ impl MessageProcessor {
                 serde_json::json!({
                     "type": "delete_conversation",
                     "conversation_id": cid.to_string()
+                })
+            }
+
+            Outgoing::MarkRead {
+                conversation_id,
+                sequence_num,
+            } => {
+                debug!(
+                    "Formatting mark_read for conversation {} up to sequence {}",
+                    conversation_id, sequence_num
+                );
+
+                serde_json::json!({
+                    "type": "mark_read",
+                    "conversation_id": conversation_id.to_string(),
+                    "sequence_num": sequence_num
                 })
             }
         };

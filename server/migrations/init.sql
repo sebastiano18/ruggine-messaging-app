@@ -23,8 +23,12 @@ CREATE TABLE participants
     user_id         TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     role            TEXT NOT NULL DEFAULT 'member',
     last_read_msg   TEXT, -- può referenziare messages.id se serve
+    last_read_sequence INTEGER NOT NULL DEFAULT 0, -- ⭐ AGGIUNGI QUESTA RIGA
     PRIMARY KEY (conversation_id, user_id)
 );
+
+
+CREATE INDEX idx_participants_last_read ON participants(user_id, conversation_id, last_read_sequence);
 
 CREATE TABLE messages
 (
