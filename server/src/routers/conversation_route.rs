@@ -18,4 +18,7 @@ pub fn router() -> Router<AppState> {
 
         // Aggiunta membri ai gruppi
         .route("/conversations/:id/members", post(c::add_member))
+        
+        // Ottieni membri di una conversazione
+        .route("/conversations/:id/members", get(c::get_members))
 }

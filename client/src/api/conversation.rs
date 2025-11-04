@@ -1,4 +1,4 @@
-use crate::models::{ConversationDto, MessageDto};
+use crate::models::{ConversationDto, MessageDto, ParticipantInfo};
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -141,4 +141,17 @@ pub async fn join_by_token(base: &str, token: &str, invite_token: &str) -> Resul
         .json::<CreatedId>()
         .await?;
     Ok(r.id)
+}
+
+// Get members of a conversation
+pub async fn get_conversation_members(base: &str, token: &str, conversation_id: Uuid) -> Result<Vec<ParticipantInfo>> {
+    let r = Client::new()
+        .get(format!("{base}/api/conversations/{conversation_id}/members"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<ParticipantInfo>>()
+        .await?;
+    Ok(r)
 }
