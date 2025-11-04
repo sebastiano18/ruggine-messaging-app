@@ -1,5 +1,4 @@
 use eframe::egui;
-use egui::{Align, Layout};
 use crate::app::sidebar_components::sidebar_account::AccountSidebar;
 use crate::app::sidebar_components::sidebar_conversation::ConversationsSidebar;
 use crate::app::sidebar_components::sidebar_group_management::GroupManagementSidebar;
@@ -48,7 +47,6 @@ impl SidebarManager {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut state.page, Page::Conversations, "💬 Chat");
             ui.selectable_value(&mut state.page, Page::GroupManagement, "🔧 Gestione");
-            ui.selectable_value(&mut state.page, Page::Auth, "⚙️ Account");
         });
     }
 }
