@@ -44,6 +44,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "conversation_created_complete" => handle_conversation_created_complete(tx, &parsed_value),
         "conversation_confirmation" => handle_conversation_confirmation(tx, &parsed_value),
         "user_notification" => handle_user_notification(tx, &parsed_value),
+        "user_event" => handle_user_notification(tx, &parsed_value),  // Gestito come user_notification
         "pong" => handle_pong(tx, &parsed_value),
         "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value),
         "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value),

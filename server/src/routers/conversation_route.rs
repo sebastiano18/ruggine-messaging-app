@@ -1,4 +1,4 @@
-use axum::{routing::{get, post}, Router};
+use axum::{routing::{delete, get, post}, Router};
 use crate::state::AppState;
 use crate::controllers::conversation_controller as c;
 
@@ -21,4 +21,7 @@ pub fn router() -> Router<AppState> {
         
         // Ottieni membri di una conversazione
         .route("/conversations/:id/members", get(c::get_members))
+        
+        // Espelli un membro da una conversazione
+        .route("/conversations/:id/members/:user_id", delete(c::kick_member))
 }

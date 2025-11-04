@@ -104,6 +104,18 @@ impl UserNotificationHandler {
                     warn!("conversation_deleted notification without conversation_id");
                 }
             }
+            "member_kicked" => {
+                if let Some(cid) = conversation_id {
+                    info!(
+                        "User was kicked from conversation {}",
+                        cid
+                    );
+                    // Rimuovi la conversazione dalla lista
+                    let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
+                } else {
+                    warn!("member_kicked notification without conversation_id");
+                }
+            }
             "conversation_created_complete" => {
                 Self::handle_conversation_created_complete(state, event_data);
             }

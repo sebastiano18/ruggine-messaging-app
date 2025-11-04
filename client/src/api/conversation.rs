@@ -155,3 +155,14 @@ pub async fn get_conversation_members(base: &str, token: &str, conversation_id: 
         .await?;
     Ok(r)
 }
+
+// Kick a member from a conversation
+pub async fn kick_member(base: &str, token: &str, conversation_id: Uuid, user_id: Uuid) -> Result<()> {
+    Client::new()
+        .delete(format!("{base}/api/conversations/{conversation_id}/members/{user_id}"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
