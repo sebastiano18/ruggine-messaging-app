@@ -302,6 +302,13 @@ impl MessageProcessor {
                     "sequence_num": sequence_num
                 })
             }
+
+            Outgoing::LeaveGroup { cid } => {
+                serde_json::json!({
+                    "type": "leave_group",
+                    "conversation_id": cid.to_string()
+                })
+            }
         };
 
         serde_json::to_string(&json_obj).map_err(|e| format!("JSON serialization error: {}", e))

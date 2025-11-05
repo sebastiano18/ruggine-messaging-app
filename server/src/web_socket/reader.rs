@@ -611,6 +611,104 @@ pub fn spawn_reader(
                             }
                         }
 
+                        "leave_group" => {
+                            last_heartbeat = Instant::now();
+
+                            let cid_opt = value
+                                .get("conversation_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+                            if cid_opt.is_none() {
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code":"INVALID_REQUEST",
+                                    "message":"Missing or invalid conversation_id",
+                                    "op":"leave_group"
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            let conversation_id = cid_opt.unwrap();
+
+                            // Recupera i partecipanti prima di rimuovere l'utente
+                            let participants_res = crate::services::conversation_service::ConversationService::list_participant_ids(&state.pool, conversation_id).await;
+
+                            // Recupera username dell'utente che sta uscendo
+                            let username_res = sqlx::query_scalar::<_, String>(
+                                "SELECT username FROM users WHERE id = ?"
+                            )
+                            .bind(user_id.to_string())
+                            .fetch_one(&state.pool)
+                            .await;
+
+                            // Esegui leave_group: l'autorizzazione viene validata nel service
+                            let leave_res = crate::services::conversation_service::ConversationService::leave_group(
+                                &state.pool,
+                                conversation_id,
+                                user_id
+                            ).await;
+
+                            if let Err(e) = leave_res {
+                                let (code, message) = match &e {
+                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
+                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    crate::error::AppError::BadRequest(msg) => ("BAD_REQUEST", msg.clone()),
+                                    _ => ("LEAVE_FAILED", format!("Leave failed: {}", e)),
+                                };
+                                let err = json!({
+                                    "type":"error",
+                                    "error_code": code,
+                                    "message": message,
+                                    "op":"leave_group",
+                                    "conversation_id": conversation_id
+                                });
+                                if let Ok(txt) = serde_json::to_string(&err) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                                continue;
+                            }
+
+                            // Broadcast a tutti i partecipanti rimanenti (escluso chi sta uscendo)
+                            if let (Ok(participants), Ok(username)) = (participants_res, username_res) {
+                                // Filtra l'utente che sta uscendo
+                                let remaining_participants: Vec<Uuid> = participants
+                                    .into_iter()
+                                    .filter(|&pid| pid != user_id)
+                                    .collect();
+                                
+                                if !remaining_participants.is_empty() {
+                                    info!(
+                                        "Broadcasting user_left_group to {} remaining participants",
+                                        remaining_participants.len()
+                                    );
+                                    ConversationService::broadcast_user_left_group(
+                                        &state,
+                                        conversation_id,
+                                        user_id,
+                                        username,
+                                        remaining_participants,
+                                    ).await;
+                                } else {
+                                    info!("No remaining participants to notify (group now empty)");
+                                }
+                            }
+
+                            // Ack esplicito all'utente che è uscito
+                            let ack = json!({
+                                "type":"leave_group_ack",
+                                "conversation_id": conversation_id,
+                                "status":"ok"
+                            });
+                            if let Ok(txt) = serde_json::to_string(&ack) {
+                                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                            }
+                            
+                            continue;
+                        }
 
                         _ => {
                             warn!(

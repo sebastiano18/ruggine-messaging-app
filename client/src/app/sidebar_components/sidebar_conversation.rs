@@ -217,8 +217,9 @@ impl ConversationsSidebar {
                 .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
         }
 
-        // Mostra il bottone elimina SOLO se l'utente corrente è l'owner (for groups-only)
-        let show_delete_button = state.user_id.map_or(false, |uid| uid == conv.owner_id);
+        let is_owner = state.user_id.map_or(false, |uid| uid == conv.owner_id);
+
+        let is_participant = !is_owner && conv.kind == "group";
 
         ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
             ui.horizontal(|ui| {
@@ -273,14 +274,20 @@ impl ConversationsSidebar {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Mostra prima la X (che apparirà più a destra nel layout right_to_left)
                     if conv.kind == "group" {
-                        // Mostra la 'X' solo quando il mouse è sopra la riga e solo se l'utente è owner
-                        if show_delete_button && pointer_over_row {
-                            let delete_button = egui::Button::new(RichText::new("X").size(16.0).color(egui::Color32::BLACK))
+                        // Mostra la 'X' solo quando il mouse è sopra la riga
+                        if (is_owner || is_participant) && pointer_over_row {
+                            let (button_text, hover_text) = if is_owner {
+                                ("X", "Elimina gruppo")
+                            } else {
+                                ("X", "Esci dal gruppo")
+                            };
+
+                            let delete_button = egui::Button::new(RichText::new(button_text).size(16.0).color(egui::Color32::BLACK))
                                 .small()
                                 .frame(false)
                                 .fill(egui::Color32::TRANSPARENT);
 
-                            let del_resp = ui.add(delete_button).on_hover_text("Elimina gruppo");
+                            let del_resp = ui.add(delete_button).on_hover_text(hover_text);
                             
                             if del_resp.hovered() {
                                 ui.painter().text(
@@ -371,7 +378,6 @@ impl ConversationsSidebar {
             state.page = Page::Chat;
         }
     }
-    
 
     // Gestione pop-up di eliminazione dm/group
     fn show_delete_confirmation_popup(&self, ui: &mut egui::Ui, state: &mut AppState) {
@@ -385,34 +391,53 @@ impl ConversationsSidebar {
         let mut cancel = false;
 
         let is_stub = state.is_dm_stub(conversation.id);
-        let kind_label = match conversation.kind.as_str() {
-            "group" => "gruppo",
-            "dm" => "chat privata",
-            _ => "conversazione",
-        };
-
-        let detail_message = if is_stub {
-            "Si tratta di uno stub locale: verrà semplicemente rimosso dalla tua lista."
+        
+        // Determina se l'utente è l'owner del gruppo
+        let is_owner = state.user_id.map_or(false, |uid| uid == conversation.owner_id);
+        
+        let (title, main_message, detail_message, confirm_label) = if is_stub {
+            (
+                "Conferma eliminazione",
+                format!("Sei sicuro di voler eliminare la chat privata \"{}\"?", conversation.title),
+                "Si tratta di uno stub locale: verrà semplicemente rimosso dalla tua lista.",
+                "Elimina"
+            )
         } else if conversation.kind == "group" {
-            "L'eliminazione rimuoverà il gruppo per tutti i partecipanti."
+            if is_owner {
+                (
+                    "Conferma eliminazione gruppo",
+                    format!("Sei sicuro di voler eliminare il gruppo \"{}\"?", conversation.title),
+                    "Attenzione: eliminando il gruppo, questo verrà rimosso per TUTTI i partecipanti. L'azione è irreversibile.",
+                    "Elimina per tutti"
+                )
+            } else {
+                (
+                    "Conferma uscita dal gruppo",
+                    format!("Sei sicuro di voler uscire dal gruppo \"{}\"?", conversation.title),
+                    "Uscirai dal gruppo e non potrai più vedere i messaggi. Potrai rientrare solo se verrai invitato nuovamente.",
+                    "Esci dal gruppo"
+                )
+            }
         } else {
-            "L'eliminazione rimuoverà definitivamente la conversazione."
+            (
+                "Conferma eliminazione",
+                format!("Sei sicuro di voler eliminare la chat privata \"{}\"?", conversation.title),
+                "L'eliminazione rimuoverà definitivamente la conversazione. L'azione è irreversibile.",
+                "Elimina"
+            )
         };
 
-        egui::Window::new("Conferma eliminazione")
+        egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ui.ctx(), |ui| {
-                ui.set_width(320.0);
+                ui.set_width(340.0);
                 ui.vertical(|ui| {
                     ui.label(
-                        RichText::new(format!(
-                            "Sei sicuro di voler eliminare la {} \"{}\"?",
-                            kind_label, conversation.title
-                        ))
-                        .strong(),
+                        RichText::new(main_message)
+                            .strong(),
                     );
 
                     ui.add_space(6.0);
@@ -431,11 +456,11 @@ impl ConversationsSidebar {
                         }
 
                         let confirm_button = egui::Button::new(
-                            RichText::new("Elimina").color(egui::Color32::WHITE),
+                            RichText::new(confirm_label).color(egui::Color32::WHITE),
                         )
                         .fill(egui::Color32::from_rgb(200, 100, 40));
 
-                        ui.add_space(100.0);
+                        ui.add_space(80.0);
 
                         if ui.add(confirm_button).clicked() {
                             confirm = true;

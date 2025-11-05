@@ -116,6 +116,27 @@ impl UserNotificationHandler {
                     warn!("member_kicked notification without conversation_id");
                 }
             }
+            "user_left_group" => {
+                // Gestisce quando un altro utente lascia il gruppo
+                let username = event_data
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown");
+                
+                info!("User {} left the group (conversation: {:?})", username, conversation_id);
+                
+                if let Some(conv_id) = conversation_id {
+                    if state.cid == Some(conv_id) {
+                        helpers::add_system_message(
+                            state,
+                            format!("{} ha lasciato il gruppo", username),
+                        );
+                    }
+                }
+                
+                // Richiedi aggiornamento della lista conversazioni
+                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+            }
             "conversation_created_complete" => {
                 Self::handle_conversation_created_complete(state, event_data);
             }

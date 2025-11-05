@@ -1,5 +1,5 @@
 use serde_json::json;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
 
@@ -96,6 +96,42 @@ impl ConversationService {
         Ok(())
     }
 
+    /// Permette a un partecipante di uscire da un gruppo
+    /// - Solo per gruppi (non DM)
+    /// - L'owner non può uscire (deve eliminare il gruppo)
+    pub async fn leave_group(
+        pool: &sqlx::SqlitePool,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+    ) -> Result<()> {
+        // Verifica che sia un gruppo
+        let kind_opt = ConversationRepo::get_conversation_kind(pool, conversation_id).await?;
+        let kind = match kind_opt {
+            Some(k) => k,
+            None => return Err(crate::error::AppError::NotFound),
+        };
+
+        if kind != "group" {
+            return Err(crate::error::AppError::BadRequest("Non è un gruppo".to_string()));
+        }
+
+        // Verifica che l'utente non sia l'owner
+        let is_owner = ConversationRepo::is_owner(pool, conversation_id, requester_id).await?;
+        if is_owner {
+            return Err(crate::error::AppError::BadRequest("L'owner non può uscire dal gruppo, deve eliminarlo".to_string()));
+        }
+
+        // Verifica che sia effettivamente un partecipante
+        let is_participant = ConversationRepo::is_participant(pool, conversation_id, requester_id).await?;
+        if !is_participant {
+            return Err(crate::error::AppError::Unauthorized);
+        }
+
+        // Rimuove il partecipante
+        ConversationRepo::remove_member(pool, conversation_id, requester_id).await?;
+        Ok(())
+    }
+
     pub async fn list_participant_ids(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         conversation_id: Uuid,
@@ -179,5 +215,51 @@ impl ConversationService {
 
         // Rimuovi il membro
         ConversationRepo::remove_member(pool, conversation_id, user_id_to_kick).await
+    }
+
+    pub async fn broadcast_user_left_group(
+        st: &AppState,
+        conversation_id: Uuid,
+        user_id: Uuid,
+        username: String,
+        participant_ids: Vec<Uuid>,
+    ) {
+        info!(
+            "Broadcasting user_left_group: user={} ({}) left conversation={} to {} participants",
+            user_id, username, conversation_id, participant_ids.len()
+        );
+
+        let payload = json!({
+            "type": "user_left_group",
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "username": username,
+            "timestamp": chrono::Utc::now().timestamp()
+        });
+
+        for pid in participant_ids {
+            match st
+                .send_sequenced_event_to_user(
+                    pid,
+                    "user_left_group",
+                    payload.clone(),
+                    Some(conversation_id),
+                )
+                .await
+            {
+                Ok(seq) => {
+                    info!(
+                        "✅ Sent user_left_group event (seq={}) to user {}",
+                        seq, pid
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "❌ Failed to send user_left_group to user {}: {}",
+                        pid, e
+                    );
+                }
+            }
+        }
     }
 }

@@ -57,6 +57,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "conversation_created" => handle_conversation_created(tx, &parsed_value),
         "conversation_deleted" => handle_conversation_deleted(tx, &parsed_value),
         "member_added" => handle_member_added(tx, &parsed_value),
+        "leave_group_ack" => handle_leave_group_ack(tx, &parsed_value),
         "error" => handle_server_error(tx, &parsed_value),
         "message_ack" => handle_message_ack(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
@@ -945,6 +946,20 @@ fn handle_member_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
 
     // Richiedi aggiornamento della lista conversazioni per vedere il nuovo membro
     let _ = tx.send(UiEvent::ConversationListUpdated);
+}
+
+fn handle_leave_group_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    if let Some(conversation_id) = parse_conversation_id(value) {
+        debug!(
+            "Received leave_group_ack for conversation {}",
+            conversation_id
+        );
+
+        // Rimuovi la conversazione localmente
+        let _ = tx.send(UiEvent::ConversationDeleted(conversation_id));
+    } else {
+        warn!("leave_group_ack without valid conversation_id: {:?}", value);
+    }
 }
 
 // Utility functions
