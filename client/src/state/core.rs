@@ -45,6 +45,23 @@ impl CreateGroupPopupState {
     }
 }
 
+#[derive(Default)]
+pub struct InvitePopupState {
+    pub search_query: String,
+    pub selected_users: HashSet<String>,
+}
+
+impl InvitePopupState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.search_query.clear();
+        self.selected_users.clear();
+    }
+}
+
 pub struct AppState {
     pub rt: Runtime,
     pub base: String,
@@ -152,7 +169,7 @@ pub struct AppState {
 
     // Invite popup state
     pub show_invite_popup: bool,
-    pub invite_username_input: String,
+    pub invite_popup: InvitePopupState,
 
     // Members popup state
     pub show_members_popup: bool,
@@ -254,7 +271,7 @@ impl AppState {
             conversation_unread_counts: HashMap::new(),
 
             show_invite_popup: false,
-            invite_username_input: String::new(),
+            invite_popup: InvitePopupState::new(),
 
             // Create group popup
             show_create_group_modal: false,
@@ -321,7 +338,7 @@ impl AppState {
             if self.ws_status == WsStatus::Connected {
                 // Determina se l'utente è owner o partecipante
                 let is_owner = self.user_id.map_or(false, |uid| uid == conversation.owner_id);
-                
+
                 if conversation.kind == "group" && !is_owner {
                     // Partecipante che vuole uscire dal gruppo
                     self.send_via_websocket(Outgoing::LeaveGroup { cid });
@@ -374,9 +391,9 @@ impl AppState {
         }
     }
 
-    pub fn send_invite_user(&self, cid: Uuid, username: String) {
-        info!("Sending invite for user '{}' to conversation {}", username, cid);
-        self.send_via_websocket(Outgoing::InviteUser { cid, username });
+    pub fn send_invite_users(&self, cid: Uuid, usernames: Vec<String>) {
+        info!("Sending invite for {} users to conversation {}", usernames.len(), cid);
+        self.send_via_websocket(Outgoing::InviteUser { cid, usernames });
     }
 
     // === Message Confirmation Methods ===
@@ -608,7 +625,7 @@ impl AppState {
 
     pub fn kick_member(&mut self, conversation_id: Uuid, user_id: Uuid) {
         let Some(ref token) = self.token else { return };
-        
+
         let base = self.base.clone();
         let token = token.clone();
         let tx = self.ui_tx.clone();

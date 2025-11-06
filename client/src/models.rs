@@ -149,7 +149,7 @@ pub enum Outgoing {
     },
     InviteUser {
         cid: Uuid,
-        username: String,
+        usernames: Vec<String>,
     },
     CreateGroup {
         group_name: String,
