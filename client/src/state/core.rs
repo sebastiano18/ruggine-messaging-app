@@ -319,11 +319,22 @@ impl AppState {
                 .send(UiEvent::Info("Chat privata rimossa (locale)".into()));
         } else {
             if self.ws_status == WsStatus::Connected {
-                self.send_via_websocket(Outgoing::DeleteConversation { cid });
-
-                let _ = self
-                    .ui_tx
-                    .send(UiEvent::Info("Eliminazione conversazione...".into()));
+                // Determina se l'utente è owner o partecipante
+                let is_owner = self.user_id.map_or(false, |uid| uid == conversation.owner_id);
+                
+                if conversation.kind == "group" && !is_owner {
+                    // Partecipante che vuole uscire dal gruppo
+                    self.send_via_websocket(Outgoing::LeaveGroup { cid });
+                    let _ = self
+                        .ui_tx
+                        .send(UiEvent::Info("Uscita dal gruppo...".into()));
+                } else {
+                    // Owner che elimina il gruppo o eliminazione di DM
+                    self.send_via_websocket(Outgoing::DeleteConversation { cid });
+                    let _ = self
+                        .ui_tx
+                        .send(UiEvent::Info("Eliminazione conversazione...".into()));
+                }
             } else {
                 let _ = self
                     .ui_tx

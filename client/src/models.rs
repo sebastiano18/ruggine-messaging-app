@@ -186,6 +186,9 @@ pub enum Outgoing {
         conversation_id: Uuid,
         sequence_num: u64,
     },
+    LeaveGroup {
+        cid: Uuid,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===
