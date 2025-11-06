@@ -635,6 +635,27 @@ impl AppState {
         });
     }
 
+    pub fn delete_message(&mut self, message_id: Uuid) {
+        let Some(ref token) = self.token else { return };
+
+        let base = self.base.clone();
+        let token = token.clone();
+        let tx = self.ui_tx.clone();
+
+        self.rt.spawn(async move {
+            match crate::api::chat::delete_message(&base, &token, message_id).await {
+                Ok(_) => {
+                    info!("Delete request for message {} sent successfully", message_id);
+                    // L'aggiornamento dell'UI avverrà tramite l'evento WebSocket
+                }
+                Err(e) => {
+                    error!("Failed to delete message {}: {}", message_id, e);
+                    let _ = tx.send(UiEvent::Error(format!("Errore eliminazione: {}", e)));
+                }
+            }
+        });
+    }
+
     // UI Message handling
     pub fn set_ui_message(&mut self, msg: String) {
         // Messaggi per le pagine interne (dopo login)

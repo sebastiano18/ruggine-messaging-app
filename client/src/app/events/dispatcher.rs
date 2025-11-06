@@ -194,6 +194,10 @@ impl EventDispatcher {
                 );
             }
 
+            UiEvent::MessageDeleted { message_id, conversation_id } => {
+                MessageHandler::handle_message_deleted(state, message_id, conversation_id);
+            }
+
             UiEvent::UserNotification {
                 sequence,
                 event_type,
