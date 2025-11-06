@@ -59,7 +59,7 @@ impl HeaderManager {
 
     fn show_app_title(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{}", egui_remixicon::icons::GROUP_FILL)).size(34.0).color(egui::Color32::from_rgb(200, 100, 40))); 
+                ui.label(egui::RichText::new(format!("{}", egui_remixicon::icons::CHAT_SMILE_FILL)).size(30.0).color(egui::Color32::from_rgb(200, 100, 40))); 
             ui.label(egui::RichText::new("Ruggine Chat").size(24.0).strong());
         });
     }

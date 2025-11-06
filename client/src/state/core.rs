@@ -29,6 +29,7 @@ pub struct CreateGroupPopupState {
     pub group_name: String,
     pub manual_username_input: String,
     pub selected_participants: HashSet<String>,
+    pub search_query: String,
 }
 
 impl CreateGroupPopupState {
@@ -40,6 +41,7 @@ impl CreateGroupPopupState {
         self.group_name.clear();
         self.manual_username_input.clear();
         self.selected_participants.clear();
+        self.search_query.clear();
     }
 }
 
@@ -151,7 +153,7 @@ pub struct AppState {
     // Invite popup state
     pub show_invite_popup: bool,
     pub invite_username_input: String,
-  
+
     // Members popup state
     pub show_members_popup: bool,
     pub members_list: Vec<ParticipantInfo>,
