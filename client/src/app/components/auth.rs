@@ -260,7 +260,7 @@ fn show_register_view(ui: &mut egui::Ui, s: &mut AppState) {
     let is_busy = matches!(s.login_state, LoginState::Registering);
 
     ui.label(
-        RichText::new(format!("{} Crea Account", egui_remixicon::icons::USER_ADD_LINE))
+        RichText::new(format!("{} Crea Account", egui_remixicon::icons::USER_ADD_FILL))
             .size(56.0)
             .strong()
             .color(egui::Color32::from_rgb(200, 100, 40))

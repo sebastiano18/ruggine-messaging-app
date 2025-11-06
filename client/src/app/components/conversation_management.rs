@@ -232,8 +232,7 @@ fn create_group_button(ui: &mut egui::Ui, s: &mut AppState) {
     });
 }
 
-// Popup modale per la creazione del gruppo
-// Popup modale per la creazione del gruppo - stile minimale moderno come auth.rs
+
 pub fn show_create_group_modal(ctx: &egui::Context, s: &mut AppState) {
     let mut open = s.show_create_group_modal;
     let mut should_close = false;
@@ -242,273 +241,352 @@ pub fn show_create_group_modal(ctx: &egui::Context, s: &mut AppState) {
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
-        .fixed_size([580.0, 650.0])
+        .fixed_size([500.0, 600.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
+            // Titolo centrato
             ui.vertical_centered(|ui| {
-                // Titolo principale
                 ui.label(
-                    RichText::new(format!("{} Crea Nuovo Gruppo", egui_remixicon::icons::GROUP_LINE))
-                        .size(28.0)
+                    RichText::new(format!("{} Crea Nuovo Gruppo", egui_remixicon::icons::TEAM_FILL))
+                        .size(24.0)
                         .strong()
                         .color(egui::Color32::from_rgb(200, 100, 40))
                 );
+            });
 
-                ui.add_space(30.0);
+            ui.add_space(20.0);
 
-                // Frame principale senza bordo
-                egui::Frame::none()
-                    .inner_margin(30.0)
-                    .show(ui, |ui| {
-                        ui.set_min_width(520.0);
+            // Contenuto full width
+            egui::Frame::none()
+                .inner_margin(20.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(460.0);
 
-                        ScrollArea::vertical()
-                            .id_source("create_group_main_scroll")
-                            .max_height(450.0)
-                            .show(ui, |ui| {
-                                // Nome gruppo - Prima riga con indicatore obbligatorio
-                                ui.horizontal(|ui| {
-                                    ui.add_space(10.0);
-                                    ui.label(RichText::new(egui_remixicon::icons::EDIT_LINE).size(24.0));
-                                    ui.add_space(15.0);
-                                    ui.vertical(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(RichText::new("Nome del gruppo").size(14.0).weak());
-                                            ui.label(RichText::new("*").size(16.0).color(ui.visuals().error_fg_color));
-                                        });
-
-                                        let name_field = TextEdit::singleline(&mut s.create_group_popup.group_name)
-                                            .hint_text("Es: Team Alpha")
-                                            .desired_width(ui.available_width() - 60.0);
-
-                                        let response = ui.add(name_field);
-
-                                        // Bordo rosso se vuoto e modificato
-                                        if s.create_group_popup.group_name.trim().is_empty() && response.changed() {
-                                            ui.painter().rect_stroke(
-                                                response.rect,
-                                                2.0,
-                                                egui::Stroke::new(1.5, ui.visuals().error_fg_color)
-                                            );
-                                        }
-                                    });
-                                });
-
-                                ui.add_space(24.0);
-
-                                // Input manuale per aggiungere username
-                                ui.horizontal(|ui| {
-                                    ui.add_space(10.0);
-                                    ui.label(RichText::new(egui_remixicon::icons::USER_ADD_LINE).size(24.0));
-                                    ui.add_space(15.0);
-                                    ui.vertical(|ui| {
-                                        ui.label(RichText::new("Aggiungi partecipanti").size(14.0).weak());
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                TextEdit::singleline(&mut s.create_group_popup.manual_username_input)
-                                                    .hint_text("Scrivi username...")
-                                                    .desired_width(ui.available_width() - 70.0)
-                                            );
-
-                                            let can_add = !s.create_group_popup.manual_username_input.trim().is_empty()
-                                                && !s.create_group_popup.selected_participants.contains(
-                                                &s.create_group_popup.manual_username_input.trim().to_string()
-                                            );
-
-                                            let add_button = egui::Button::new(RichText::new("Aggiungi").size(14.0))
-                                                .min_size(egui::vec2(60.0, 28.0));
-
-                                            if ui.add_enabled(can_add, add_button).clicked() {
-                                                let username = s.create_group_popup.manual_username_input.trim().to_string();
-                                                s.create_group_popup.selected_participants.insert(username);
-                                                s.create_group_popup.manual_username_input.clear();
-                                            }
-                                        });
-                                    });
-                                });
-
-                                ui.add_space(20.0);
-
-                                // Lista unificata con sezioni centrate
-                                if let Some(ref conversations) = s.conversations {
-                                    let dm_conversations: Vec<_> = conversations
-                                        .iter()
-                                        .filter(|c| c.kind == "dm")
-                                        .collect();
-
-                                    // Raccogli username dei DM
-                                    let dm_usernames: std::collections::HashSet<String> = dm_conversations
-                                        .iter()
-                                        .map(|c| c.title.clone())
-                                        .collect();
-
-                                    // Separa partecipanti in DM e manuali
-                                    let mut manual_participants: Vec<String> = s.create_group_popup.selected_participants
-                                        .iter()
-                                        .filter(|u| !dm_usernames.contains(*u))
-                                        .cloned()
-                                        .collect();
-                                    manual_participants.sort();
-
-                                    // Lista unificata con frame
-                                    ui.vertical_centered(|ui| {
-                                        egui::Frame::none()
-                                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                                            .inner_margin(12.0)
-                                            .rounding(6.0)
-                                            .show(ui, |ui| {
-                                                ScrollArea::vertical()
-                                                    .id_source("create_group_unified_scroll")
-                                                    .max_height(220.0)
-                                                    .show(ui, |ui| {
-                                                        // SEZIONE 1: Altri utenti (aggiunti manualmente)
-                                                        if !manual_participants.is_empty() {
-                                                            ui.label(
-                                                                RichText::new("Altri utenti")
-                                                                    .size(13.0)
-                                                                    .strong()
-                                                                    .color(egui::Color32::from_rgb(200, 100, 40))
-                                                            );
-                                                            ui.add_space(6.0);
-
-                                                            for username in manual_participants {
-                                                                ui.horizontal(|ui| {
-                                                                    ui.spacing_mut().item_spacing.x = 0.0;
-
-                                                                    egui::Frame::none()
-                                                                        .fill(egui::Color32::from_rgb(200, 100, 40))
-                                                                        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-                                                                        .rounding(4.0)
-                                                                        .show(ui, |ui| {
-                                                                            ui.horizontal(|ui| {
-                                                                                ui.spacing_mut().item_spacing.x = 4.0;
-
-                                                                                if ui.small_button(egui_remixicon::icons::CLOSE_LINE).clicked() {
-                                                                                    s.create_group_popup.selected_participants.remove(&username);
-                                                                                }
-                                                                                ui.label(
-                                                                                    RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
-                                                                                        .size(16.0)
-                                                                                        .color(egui::Color32::WHITE)
-                                                                                );
-                                                                            });
-                                                                        });
-                                                                });
-                                                            }
-
-                                                            ui.add_space(12.0);
-                                                            ui.separator();
-                                                            ui.add_space(12.0);
-                                                        }
-
-                                                        // SEZIONE 2: I tuoi contatti
-                                                        if !dm_conversations.is_empty() {
-                                                            ui.label(
-                                                                RichText::new("I tuoi contatti")
-                                                                    .size(13.0)
-                                                                    .strong()
-                                                                    .color(egui::Color32::GRAY)
-                                                            );
-                                                            ui.add_space(6.0);
-
-                                                            for conv in dm_conversations {
-                                                                let username = conv.title.clone();
-                                                                let is_selected = s.create_group_popup.selected_participants.contains(&username);
-
-                                                                ui.horizontal(|ui| {
-                                                                    ui.spacing_mut().item_spacing.x = 0.0;
-
-                                                                    // Checkbox
-                                                                    let mut selected = is_selected;
-                                                                    if ui.checkbox(&mut selected, "").changed() {
-                                                                        if selected {
-                                                                            s.create_group_popup.selected_participants.insert(username.clone());
-                                                                        } else {
-                                                                            s.create_group_popup.selected_participants.remove(&username);
-                                                                        }
-                                                                    }
-
-                                                                    ui.add_space(4.0);
-
-                                                                    // Frame overlay solo se selezionato
-                                                                    if is_selected {
-                                                                        egui::Frame::none()
-                                                                            .fill(egui::Color32::from_rgb(200, 100, 40))
-                                                                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-                                                                            .rounding(4.0)
-                                                                            .show(ui, |ui| {
-                                                                                ui.horizontal(|ui| {
-                                                                                    ui.spacing_mut().item_spacing.x = 4.0;
-
-                                                                                    ui.label(
-                                                                                        RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
-                                                                                            .size(16.0)
-                                                                                            .color(egui::Color32::WHITE)
-                                                                                    );
-                                                                                });
-                                                                            });
-                                                                    } else {
-                                                                        ui.label(
-                                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
-                                                                                .size(16.0)
-                                                                        );
-                                                                    }
-                                                                });
-                                                            }
-                                                        } else {
-                                                            ui.label(
-                                                                RichText::new("I tuoi contatti")
-                                                                    .size(13.0)
-                                                                    .strong()
-                                                                    .color(egui::Color32::GRAY)
-                                                            );
-                                                            ui.add_space(6.0);
-                                                            ui.label(
-                                                                RichText::new("Nessun contatto disponibile")
-                                                                    .italics()
-                                                                    .color(egui::Color32::GRAY)
-                                                            );
-                                                        }
-                                                    });
-                                            });
-                                    });
-                                }
+                    // Nome gruppo
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(egui_remixicon::icons::EDIT_LINE).size(20.0));
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Nome del gruppo").size(13.0).weak());
+                                ui.label(RichText::new("*").size(14.0).color(ui.visuals().error_fg_color));
                             });
+
+                            let available_width = ui.available_width() - 50.0;
+                            let name_field = TextEdit::singleline(&mut s.create_group_popup.group_name)
+                                .hint_text("Es: Team Alpha")
+                                .desired_width(available_width);
+
+                            let response = ui.add(name_field);
+
+                            if s.create_group_popup.group_name.trim().is_empty() && response.changed() {
+                                ui.painter().rect_stroke(
+                                    response.rect,
+                                    2.0,
+                                    egui::Stroke::new(1.5, ui.visuals().error_fg_color)
+                                );
+                            }
+                        });
                     });
 
-                ui.add_space(20.0);
+                    ui.add_space(20.0);
 
-                // Bottoni azione - uno a sinistra, uno a destra
+                    // Calcola se mostrare il bottone aggiungi
+                    let search_text = s.create_group_popup.search_query.trim().to_string();
+                    let dm_conversations: Vec<_> = s.conversations
+                        .as_ref()
+                        .map(|convs| convs.iter().filter(|c| c.kind == "dm").collect())
+                        .unwrap_or_default();
+
+                    let search_lower = search_text.to_lowercase();
+                    let found_in_contacts = dm_conversations
+                        .iter()
+                        .any(|c| c.title.to_lowercase().starts_with(&search_lower));
+
+                    let show_add_button = !search_text.is_empty()
+                        && !found_in_contacts
+                        && !s.create_group_popup.selected_participants.contains(&search_text);
+
+                    // Barra di ricerca con bottone aggiungi
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(egui_remixicon::icons::SEARCH_LINE).size(20.0));
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Cerca o aggiungi utenti").size(13.0).weak());
+
+                            ui.horizontal(|ui| {
+                                // Campo di ricerca - stessa larghezza del campo nome gruppo
+                                let available_width = ui.available_width() - 50.0;
+                                let search_response = ui.add(
+                                    TextEdit::singleline(&mut s.create_group_popup.search_query)
+                                        .hint_text("Cerca nei contatti o scrivi username...")
+                                        .desired_width(available_width - 80.0)
+                                );
+
+                                // Enter per aggiungere
+                                if search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    if show_add_button {
+                                        s.create_group_popup.selected_participants.insert(search_text.clone());
+                                        s.create_group_popup.search_query.clear();
+                                    }
+                                }
+
+                                // Bottone aggiungi
+                                let add_button = egui::Button::new(
+                                    RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
+                                        .size(12.0)
+                                )
+                                    .fill(if show_add_button {
+                                        egui::Color32::from_rgb(200, 100, 40)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    })
+                                    .min_size(egui::vec2(70.0, 24.0));
+
+                                let button_response = ui.add_enabled(show_add_button, add_button);
+
+                                if !show_add_button {
+                                    button_response.surrender_focus();
+                                }
+
+                                if show_add_button && button_response.clicked() {
+                                    s.create_group_popup.selected_participants.insert(search_text.clone());
+                                    s.create_group_popup.search_query.clear();
+                                }
+                            });
+
+                            // Info sotto la barra di ricerca
+                            if show_add_button {
+                                ui.add_space(3.0);
+                                ui.label(
+                                    RichText::new(format!("💡 '{}' non trovato nei contatti, clicca Aggiungi o premi Invio", search_text))
+                                        .size(10.0)
+                                        .color(egui::Color32::from_rgb(160, 100, 60))
+                                );
+                            }
+                        });
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Scroll area contatti disponibili con match esatto
+                    if let Some(ref conversations) = s.conversations {
+                        let dm_conversations: Vec<_> = conversations
+                            .iter()
+                            .filter(|c| c.kind == "dm")
+                            .collect();
+
+                        let search_lower = s.create_group_popup.search_query.trim().to_lowercase();
+                        let filtered_dms: Vec<_> = dm_conversations
+                            .iter()
+                            .filter(|c| {
+                                if search_lower.is_empty() {
+                                    true
+                                } else {
+                                    // Match esatto: il nome deve iniziare con il testo cercato
+                                    c.title.to_lowercase().starts_with(&search_lower)
+                                }
+                            })
+                            .collect();
+
+                        ui.label(
+                            RichText::new("I tuoi contatti")
+                                .size(13.0)
+                                .strong()
+                                .color(egui::Color32::GRAY)
+                        );
+                        ui.add_space(6.0);
+
+                        egui::Frame::none()
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                            .inner_margin(10.0)
+                            .rounding(6.0)
+                            .show(ui, |ui| {
+                                let fixed_height = 140.0;
+
+                                ScrollArea::vertical()
+                                    .max_height(fixed_height)
+                                    .min_scrolled_height(fixed_height)
+                                    .id_source("available_contacts_scroll")
+                                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.set_min_height(fixed_height);
+
+                                        if filtered_dms.is_empty() {
+                                            if dm_conversations.is_empty() {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(fixed_height / 2.0 - 20.0);
+                                                    ui.label(
+                                                        RichText::new("Nessun contatto disponibile")
+                                                            .italics()
+                                                            .color(egui::Color32::GRAY)
+                                                    );
+                                                    ui.add_space(4.0);
+                                                    ui.label(
+                                                        RichText::new("💡 Usa la barra di ricerca per aggiungere utenti")
+                                                            .size(10.0)
+                                                            .color(egui::Color32::from_rgb(160, 100, 60))
+                                                    );
+                                                });
+                                            } else {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(fixed_height / 2.0 - 10.0);
+                                                    ui.label(
+                                                        RichText::new("Nessun contatto trovato con questo nome")
+                                                            .italics()
+                                                            .color(egui::Color32::GRAY)
+                                                    );
+                                                });
+                                            }
+                                        } else {
+                                            for conv in filtered_dms {
+                                                let username = conv.title.clone();
+                                                let is_selected = s.create_group_popup.selected_participants.contains(&username);
+
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 0.0;
+
+                                                    let mut selected = is_selected;
+                                                    if ui.checkbox(&mut selected, "").changed() {
+                                                        if selected {
+                                                            s.create_group_popup.selected_participants.insert(username.clone());
+                                                        } else {
+                                                            s.create_group_popup.selected_participants.remove(&username);
+                                                        }
+                                                    }
+
+                                                    ui.add_space(4.0);
+
+                                                    if is_selected {
+                                                        egui::Frame::none()
+                                                            .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                            .rounding(4.0)
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                        .size(14.0)
+                                                                        .color(egui::Color32::WHITE)
+                                                                );
+                                                            });
+                                                    } else {
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                .size(14.0)
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    });
+                            });
+                    }
+
+                    ui.add_space(16.0);
+
+                    // Scroll area partecipanti selezionati
+                    ui.label(
+                        RichText::new("Partecipanti aggiunti")
+                            .size(13.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(200, 100, 40))
+                    );
+                    ui.add_space(6.0);
+
+                    egui::Frame::none()
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 100, 40)))
+                        .inner_margin(10.0)
+                        .rounding(6.0)
+                        .show(ui, |ui| {
+                            let fixed_height = 140.0;
+
+                            ScrollArea::vertical()
+                                .max_height(fixed_height)
+                                .min_scrolled_height(fixed_height)
+                                .id_source("selected_participants_scroll")
+                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.set_min_height(fixed_height);
+
+                                    if s.create_group_popup.selected_participants.is_empty() {
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(fixed_height / 2.0 - 10.0);
+                                            ui.label(
+                                                RichText::new("Nessun partecipante aggiunto")
+                                                    .italics()
+                                                    .color(egui::Color32::GRAY)
+                                            );
+                                        });
+                                    } else {
+                                        let mut selected_list: Vec<String> = s.create_group_popup.selected_participants
+                                            .iter()
+                                            .cloned()
+                                            .collect();
+                                        selected_list.sort();
+
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+
+                                        for username in selected_list {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 4.0;
+
+                                                if ui.small_button(egui_remixicon::icons::CLOSE_LINE).clicked() {
+                                                    s.create_group_popup.selected_participants.remove(&username);
+                                                }
+
+                                                egui::Frame::none()
+                                                    .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                    .rounding(4.0)
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                .size(14.0)
+                                                                .color(egui::Color32::WHITE)
+                                                        );
+                                                    });
+                                            });
+                                        }
+                                    }
+                                });
+                        });
+                });
+
+            ui.add_space(16.0);
+
+            // Bottoni centrati
+            ui.vertical_centered(|ui| {
                 let can_create = !s.create_group_popup.group_name.trim().is_empty();
 
                 ui.horizontal(|ui| {
-                    // Bottone Annulla a sinistra
                     let cancel_button = egui::Button::new(
                         RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
-                            .size(16.0)
+                            .size(14.0)
                     )
                         .fill(ui.visuals().widgets.inactive.bg_fill)
-                        .min_size(egui::vec2(150.0, 45.0));
+                        .min_size(egui::vec2(130.0, 40.0));
 
                     if ui.add(cancel_button).clicked() {
                         s.create_group_popup.reset();
                         should_close = true;
                     }
 
-                    // Spazio flessibile al centro
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // Bottone Crea Gruppo a destra
                         let create_button = egui::Button::new(
                             RichText::new(format!("{} Crea Gruppo", egui_remixicon::icons::CHECK_LINE))
-                                .size(16.0)
+                                .size(14.0)
                         )
                             .fill(if can_create {
                                 egui::Color32::from_rgb(200, 100, 40)
                             } else {
                                 ui.visuals().widgets.inactive.bg_fill
                             })
-                            .min_size(egui::vec2(200.0, 45.0));
+                            .min_size(egui::vec2(180.0, 40.0));
 
                         if ui.add_enabled(can_create, create_button).clicked() {
                             create_group_with_participants(s);
@@ -525,6 +603,7 @@ pub fn show_create_group_modal(ctx: &egui::Context, s: &mut AppState) {
 
     s.show_create_group_modal = open;
 }
+
 
 fn create_group_with_participants(s: &mut AppState) {
     let group_name = s.create_group_popup.group_name.trim().to_string();
