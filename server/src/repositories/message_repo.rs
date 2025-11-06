@@ -89,4 +89,20 @@ impl MessageRepo {
 
         Ok(id)
     }
+
+    pub async fn delete(
+        pool: &SqlitePool,
+        message_id: Uuid,
+        author_id: Uuid,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM messages WHERE id = ? AND author_id = ?"
+        )
+        .bind(message_id.to_string())
+        .bind(author_id.to_string())
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
 }

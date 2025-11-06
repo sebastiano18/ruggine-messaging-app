@@ -110,7 +110,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         }
 
         // Renderizza tutti i messaggi, cercando l'ancora
-        for (i, message) in s.messages.iter().enumerate() {
+        for (i, message) in s.messages.clone().iter().enumerate() {
             // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
             if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
                 // Scrolla a questo messaggio
@@ -707,7 +707,7 @@ fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     s.show_invite_popup = open;
 }
 
-fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
+fn show_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
     if message.author_username == "system" {
         ui.horizontal(|ui| {
             ui.add_space(ui.available_width() * 0.3);
@@ -716,57 +716,53 @@ fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
     } else {
         let is_my_message = s.user_id.map_or(false, |uid| uid == message.author_id);
         if is_my_message {
-            show_my_message(ui, message);
+            show_my_message(ui, s, message);
         } else {
             show_other_message(ui, message);
         }
     }
 }
 
-fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-        egui::Layout::right_to_left(egui::Align::TOP),
-        |ui| {
-            ui.add_space(8.0);
+fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
+    // Utilizziamo un layout orizzontale che occupa l'intera larghezza.
+    ui.horizontal(|ui| {
+        // Creiamo una sezione allineata a destra all'interno della riga orizzontale.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            // 1. Aggiungiamo il padding a destra dello schermo (10px).
+            ui.add_space(10.0);
 
-            let row_w = ui.available_size_before_wrap().x;
-            let hard_cap = (row_w * 0.60).clamp(220.0, 420.0);
-            let inner_pad_x = 20.0;
-            let bw = bubble_width(ui, &message.content, hard_cap - inner_pad_x, inner_pad_x);
+            // 2. Disegniamo il pulsante di eliminazione.
+            let delete_button = egui::Button::new(RichText::new("🗑").size(16.0)).frame(false);
+            if ui.add(delete_button).on_hover_text("Elimina messaggio").clicked() {
+                s.delete_message(message.id);
+            }
 
-            Frame::none()
+            // 3. Aggiungiamo un piccolo spazio tra il cestino e la bolla.
+            ui.add_space(5.0);
+
+            // 4. Calcoliamo la larghezza della bolla e la disegniamo.
+            // Questo calcolo ora avviene in un contesto di layout stabile.
+            let bubble_max_width = ui.available_width() * 0.10;
+            let bubble = Frame::none()
                 .fill(egui::Color32::from_rgb(200, 100, 40))
                 .rounding(egui::Rounding::same(12.0))
                 .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                 .show(ui, |ui| {
-                    ui.set_width(bw);
-
+                    ui.set_max_width(bubble_max_width); // Impostiamo la larghezza massima
                     ui.vertical(|ui| {
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(&message.content).color(egui::Color32::WHITE),
                             )
-                                .wrap(true),
+                            .wrap(true),
                         );
                         ui.add_space(3.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Stato conferma con gestione fallimento
                             let (status_icon, status_color) = match message.is_confirmed {
-                                Some(true) => {
-                                    // Confermato - doppia spunta arancione
-                                    ("✔✔", egui::Color32::from_rgb(255, 220, 180))
-                                }
-                                Some(false) => {
-                                    // Fallito - X rossa
-                                    ("❌", egui::Color32::from_rgb(255, 80, 80))
-                                }
-                                None => {
-                                    // Appena inviato, in attesa - spunta singola grigia
-                                    ("✔", egui::Color32::from_rgb(200, 200, 200))
-                                }
+                                Some(true) => ("✔✔", egui::Color32::from_rgb(255, 220, 180)),
+                                Some(false) => ("❌", egui::Color32::from_rgb(255, 80, 80)),
+                                None => ("✔", egui::Color32::from_rgb(200, 200, 200)),
                             };
-
                             ui.colored_label(status_color, status_icon);
                             ui.add_space(4.0);
                             let time = format_time(message.created_at);
@@ -774,8 +770,13 @@ fn show_my_message(ui: &mut egui::Ui, message: &MessageDto) {
                         });
                     });
                 });
-        }
-    );
+            
+            // Questo corregge un bug di layout in egui dove il layout da destra a sinistra
+            // non riserva correttamente lo spazio verticale per il contenuto wrappato.
+            ui.add_space(bubble.response.rect.height());
+            ui.allocate_rect(bubble.response.rect, egui::Sense::hover());
+        });
+    });
 }
 
 fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {

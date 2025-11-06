@@ -199,4 +199,21 @@ impl MessageHandler {
             warn!("Cannot request messages: WebSocket not connected");
         }
     }
+
+    pub fn handle_message_deleted(state: &mut AppState, message_id: Uuid, conversation_id: Uuid) {
+        info!(
+            "Handling message deletion: msg_id={}, cid={}",
+            message_id, conversation_id
+        );
+
+        // Rimuovi dalla UI se la conversazione è attiva
+        if state.cid == Some(conversation_id) {
+            state.messages.retain(|m| m.id != message_id);
+        }
+
+        // Rimuovi dalla cache
+        if let Some(messages) = state.conversation_messages.get_mut(&conversation_id) {
+            messages.retain(|m| m.id != message_id);
+        }
+    }
 }

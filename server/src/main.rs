@@ -35,8 +35,21 @@ async fn main() -> anyhow::Result<()> {
 
     let state = state::AppState::new(pool, cfg.jwt_secret.clone());
     cpu_logger::spawn_cpu_logger();
-    // Router principale con TraceLayer
-    let app: Router = routers::build_router(state).layer(TraceLayer::new_for_http());
+
+    // Costruisci i router parziali
+    let api_router = Router::new()
+        .merge(routers::user_route::router())
+        .merge(routers::conversation_route::router())
+        .merge(routers::invite_route::router())
+        .merge(routers::message_route::router());
+
+    // Combina i router
+    let app = Router::new()
+        .nest("/api", api_router) // Raggruppa tutte le API sotto /api
+        .route("/ws", axum::routing::get(web_socket::ws_handler))
+        .with_state(state)
+        
+        .layer(TraceLayer::new_for_http());
 
     let addr: SocketAddr = cfg.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;

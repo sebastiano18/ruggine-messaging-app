@@ -226,3 +226,13 @@ pub async fn fetch_messages_by_sequence_range(
 
     Ok(messages)
 }
+
+pub async fn delete_message(base: &str, token: &str, message_id: Uuid) -> Result<()> {
+    Client::new()
+        .delete(format!("{base}/api/messages/{message_id}"))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
