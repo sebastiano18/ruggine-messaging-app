@@ -5,11 +5,21 @@ use uuid::Uuid;
 use tracing::info;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
-    ui.heading("💬 Chat");
-    ui.separator();
-
     if s.token.is_none() {
-        ui.colored_label(egui::Color32::RED, "Login richiesto");
+        ui.vertical_centered(|ui| {
+            ui.add_space(100.0);
+            ui.label(
+                RichText::new(egui_remixicon::icons::LOCK_LINE)
+                    .size(48.0)
+                    .color(egui::Color32::from_rgb(200, 100, 40))
+            );
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new("Login richiesto")
+                    .size(16.0)
+                    .color(egui::Color32::GRAY)
+            );
+        });
         return;
     }
 
@@ -24,7 +34,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     // Header conversazione con bottone invita
     show_conversation_header(ui, s, cid);
 
-    ui.separator();
+    ui.add_space(2.0);
 
     // === Split manuale: messaggi (in alto, cresce) + input (in basso, fisso) ===
     let total_h = ui.available_height();
@@ -158,178 +168,543 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         }
     }
 
-    // Separatore tra messaggi e input
-    ui.add_space(6.0);
-    ui.separator();
-    ui.add_space(6.0);
+    // Spazio tra messaggi e input
+    ui.add_space(8.0);
 
     // 2) Input area
     show_input_area(ui, s, cid, input_h);
 }
 
 fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) {
-    // Contenitore con altezza fissa per la barra dei messaggi
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), height),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            // Campo di testo
-            let mut input_width = ui.available_width();
-            // spazio stimato per bottoni e stato a destra
-            input_width = (input_width - 110.0).max(120.0);
+    // Frame moderno per l'input
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(40, 40, 42))
+        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Campo di testo con stile moderno
+                let input_width = ui.available_width() - 90.0;
 
-            let input_response = ui.add(
-                TextEdit::singleline(&mut s.input)
-                    .hint_text("Scrivi un messaggio...")
-                    .desired_width(input_width),
-            );
+                let input_response = ui.add(
+                    TextEdit::singleline(&mut s.input)
+                        .hint_text("Scrivi un messaggio...")
+                        .desired_width(input_width)
+                        .frame(true)
+                );
 
-            // Invio con Enter
-            if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                send_message(s, cid);
-            }
+                // Invio con Enter
+                if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    send_message(s, cid);
+                }
 
-            // Pulsante invio
-            if ui.button("📤").on_hover_text("Invia").clicked() {
-                send_message(s, cid);
-            }
+                ui.add_space(8.0);
 
-            // Stato/azioni (a destra)
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if s.ws_status == WsStatus::Disconnected {
-                    if ui
-                        .button("🔌 Riconnetti")
-                        .on_hover_text("Riconnetti WebSocket")
-                        .clicked()
-                    {
-                        s.request_ws_reconnect = true;
+                // Pulsante invio moderno
+                let send_btn = egui::Button::new(
+                    RichText::new(egui_remixicon::icons::SEND_PLANE_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::WHITE)
+                )
+                    .fill(egui::Color32::from_rgb(200, 100, 40))
+                    .min_size(egui::vec2(42.0, 36.0))
+                    .rounding(8.0);
+
+                if ui.add(send_btn)
+                    .on_hover_text("Invia messaggio")
+                    .clicked()
+                {
+                    send_message(s, cid);
+                }
+
+                ui.add_space(8.0);
+
+                // Stato WebSocket
+                match s.ws_status {
+                    WsStatus::Disconnected => {
+                        let reconnect_btn = egui::Button::new(
+                            RichText::new(egui_remixicon::icons::REFRESH_LINE)
+                                .size(18.0)
+                        )
+                            .fill(egui::Color32::from_rgb(220, 60, 60))
+                            .min_size(egui::vec2(36.0, 36.0))
+                            .rounding(8.0);
+
+                        if ui.add(reconnect_btn)
+                            .on_hover_text("Riconnetti WebSocket")
+                            .clicked()
+                        {
+                            s.request_ws_reconnect = true;
+                        }
                     }
-                } else if s.ws_status == WsStatus::Connecting {
-                    ui.label("🔌 Connessione...");
-                } else {
-                    ui.label("🟢");
+                    WsStatus::Connecting => {
+                        ui.add(egui::Spinner::new().size(16.0));
+                    }
+                    WsStatus::Connected => {
+                        ui.label(
+                            RichText::new(egui_remixicon::icons::CHECKBOX_CIRCLE_FILL)
+                                .size(18.0)
+                                .color(egui::Color32::from_rgb(100, 200, 100))
+                        );
+                    }
                 }
             });
-        },
-    );
+        });
 }
 
 fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    ui.horizontal(|ui| {
-        // Titolo conversazione
-        if let Some(ref conversations) = s.conversations {
-            if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-                let icon = match conv.kind.as_str() {
-                    "group" => "👥",
-                    "dm" => "💬",
-                    _ => "💭",
-                };
-                ui.label(format!("{} {}", icon, conv.title));
+    // Frame moderno per l'header
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(40, 40, 42))
+        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Titolo conversazione con icone remix
+                if let Some(ref conversations) = s.conversations {
+                    if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
+                        let icon = match conv.kind.as_str() {
+                            "group" => egui_remixicon::icons::TEAM_FILL,
+                            "dm" => egui_remixicon::icons::MESSAGE_3_FILL,
+                            _ => egui_remixicon::icons::CHAT_3_FILL,
+                        };
 
-                // Se è un gruppo e l'utente è owner, mostra bottone +
-                if conv.kind == "group" {
-                    if let Some(user_id) = s.user_id {
-                        if conv.owner_id == user_id {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui
-                                    .button(RichText::new("➕").size(18.0))
-                                    .on_hover_text("Aggiungi membri al gruppo")
-                                    .clicked()
-                                {
-                                    s.show_invite_popup = true;
+                        ui.label(
+                            RichText::new(icon)
+                                .size(20.0)
+                                .color(egui::Color32::from_rgb(200, 100, 40))
+                        );
+
+                        ui.add_space(8.0);
+
+                        ui.label(
+                            RichText::new(&conv.title)
+                                .size(16.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
+
+                        // Se è un gruppo e l'utente è owner, mostra bottoni
+                        if conv.kind == "group" {
+                            if let Some(user_id) = s.user_id {
+                                if conv.owner_id == user_id {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // Bottone info membri
+                                        let info_btn = egui::Button::new(
+                                            RichText::new(egui_remixicon::icons::USER_LINE)
+                                                .size(18.0)
+                                        )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE);
+
+                                        if ui.add(info_btn)
+                                            .on_hover_text("Mostra membri del gruppo")
+                                            .clicked()
+                                        {
+                                            s.show_members_popup = true;
+                                            s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
+                                        }
+
+                                        ui.add_space(4.0);
+
+                                        // Bottone aggiungi
+                                        let add_btn = egui::Button::new(
+                                            RichText::new(egui_remixicon::icons::USER_ADD_LINE)
+                                                .size(18.0)
+                                        )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE);
+
+                                        if ui.add(add_btn)
+                                            .on_hover_text("Aggiungi membri al gruppo")
+                                            .clicked()
+                                        {
+                                            s.show_invite_popup = true;
+                                        }
+                                    });
                                 }
-                                
-                                if ui
-                                    .button(RichText::new("ℹ️").size(18.0))
-                                    .on_hover_text("Mostra membri del gruppo")
-                                    .clicked()
-                                {
-                                    s.show_members_popup = true;
-                                    s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
-                                }
-                            });
+                            }
                         }
+                    } else if s.is_dm_stub(cid) {
+                        ui.label(
+                            RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
+                                .size(20.0)
+                                .color(egui::Color32::from_rgb(200, 100, 40))
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(&s.conv_title)
+                                .size(16.0)
+                                .strong()
+                                .color(egui::Color32::WHITE)
+                        );
                     }
+                } else if s.cid.is_some() && !s.conv_title.is_empty() {
+                    ui.label(
+                        RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
+                            .size(20.0)
+                            .color(egui::Color32::from_rgb(200, 100, 40))
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(&s.conv_title)
+                            .size(16.0)
+                            .strong()
+                            .color(egui::Color32::WHITE)
+                    );
                 }
-            } else if s.is_dm_stub(cid) {
-                // Se è uno stub, mostra il titolo dallo stato
-                ui.label(format!("💬 {}", s.conv_title));
-            }
-        } else if s.cid.is_some() && !s.conv_title.is_empty() {
-            // Fallback per stub quando conversations non è ancora caricato
-            ui.label(format!("💬 {}", s.conv_title));
-        }
-    });
+            });
+        });
 
     // Popup per invitare membri (solo se attivo)
     if s.show_invite_popup {
         show_invite_popup(ui, s, cid);
     }
-    
+
     // Popup per visualizzare membri
     if s.show_members_popup {
         show_members_popup(ui, s, cid);
     }
 }
 
-fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    let mut close_popup = false;
 
-    egui::Window::new("Aggiungi membri")
+fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
+    let mut open = s.show_invite_popup;
+    let mut should_close = false;
+
+    egui::Window::new("")
         .collapsible(false)
         .resizable(false)
+        .title_bar(false)
+        .fixed_size([500.0, 600.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut open)
         .show(ui.ctx(), |ui| {
-            ui.set_width(300.0);
+            // Titolo centrato
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(format!("{} Aggiungi Membri al Gruppo", egui_remixicon::icons::USER_ADD_FILL))
+                        .size(24.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+            });
 
-            ui.label("Inserisci il nome utente del membro da aggiungere:");
-            ui.add_space(8.0);
+            ui.add_space(20.0);
 
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut s.invite_username_input)
-                    .hint_text("username")
-                    .desired_width(280.0),
-            );
+            // Contenuto full width
+            egui::Frame::none()
+                .inner_margin(20.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(460.0);
 
-            // Focus automatico sul campo di testo
-            if s.show_invite_popup {
-                response.request_focus();
-            }
+                    // Calcola se mostrare il bottone aggiungi
+                    let search_text = s.invite_popup.search_query.trim().to_string();
+                    let dm_conversations: Vec<_> = s.conversations
+                        .as_ref()
+                        .map(|convs| convs.iter().filter(|c| c.kind == "dm").collect())
+                        .unwrap_or_default();
 
-            // Invio con Enter
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let username = s.invite_username_input.trim().to_string();
-                if !username.is_empty() {
-                    // Invia invito via WebSocket
-                    s.send_invite_user(cid, username);
-                    s.invite_username_input.clear();
-                    // Non chiudere il popup, permetti di aggiungere più membri
-                }
-            }
+                    let search_lower = search_text.to_lowercase();
+                    let found_in_contacts = dm_conversations
+                        .iter()
+                        .any(|c| c.title.to_lowercase().starts_with(&search_lower));
 
-            ui.add_space(12.0);
+                    let show_add_button = !search_text.is_empty()
+                        && !found_in_contacts
+                        && !s.invite_popup.selected_users.contains(&search_text);
 
-            ui.horizontal(|ui| {
-                if ui.button("✖ Chiudi").clicked() {
-                    close_popup = true;
-                }
+                    // Barra di ricerca con bottone aggiungi
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(egui_remixicon::icons::SEARCH_LINE).size(20.0));
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Cerca o aggiungi utenti").size(13.0).weak());
 
-                ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                let available_width = ui.available_width() - 50.0;
+                                let search_response = ui.add(
+                                    TextEdit::singleline(&mut s.invite_popup.search_query)
+                                        .hint_text("Cerca nei contatti o scrivi username...")
+                                        .desired_width(available_width - 80.0)
+                                );
 
-                if ui.button("➕ Aggiungi").clicked() {
-                    let username = s.invite_username_input.trim().to_string();
-                    if !username.is_empty() {
-                        s.send_invite_user(cid, username);
-                        s.invite_username_input.clear();
+                                // Enter per aggiungere
+                                if search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    if show_add_button {
+                                        s.invite_popup.selected_users.insert(search_text.clone());
+                                        s.invite_popup.search_query.clear();
+                                    }
+                                }
+
+                                // Bottone aggiungi
+                                let add_button = egui::Button::new(
+                                    RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
+                                        .size(12.0)
+                                )
+                                    .fill(if show_add_button {
+                                        egui::Color32::from_rgb(200, 100, 40)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    })
+                                    .min_size(egui::vec2(70.0, 24.0));
+
+                                let button_response = ui.add_enabled(show_add_button, add_button);
+
+                                if !show_add_button {
+                                    button_response.surrender_focus();
+                                }
+
+                                if show_add_button && button_response.clicked() {
+                                    s.invite_popup.selected_users.insert(search_text.clone());
+                                    s.invite_popup.search_query.clear();
+                                }
+                            });
+
+                            // Info sotto la barra di ricerca
+                            if show_add_button {
+                                ui.add_space(3.0);
+                                ui.label(
+                                    RichText::new(format!("💡 '{}' non trovato nei contatti, clicca Aggiungi o premi Invio", search_text))
+                                        .size(10.0)
+                                        .color(egui::Color32::from_rgb(160, 100, 60))
+                                );
+                            }
+                        });
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Scroll area contatti disponibili
+                    if let Some(ref conversations) = s.conversations {
+                        let dm_conversations: Vec<_> = conversations
+                            .iter()
+                            .filter(|c| c.kind == "dm")
+                            .collect();
+
+                        let search_lower = s.invite_popup.search_query.trim().to_lowercase();
+                        let filtered_dms: Vec<_> = dm_conversations
+                            .iter()
+                            .filter(|c| {
+                                if search_lower.is_empty() {
+                                    true
+                                } else {
+                                    c.title.to_lowercase().starts_with(&search_lower)
+                                }
+                            })
+                            .collect();
+
+                        ui.label(
+                            RichText::new("I tuoi contatti")
+                                .size(13.0)
+                                .strong()
+                                .color(egui::Color32::GRAY)
+                        );
+                        ui.add_space(6.0);
+
+                        egui::Frame::none()
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                            .inner_margin(10.0)
+                            .rounding(6.0)
+                            .show(ui, |ui| {
+                                let fixed_height = 140.0;
+
+                                egui::ScrollArea::vertical()
+                                    .max_height(fixed_height)
+                                    .min_scrolled_height(fixed_height)
+                                    .id_source("invite_contacts_scroll")
+                                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.set_min_height(fixed_height);
+
+                                        if filtered_dms.is_empty() {
+                                            if dm_conversations.is_empty() {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(fixed_height / 2.0 - 20.0);
+                                                    ui.label(
+                                                        RichText::new("Nessun contatto disponibile")
+                                                            .italics()
+                                                            .color(egui::Color32::GRAY)
+                                                    );
+                                                    ui.add_space(4.0);
+                                                    ui.label(
+                                                        RichText::new("💡 Usa la barra di ricerca per aggiungere utenti")
+                                                            .size(10.0)
+                                                            .color(egui::Color32::from_rgb(160, 100, 60))
+                                                    );
+                                                });
+                                            } else {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(fixed_height / 2.0 - 10.0);
+                                                    ui.label(
+                                                        RichText::new("Nessun contatto trovato con questo nome")
+                                                            .italics()
+                                                            .color(egui::Color32::GRAY)
+                                                    );
+                                                });
+                                            }
+                                        } else {
+                                            for conv in filtered_dms {
+                                                let username = conv.title.clone();
+                                                let is_selected = s.invite_popup.selected_users.contains(&username);
+
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 0.0;
+
+                                                    let mut selected = is_selected;
+                                                    if ui.checkbox(&mut selected, "").changed() {
+                                                        if selected {
+                                                            s.invite_popup.selected_users.insert(username.clone());
+                                                        } else {
+                                                            s.invite_popup.selected_users.remove(&username);
+                                                        }
+                                                    }
+
+                                                    ui.add_space(4.0);
+
+                                                    if is_selected {
+                                                        egui::Frame::none()
+                                                            .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                            .rounding(4.0)
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                        .size(14.0)
+                                                                        .color(egui::Color32::WHITE)
+                                                                );
+                                                            });
+                                                    } else {
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                .size(14.0)
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    });
+                            });
                     }
-                }
+
+                    ui.add_space(16.0);
+
+                    // Scroll area utenti selezionati
+                    ui.label(
+                        RichText::new("Utenti da invitare")
+                            .size(13.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(200, 100, 40))
+                    );
+                    ui.add_space(6.0);
+
+                    egui::Frame::none()
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 100, 40)))
+                        .inner_margin(10.0)
+                        .rounding(6.0)
+                        .show(ui, |ui| {
+                            let fixed_height = 120.0;
+
+                            egui::ScrollArea::vertical()
+                                .max_height(fixed_height)
+                                .min_scrolled_height(fixed_height)
+                                .id_source("selected_users_scroll")
+                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.set_min_height(fixed_height);
+
+                                    if s.invite_popup.selected_users.is_empty() {
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(fixed_height / 2.0 - 10.0);
+                                            ui.label(
+                                                RichText::new("Nessun utente selezionato")
+                                                    .italics()
+                                                    .color(egui::Color32::GRAY)
+                                            );
+                                        });
+                                    } else {
+                                        let mut selected_list: Vec<String> = s.invite_popup.selected_users
+                                            .iter()
+                                            .cloned()
+                                            .collect();
+                                        selected_list.sort();
+
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+
+                                        for username in selected_list {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 4.0;
+
+                                                if ui.small_button(egui_remixicon::icons::CLOSE_LINE).clicked() {
+                                                    s.invite_popup.selected_users.remove(&username);
+                                                }
+
+                                                egui::Frame::none()
+                                                    .fill(egui::Color32::from_rgb(200, 100, 40))
+                                                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                                    .rounding(4.0)
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}", egui_remixicon::icons::USER_LINE, username))
+                                                                .size(14.0)
+                                                                .color(egui::Color32::WHITE)
+                                                        );
+                                                    });
+                                            });
+                                        }
+                                    }
+                                });
+                        });
+                });
+
+            ui.add_space(16.0);
+
+            // Bottoni centrati
+            ui.vertical_centered(|ui| {
+                let can_invite = !s.invite_popup.selected_users.is_empty();
+
+                ui.horizontal(|ui| {
+                    let cancel_button = egui::Button::new(
+                        RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                            .size(14.0)
+                    )
+                        .fill(ui.visuals().widgets.inactive.bg_fill)
+                        .min_size(egui::vec2(130.0, 40.0));
+
+                    if ui.add(cancel_button).clicked() {
+                        s.invite_popup.reset();
+                        should_close = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let invite_button = egui::Button::new(
+                            RichText::new(format!("{} Invita Utenti", egui_remixicon::icons::MAIL_SEND_LINE))
+                                .size(14.0)
+                        )
+                            .fill(if can_invite {
+                                egui::Color32::from_rgb(200, 100, 40)
+                            } else {
+                                ui.visuals().widgets.inactive.bg_fill
+                            })
+                            .min_size(egui::vec2(180.0, 40.0));
+
+                        if ui.add_enabled(can_invite, invite_button).clicked() {
+                            let users: Vec<String> = s.invite_popup.selected_users.iter().cloned().collect();
+                            s.send_invite_users(cid, users);
+                            s.invite_popup.reset();
+                            should_close = true;
+                        }
+                    });
+                });
             });
         });
 
-    if close_popup {
-        s.show_invite_popup = false;
-        s.invite_username_input.clear();
+    if should_close {
+        open = false;
     }
+
+    s.show_invite_popup = open;
 }
 
 fn show_message(ui: &mut egui::Ui, s: &AppState, message: &MessageDto) {
@@ -448,9 +823,28 @@ fn show_other_message(ui: &mut egui::Ui, message: &MessageDto) {
 fn show_empty_state(ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(100.0);
-        ui.label("⚠ Nessuna conversazione selezionata");
+
+        ui.label(
+            RichText::new(egui_remixicon::icons::CHAT_3_LINE)
+                .size(64.0)
+                .color(egui::Color32::from_rgb(100, 100, 100))
+        );
+
+        ui.add_space(20.0);
+
+        ui.label(
+            RichText::new("Nessuna conversazione selezionata")
+                .size(18.0)
+                .color(egui::Color32::from_rgb(180, 180, 180))
+        );
+
         ui.add_space(10.0);
-        ui.label("Vai alla scheda 'Conversazioni' per creare o selezionare una chat");
+
+        ui.label(
+            RichText::new("Seleziona una chat dalla sidebar o crea una nuova conversazione")
+                .size(13.0)
+                .color(egui::Color32::from_rgb(120, 120, 120))
+        );
     });
 }
 
@@ -555,33 +949,33 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 .as_ref()
                                 .and_then(|convs| convs.iter().find(|c| c.id == cid))
                                 .map(|conv| conv.owner_id);
-                            
+
                             let current_user_id = s.user_id;
                             let is_owner = Some(current_user_id) == owner_id.map(Some);
 
                             for member in &s.members_list {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(&member.username).size(14.0));
-                                    
+
                                     // Se questo membro è l'owner, mostra la corona
                                     if Some(member.user_id) == owner_id {
                                         ui.label(RichText::new("👑").size(14.0));
                                     }
-                                    
+
                                     // Mostra il ruolo
                                     ui.label(
                                         RichText::new(format!("({})", member.role))
                                             .size(12.0)
                                             .color(egui::Color32::GRAY)
                                     );
-                                    
+
                                     // Bottone espelli: solo se l'utente corrente è owner,
                                     // il membro non è l'owner stesso
                                     if is_owner && Some(member.user_id) != owner_id {
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             if ui.button(RichText::new("🗑️ Espelli").color(egui::Color32::RED))
                                                 .on_hover_text("Rimuovi questo membro dal gruppo")
-                                                .clicked() 
+                                                .clicked()
                                             {
                                                 member_to_kick = Some(member.user_id);
                                             }
@@ -605,7 +999,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     if close_popup {
         s.show_members_popup = false;
     }
-    
+
     // Se c'è un membro da espellere, chiamiamo la funzione
     if let Some(user_id) = member_to_kick {
         s.kick_member(cid, user_id);
