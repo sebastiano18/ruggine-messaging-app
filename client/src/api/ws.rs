@@ -62,7 +62,9 @@ pub async fn subscribe(ws: &mut WsStream) -> Result<()> {
 pub fn spawn_bidirectional_handler(
     mut ws: WsStream,
     mut on_text: impl FnMut(String) + Send + 'static,
+    disconnect_notifier: Option<mpsc::UnboundedSender<crate::models::UiEvent>>,
 ) -> WsControl {
+
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
 
@@ -73,12 +75,14 @@ pub fn spawn_bidirectional_handler(
         let mut consecutive_failures = 0u32;
         const MAX_FAILURES: u32 = 5;
         const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        let mut graceful_shutdown = false;
 
         loop {
             tokio::select! {
                 // Shutdown richiesto
                 _ = &mut shutdown_rx => {
                     debug!("WebSocket shutdown requested");
+                    graceful_shutdown = true;
                     let close_frame = CloseFrame {
                         code: CloseCode::Normal,
                         reason: Cow::from("app_exit"),
@@ -168,9 +172,13 @@ pub fn spawn_bidirectional_handler(
                             consecutive_failures += 1;
 
                             let error_str = e.to_string().to_lowercase();
+                            debug!("Error string (lowercase) for matching: '{}'", error_str);
+
                             if error_str.contains("connection closed") ||
-                               error_str.contains("broken pipe") {
-                                error!("Connection terminated by peer");
+                               error_str.contains("broken pipe") ||
+                               error_str.contains("interrotta") ||  // "Connessione in corso interrotta"
+                               error_str.contains("10054") {        // Windows error code
+                                error!("Connection terminated by peer - error matched: {}", error_str);
                                 break;
                             }
 
@@ -180,6 +188,8 @@ pub fn spawn_bidirectional_handler(
                                 break;
                             }
 
+                            warn!("WebSocket receive error (failure {}/{}), retrying after delay",
+                                  consecutive_failures, MAX_FAILURES);
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
@@ -211,6 +221,13 @@ pub fn spawn_bidirectional_handler(
 
                     // RIMOSSO il ping JSON - il sistema enhanced lo gestisce
                 }
+            }
+        }
+
+        // Notifica disconnessione se non è shutdown graceful
+        if !graceful_shutdown {
+            if let Some(notifier) = disconnect_notifier {
+                let _ = notifier.send(crate::models::UiEvent::WsDisconnected);
             }
         }
 

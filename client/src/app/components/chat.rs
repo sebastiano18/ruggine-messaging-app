@@ -65,66 +65,75 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         .id_source("chat_messages_scroll");
 
     let output = scroll.show(ui, |ui| {
-        // Se abbiamo solo 0-1 messaggi (vuoto o solo anteprima)
-        if s.messages.len() <= 1 && *s.has_more_messages.get(&cid).unwrap_or(&true) {
-            if !s.is_loading_more {
-                s.load_older_messages();
-            }
+        // Wrapper con margini laterali per tutta l'area messaggi
+        ui.horizontal(|ui| {
+            ui.add_space(40.0); // Margine sinistro - REGOLA QUESTO VALORE
 
-            ui.vertical_centered(|ui| {
-                ui.add_space(messages_h / 2.0 - 20.0);
-                ui.spinner();
-                ui.label("Caricamento chat...");
-            });
-            return;
-        }
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width() - 40.0); // Margine destro - REGOLA ANCHE QUESTO
 
-        // Se non ci sono messaggi, chat vuota
-        if s.messages.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(messages_h / 2.0 - 40.0);
-                ui.label("— Chat vuota —");
-                ui.add_space(10.0);
-                ui.label("Invia il primo messaggio per iniziare!");
-            });
-            return;
-        }
+                // Se abbiamo solo 0-1 messaggi (vuoto o solo anteprima)
+                if s.messages.len() <= 1 && *s.has_more_messages.get(&cid).unwrap_or(&true) {
+                    if !s.is_loading_more {
+                        s.load_older_messages();
+                    }
 
-        // === Mostra i messaggi ===
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(messages_h / 2.0 - 20.0);
+                        ui.spinner();
+                        ui.label("Caricamento chat...");
+                    });
+                    return;
+                }
 
-        // Indicatore inizio conversazione
-        if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
-            ui.vertical_centered(|ui| {
-                ui.label("— Inizio conversazione —");
-            });
-            ui.add_space(10.0);
-        }
+                // Se non ci sono messaggi, chat vuota
+                if s.messages.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(messages_h / 2.0 - 40.0);
+                        ui.label("— Chat vuota —");
+                        ui.add_space(10.0);
+                        ui.label("Invia il primo messaggio per iniziare!");
+                    });
+                    return;
+                }
 
-        // Spinner se sta caricando
-        if s.is_loading_more {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Caricamento messaggi precedenti...");
-            });
-            ui.separator();
-        }
+                // === Mostra i messaggi ===
 
-        // Renderizza tutti i messaggi, cercando l'ancora
-        for (i, message) in s.messages.clone().iter().enumerate() {
-            // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
-            if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
-                // Scrolla a questo messaggio
-                ui.scroll_to_cursor(Some(egui::Align::TOP));
-                // Reset ancora
-                ui.data_mut(|d| d.insert_temp(anchor_state_id, None::<Uuid>));
-            }
+                // Indicatore inizio conversazione
+                if !*s.has_more_messages.get(&cid).unwrap_or(&true) {
+                    ui.vertical_centered(|ui| {
+                        ui.label("— Inizio conversazione —");
+                    });
+                    ui.add_space(10.0);
+                }
 
-            show_message(ui, s, message);
+                // Spinner se sta caricando
+                if s.is_loading_more {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Caricamento messaggi precedenti...");
+                    });
+                    ui.separator();
+                }
 
-            if i < s.messages.len() - 1 {
-                ui.add_space(6.0);
-            }
-        }
+                // Renderizza tutti i messaggi, cercando l'ancora
+                for (i, message) in s.messages.iter().enumerate() {
+                    // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
+                    if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
+                        // Scrolla a questo messaggio
+                        ui.scroll_to_cursor(Some(egui::Align::TOP));
+                        // Reset ancora
+                        ui.data_mut(|d| d.insert_temp(anchor_state_id, None::<Uuid>));
+                    }
+
+                    show_message(ui, s, message);
+
+                    if i < s.messages.len() - 1 {
+                        ui.add_space(6.0);
+                    }
+                }
+            }); // fine vertical
+        }); // fine horizontal (margini)
     });
 
     // Salva il numero di messaggi corrente
@@ -176,183 +185,140 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 }
 
 fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) {
-    // Frame moderno per l'input
-    egui::Frame::none()
-        .fill(egui::Color32::from_rgb(40, 40, 42))
-        .inner_margin(egui::Margin::symmetric(16.0, 10.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Campo di testo con stile moderno
-                let input_width = ui.available_width() - 90.0;
+    ui.separator();
+    ui.add_space(4.0);
 
-                let input_response = ui.add(
-                    TextEdit::singleline(&mut s.input)
-                        .hint_text("Scrivi un messaggio...")
-                        .desired_width(input_width)
-                        .frame(true)
-                );
+    // Area input con componenti standard
+    ui.horizontal(|ui| {
+        ui.add_space(40.0); // Margine sinistro - UGUALE a quello dei messaggi
 
-                // Invio con Enter
-                if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    send_message(s, cid);
-                }
+        // Campo di testo standard
+        let input_width = ui.available_width() - 90.0;
 
-                ui.add_space(8.0);
+        let input_response = ui.add(
+            TextEdit::singleline(&mut s.input)
+                .hint_text("Scrivi un messaggio...")
+                .desired_width(input_width)
+        );
 
-                // Pulsante invio moderno
-                let send_btn = egui::Button::new(
-                    RichText::new(egui_remixicon::icons::SEND_PLANE_FILL)
-                        .size(20.0)
-                        .color(egui::Color32::WHITE)
-                )
-                    .fill(egui::Color32::from_rgb(200, 100, 40))
-                    .min_size(egui::vec2(42.0, 36.0))
-                    .rounding(8.0);
+        // Invio con Enter
+        if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            send_message(s, cid);
+        }
 
-                if ui.add(send_btn)
-                    .on_hover_text("Invia messaggio")
-                    .clicked()
-                {
-                    send_message(s, cid);
-                }
+        ui.add_space(8.0);
 
-                ui.add_space(8.0);
+        // Pulsante invio con l'arancione dell'app
+        let send_btn = egui::Button::new(
+            RichText::new(egui_remixicon::icons::SEND_PLANE_FILL)
+                .size(18.0)
+                .color(egui::Color32::WHITE)
+        )
+            .fill(egui::Color32::from_rgb(200, 100, 40))
+            .min_size(egui::vec2(40.0, 32.0));
 
-                // Stato WebSocket
-                match s.ws_status {
-                    WsStatus::Disconnected => {
-                        let reconnect_btn = egui::Button::new(
-                            RichText::new(egui_remixicon::icons::REFRESH_LINE)
-                                .size(18.0)
-                        )
-                            .fill(egui::Color32::from_rgb(220, 60, 60))
-                            .min_size(egui::vec2(36.0, 36.0))
-                            .rounding(8.0);
+        if ui.add(send_btn)
+            .on_hover_text("Invia messaggio")
+            .clicked()
+        {
+            send_message(s, cid);
+        }
 
-                        if ui.add(reconnect_btn)
-                            .on_hover_text("Riconnetti WebSocket")
-                            .clicked()
-                        {
-                            s.request_ws_reconnect = true;
-                        }
-                    }
-                    WsStatus::Connecting => {
-                        ui.add(egui::Spinner::new().size(16.0));
-                    }
-                    WsStatus::Connected => {
-                        ui.label(
-                            RichText::new(egui_remixicon::icons::CHECKBOX_CIRCLE_FILL)
-                                .size(18.0)
-                                .color(egui::Color32::from_rgb(100, 200, 100))
-                        );
-                    }
-                }
-            });
-        });
+        ui.add_space(40.0); // Margine destro - UGUALE a quello dei messaggi
+    });
+
+    ui.add_space(4.0);
 }
 
+
 fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    // Frame moderno per l'header
-    egui::Frame::none()
-        .fill(egui::Color32::from_rgb(40, 40, 42))
-        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Titolo conversazione con icone remix
-                if let Some(ref conversations) = s.conversations {
-                    if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-                        let icon = match conv.kind.as_str() {
-                            "group" => egui_remixicon::icons::TEAM_FILL,
-                            "dm" => egui_remixicon::icons::MESSAGE_3_FILL,
-                            _ => egui_remixicon::icons::CHAT_3_FILL,
-                        };
+    // Header con componenti standard che si adattano al tema
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
 
-                        ui.label(
-                            RichText::new(icon)
-                                .size(20.0)
-                                .color(egui::Color32::from_rgb(200, 100, 40))
-                        );
+        // Titolo conversazione con icone remix
+        if let Some(ref conversations) = s.conversations {
+            if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
+                let icon = match conv.kind.as_str() {
+                    "group" => egui_remixicon::icons::TEAM_FILL,
+                    "dm" => egui_remixicon::icons::MESSAGE_3_FILL,
+                    _ => egui_remixicon::icons::CHAT_3_FILL,
+                };
 
-                        ui.add_space(8.0);
+                // Icona con l'arancione dell'app come accento
+                ui.label(
+                    RichText::new(icon)
+                        .size(20.0)
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
 
-                        ui.label(
-                            RichText::new(&conv.title)
-                                .size(16.0)
-                                .strong()
-                                .color(egui::Color32::WHITE)
-                        );
+                ui.add_space(8.0);
 
-                        // Se è un gruppo e l'utente è owner, mostra bottoni
-                        if conv.kind == "group" {
-                            if let Some(user_id) = s.user_id {
-                                if conv.owner_id == user_id {
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // Bottone info membri
-                                        let info_btn = egui::Button::new(
-                                            RichText::new(egui_remixicon::icons::USER_LINE)
-                                                .size(18.0)
-                                        )
-                                            .fill(egui::Color32::TRANSPARENT)
-                                            .stroke(egui::Stroke::NONE);
+                // Titolo con stile standard (si adatta al tema)
+                ui.heading(&conv.title);
 
-                                        if ui.add(info_btn)
-                                            .on_hover_text("Mostra membri del gruppo")
-                                            .clicked()
-                                        {
-                                            s.show_members_popup = true;
-                                            s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
-                                        }
+                // Se è un gruppo e l'utente è owner, mostra bottoni
+                if conv.kind == "group" {
+                    if let Some(user_id) = s.user_id {
+                        if conv.owner_id == user_id {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                // Bottone info membri - icona pulita senza frame
+                                let info_btn = egui::Button::new(
+                                    RichText::new(egui_remixicon::icons::USER_LINE)
+                                        .size(18.0)
+                                )
+                                    .frame(false);
 
-                                        ui.add_space(4.0);
-
-                                        // Bottone aggiungi
-                                        let add_btn = egui::Button::new(
-                                            RichText::new(egui_remixicon::icons::USER_ADD_LINE)
-                                                .size(18.0)
-                                        )
-                                            .fill(egui::Color32::TRANSPARENT)
-                                            .stroke(egui::Stroke::NONE);
-
-                                        if ui.add(add_btn)
-                                            .on_hover_text("Aggiungi membri al gruppo")
-                                            .clicked()
-                                        {
-                                            s.show_invite_popup = true;
-                                        }
-                                    });
+                                if ui.add(info_btn)
+                                    .on_hover_text("Mostra membri del gruppo")
+                                    .clicked()
+                                {
+                                    s.show_members_popup = true;
+                                    s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
                                 }
-                            }
+
+                                ui.add_space(4.0);
+
+                                // Bottone aggiungi - icona pulita senza frame
+                                let add_btn = egui::Button::new(
+                                    RichText::new(egui_remixicon::icons::USER_ADD_LINE)
+                                        .size(18.0)
+                                )
+                                    .frame(false);
+
+                                if ui.add(add_btn)
+                                    .on_hover_text("Aggiungi membri al gruppo")
+                                    .clicked()
+                                {
+                                    s.show_invite_popup = true;
+                                }
+                            });
                         }
-                    } else if s.is_dm_stub(cid) {
-                        ui.label(
-                            RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
-                                .size(20.0)
-                                .color(egui::Color32::from_rgb(200, 100, 40))
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(&s.conv_title)
-                                .size(16.0)
-                                .strong()
-                                .color(egui::Color32::WHITE)
-                        );
                     }
-                } else if s.cid.is_some() && !s.conv_title.is_empty() {
-                    ui.label(
-                        RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
-                            .size(20.0)
-                            .color(egui::Color32::from_rgb(200, 100, 40))
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(&s.conv_title)
-                            .size(16.0)
-                            .strong()
-                            .color(egui::Color32::WHITE)
-                    );
                 }
-            });
-        });
+            } else if s.is_dm_stub(cid) {
+                ui.label(
+                    RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+                ui.add_space(8.0);
+                ui.heading(&s.conv_title);
+            }
+        } else if s.cid.is_some() && !s.conv_title.is_empty() {
+            ui.label(
+                RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
+                    .size(20.0)
+                    .color(egui::Color32::from_rgb(200, 100, 40))
+            );
+            ui.add_space(8.0);
+            ui.heading(&s.conv_title);
+        }
+
+        ui.add_space(8.0);
+    });
+
+    ui.separator();
 
     // Popup per invitare membri (solo se attivo)
     if s.show_invite_popup {
@@ -364,6 +330,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         show_members_popup(ui, s, cid);
     }
 }
+
 
 
 fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
