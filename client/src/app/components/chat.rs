@@ -1,4 +1,4 @@
-use crate::models::{WsStatus, MessageDto};
+use crate::models::MessageDto;
 use crate::state::AppState;
 use eframe::egui::{self, Frame, RichText, TextEdit};
 use uuid::Uuid;
@@ -116,10 +116,16 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                     ui.separator();
                 }
 
+                // Clona i messaggi per evitare problemi di borrow
+                let messages = s.messages.clone();
+                let message_count = messages.len();
+                
                 // Renderizza tutti i messaggi, cercando l'ancora
-                for (i, message) in s.messages.iter().enumerate() {
+                for i in 0..message_count {
+                    let message = &messages[i];
+                    
                     // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
-                    if s.messages.len() > last_message_count && Some(message.id) == anchor_message_id {
+                    if message_count > last_message_count && Some(message.id) == anchor_message_id {
                         // Scrolla a questo messaggio
                         ui.scroll_to_cursor(Some(egui::Align::TOP));
                         // Reset ancora
@@ -128,7 +134,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 
                     show_message(ui, s, message);
 
-                    if i < s.messages.len() - 1 {
+                    if i < message_count - 1 {
                         ui.add_space(6.0);
                     }
                 }
@@ -184,7 +190,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     show_input_area(ui, s, cid, input_h);
 }
 
-fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, height: f32) {
+fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, _height: f32) {
     ui.separator();
     ui.add_space(4.0);
 
@@ -257,29 +263,29 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 // Titolo con stile standard (si adatta al tema)
                 ui.heading(&conv.title);
 
-                // Se è un gruppo e l'utente è owner, mostra bottoni
+                // Se è un gruppo, mostra il bottone info a tutti
                 if conv.kind == "group" {
                     if let Some(user_id) = s.user_id {
-                        if conv.owner_id == user_id {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                // Bottone info membri - icona pulita senza frame
-                                let info_btn = egui::Button::new(
-                                    RichText::new(egui_remixicon::icons::USER_LINE)
-                                        .size(18.0)
-                                )
-                                    .frame(false);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Bottone info membri - visibile a tutti
+                            let info_btn = egui::Button::new(
+                                RichText::new(egui_remixicon::icons::USER_LINE)
+                                    .size(18.0)
+                            )
+                                .frame(false);
 
-                                if ui.add(info_btn)
-                                    .on_hover_text("Mostra membri del gruppo")
-                                    .clicked()
-                                {
-                                    s.show_members_popup = true;
-                                    s.load_conversation_members(cid, s.token.clone().unwrap_or_default());
-                                }
+                            if ui.add(info_btn)
+                                .on_hover_text("Mostra membri del gruppo")
+                                .clicked()
+                            {
+                                s.show_members_popup = true;
+                                // I membri sono già stati caricati con get_conversation_with_messages
+                            }
 
+                            // Bottone aggiungi - solo per l'owner
+                            if conv.owner_id == user_id {
                                 ui.add_space(4.0);
 
-                                // Bottone aggiungi - icona pulita senza frame
                                 let add_btn = egui::Button::new(
                                     RichText::new(egui_remixicon::icons::USER_ADD_LINE)
                                         .size(18.0)
@@ -292,8 +298,8 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 {
                                     s.show_invite_popup = true;
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             } else if s.is_dm_stub(cid) {
@@ -675,7 +681,7 @@ fn show_invite_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 }
 
 fn show_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
-    if message.author_username == "system" {
+    if message.is_system_message() {
         ui.horizontal(|ui| {
             ui.add_space(ui.available_width() * 0.3);
             ui.colored_label(egui::Color32::GRAY, &message.content);

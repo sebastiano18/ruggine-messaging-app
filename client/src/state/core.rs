@@ -628,25 +628,15 @@ impl AppState {
 
         let base = self.base.clone();
         let token = token.clone();
-        let tx = self.ui_tx.clone();
 
         self.rt.spawn(async move {
             match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id).await {
                 Ok(_) => {
-                    info!("Member kicked successfully");
-                    // Ricarica la lista dei membri
-                    match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
-                        Ok(members) => {
-                            let _ = tx.send(UiEvent::MembersLoaded(members));
-                        }
-                        Err(e) => {
-                            error!("Failed to reload members: {}", e);
-                        }
-                    }
+                    info!("Member kicked successfully - will receive update via WebSocket");
+                    // Non serve ricaricare manualmente, arriverà l'evento member_list_updated via WebSocket
                 }
                 Err(e) => {
                     error!("Failed to kick member: {}", e);
-                    let _ = tx.send(UiEvent::Error(format!("Errore espulsione membro: {}", e)));
                 }
             }
         });

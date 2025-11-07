@@ -28,6 +28,47 @@ struct NewConversationData {
     created_at: i64,
 }
 
+/// Crea e salva un messaggio di sistema nel database
+/// Usa l'owner della conversazione come author_id (per rispettare il constraint FK)
+pub async fn create_system_message(
+    state: &AppState,
+    conversation_id: Uuid,
+    content: String,
+) -> Result<(Uuid, u64)> {
+    let message_id = Uuid::new_v4();
+    let timestamp = Utc::now().timestamp();
+
+    // Ottieni l'owner della conversazione per usarlo come author_id
+    let owner_id: String = sqlx::query_scalar(
+        "SELECT owner_id FROM conversations WHERE id = ?"
+    )
+    .bind(conversation_id.to_string())
+    .fetch_one(&state.pool)
+    .await?;
+
+    // Ottieni sequence number per il messaggio
+    let sequence = state.get_next_message_sequence(conversation_id).await?;
+
+    // Salva nel database usando l'owner come author_id
+    // Il client riconoscerà comunque come messaggio di sistema dal contenuto speciale
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, author_id, content, created_at, sequence_num) 
+         VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .bind(message_id.to_string())
+    .bind(conversation_id.to_string())
+    .bind(&owner_id)
+    .bind(&content)
+    .bind(timestamp)
+    .bind(sequence as i64)
+    .execute(&state.pool)
+    .await?;
+
+    info!("Created system message: {} in conversation {}", content, conversation_id);
+
+    Ok((message_id, sequence))
+}
+
 pub async fn broadcast_to_conversation(
     state: &AppState,
     conversation_id: Uuid,
@@ -1553,6 +1594,159 @@ pub async fn handle_invite_user(
         match broadcast_to_conversation(state, conversation_id, member_added_msg).await {
             Ok(n) => info!("Broadcast member_added to {} subscribers", n),
             Err(e) => warn!("Failed to broadcast member_added (non-fatal): {}", e),
+        }
+
+        // Crea messaggio di sistema persistente
+        let system_message_content = format!("{} è stato aggiunto al gruppo", target_username_actual);
+        match create_system_message(state, conversation_id, system_message_content.clone()).await {
+            Ok((msg_id, sequence)) => {
+                info!("Created persistent system message (id={}, seq={})", msg_id, sequence);
+                
+                // Ottieni owner_id e username per il broadcast
+                let owner_data: Option<(String, String)> = sqlx::query_as(
+                    "SELECT c.owner_id, u.username FROM conversations c 
+                     JOIN users u ON c.owner_id = u.id 
+                     WHERE c.id = ?"
+                )
+                .bind(conversation_id.to_string())
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap_or(None);
+                
+                if let Some((owner_id, owner_username)) = owner_data {
+                    // Broadcast il messaggio di sistema a tutti i partecipanti via canale conversazione
+                    let system_msg_broadcast = json!({
+                        "type": "message",
+                        "id": msg_id,
+                        "conversation_id": conversation_id,
+                        "author_id": owner_id,
+                        "author_username": owner_username,
+                        "content": system_message_content.clone(),
+                        "created_at": ts,
+                        "sequence_num": sequence
+                    });
+                    
+                    let _ = broadcast_to_conversation(state, conversation_id, system_msg_broadcast.clone()).await;
+                    
+                    // Invia anche come evento sequenziato a tutti i partecipanti per garantire ricezione in tempo reale
+                    let participant_ids_for_msg = match crate::services::conversation_service::ConversationService::list_participant_ids(
+                        &state.pool, 
+                        conversation_id
+                    ).await {
+                        Ok(ids) => ids,
+                        Err(e) => {
+                            warn!("Failed to get participant ids for system message broadcast: {}", e);
+                            Vec::new()
+                        }
+                    };
+                    
+                    for participant_id in participant_ids_for_msg {
+                        if let Err(e) = state.send_sequenced_event_to_user(
+                            participant_id,
+                            "new_message",
+                            system_msg_broadcast.clone(),
+                            Some(conversation_id),
+                        ).await {
+                            warn!("Failed to send system message event to {}: {}", participant_id, e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to create system message (non-fatal): {}", e);
+            }
+        }
+
+        // Invia evento sequenziato member_added a tutti i partecipanti esistenti (escluso il nuovo membro)
+        let participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
+            &state.pool, 
+            conversation_id
+        ).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!("Failed to get participant ids for member_added event: {}", e);
+                Vec::new()
+            }
+        };
+
+        let member_added_payload = json!({
+            "username": target_username_actual,
+            "user_id": target_user_id,
+            "added_by": inviter_id,
+            "timestamp": ts
+        });
+
+        for participant_id in participant_ids {
+            // Non inviare l'evento al nuovo membro (riceve già new_conversation)
+            if participant_id == target_user_id {
+                continue;
+            }
+
+            if let Err(e) = state.send_sequenced_event_to_user(
+                participant_id,
+                "member_added",
+                member_added_payload.clone(),
+                Some(conversation_id),
+            ).await {
+                warn!("Failed to send member_added event to {}: {}", participant_id, e);
+            }
+        }
+
+        // Invia member_list_updated DOPO ogni aggiunta (non solo alla fine)
+        // Ottieni la lista aggiornata dei membri
+        let members_data = match crate::services::conversation_service::ConversationService::get_members(
+            &state.pool, 
+            conversation_id, 
+            inviter_id
+        ).await {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("Failed to get updated members list after adding {}: {}", target_username_actual, e);
+                Vec::new()
+            }
+        };
+
+        if !members_data.is_empty() {
+            let members: Vec<serde_json::Value> = members_data
+                .into_iter()
+                .map(|(user_id, username, role, joined_at)| json!({
+                    "user_id": user_id,
+                    "username": username,
+                    "role": role,
+                    "joined_at": joined_at
+                }))
+                .collect();
+
+            // Ottieni lista partecipanti aggiornata per inviare l'evento
+            let current_participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
+                &state.pool, 
+                conversation_id
+            ).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    warn!("Failed to get participant ids after adding {}: {}", target_username_actual, e);
+                    Vec::new()
+                }
+            };
+
+            let member_list_payload = json!({
+                "conversation_id": conversation_id,
+                "members": members,
+                "timestamp": chrono::Utc::now().timestamp()
+            });
+
+            for participant_id in current_participant_ids {
+                if let Err(e) = state.send_sequenced_event_to_user(
+                    participant_id,
+                    "member_list_updated",
+                    member_list_payload.clone(),
+                    Some(conversation_id),
+                ).await {
+                    warn!("Failed to send member_list_updated event to {}: {}", participant_id, e);
+                }
+            }
+            
+            info!("Sent member_list_updated to all participants after adding {}", target_username_actual);
         }
 
         added_count += 1;

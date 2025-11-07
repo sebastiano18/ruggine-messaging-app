@@ -331,7 +331,15 @@ impl MessageDto {
     }
 
     pub fn is_system_message(&self) -> bool {
-        self.author_id == Uuid::nil() && self.author_username == "system"
+        // Messaggio di sistema classico (author_id nullo)
+        if self.author_id == Uuid::nil() && self.author_username == "system" {
+            return true;
+        }
+        
+        // Messaggi di sistema per eventi di gruppo (pattern matching)
+        self.content.ends_with(" è stato aggiunto al gruppo") ||
+        self.content.ends_with(" è stato espulso dal gruppo") ||
+        self.content.ends_with(" ha lasciato il gruppo")
     }
 
     pub fn fetch_notification(conversation_id: Uuid, message_count: usize, reason: &str) -> Self {

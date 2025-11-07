@@ -20,6 +20,28 @@ pub fn add_system_message(state: &mut AppState, content: String) {
     debug!("Added system message to UI");
 }
 
+/// Aggiunge un messaggio di sistema a una conversazione specifica
+pub fn add_system_message_to_conversation(state: &mut AppState, conversation_id: Uuid, content: String) {
+    let mut system_msg = MessageDto::system_message(content);
+    system_msg.conversation_id = conversation_id;
+    
+    // Aggiungi alla cache della conversazione specifica
+    if let Some(messages) = state.conversation_messages.get_mut(&conversation_id) {
+        messages.push(system_msg.clone());
+        debug!("Added system message to conversation {} cache", conversation_id);
+    } else {
+        // Se la conversazione non è in cache, creala
+        state.conversation_messages.insert(conversation_id, vec![system_msg.clone()]);
+        debug!("Created cache and added system message for conversation {}", conversation_id);
+    }
+    
+    // Se è la conversazione corrente, aggiungi anche a state.messages
+    if state.cid == Some(conversation_id) {
+        state.messages.push(system_msg);
+        debug!("Added system message to current UI");
+    }
+}
+
 /// Valida un messaggio in arrivo dal WebSocket
 pub fn validate_incoming_message(msg: &MessageDto) -> bool {
     // Controlli di base

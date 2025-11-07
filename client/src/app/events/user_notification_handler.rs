@@ -116,6 +116,50 @@ impl UserNotificationHandler {
                     warn!("member_kicked notification without conversation_id");
                 }
             }
+            "member_added" => {
+                // Gestisce quando un utente viene aggiunto al gruppo
+                let username = event_data
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown");
+                
+                info!("User {} added to group (conversation: {:?})", username, conversation_id);
+                
+                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
+                // Non serve più creare un messaggio locale
+                
+                // Richiedi aggiornamento della lista conversazioni
+                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+            }
+            "member_removed" => {
+                // Gestisce quando un utente viene espulso dal gruppo
+                let username = event_data
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown");
+                
+                info!("User {} removed from group (conversation: {:?})", username, conversation_id);
+                
+                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
+                // Non serve più creare un messaggio locale
+                
+                // Richiedi aggiornamento della lista conversazioni
+                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+            }
+            "member_list_updated" => {
+                // Aggiorna la lista dei membri in real-time
+                if let Ok(members) = serde_json::from_value::<Vec<crate::models::ParticipantInfo>>(
+                    event_data.get("members").cloned().unwrap_or(serde_json::Value::Array(vec![]))
+                ) {
+                    info!("Received member list update with {} members for conversation {:?}", members.len(), conversation_id);
+                    for member in &members {
+                        info!("  - {} ({})", member.username, member.role);
+                    }
+                    let _ = state.ui_tx.send(UiEvent::MembersLoaded(members));
+                } else {
+                    warn!("Failed to parse members from member_list_updated event");
+                }
+            }
             "user_left_group" => {
                 // Gestisce quando un altro utente lascia il gruppo
                 let username = event_data
@@ -125,14 +169,8 @@ impl UserNotificationHandler {
                 
                 info!("User {} left the group (conversation: {:?})", username, conversation_id);
                 
-                if let Some(conv_id) = conversation_id {
-                    if state.cid == Some(conv_id) {
-                        helpers::add_system_message(
-                            state,
-                            format!("{} ha lasciato il gruppo", username),
-                        );
-                    }
-                }
+                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
+                // Non serve più creare un messaggio locale
                 
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);

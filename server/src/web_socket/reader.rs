@@ -689,9 +689,103 @@ pub fn spawn_reader(
                                         &state,
                                         conversation_id,
                                         user_id,
-                                        username,
-                                        remaining_participants,
+                                        username.clone(),
+                                        remaining_participants.clone(),
                                     ).await;
+
+                                    // Crea messaggio di sistema persistente per l'uscita
+                                    let system_message_content = format!("{} ha lasciato il gruppo", username);
+                                    let timestamp = chrono::Utc::now().timestamp();
+                                    
+                                    match crate::web_socket::helpers::create_system_message(&state, conversation_id, system_message_content.clone()).await {
+                                        Ok((msg_id, sequence)) => {
+                                            info!("Created persistent leave system message (id={}, seq={})", msg_id, sequence);
+                                            
+                                            // Ottieni owner_id e username per il broadcast
+                                            let owner_data: Option<(String, String)> = sqlx::query_as(
+                                                "SELECT c.owner_id, u.username FROM conversations c 
+                                                 JOIN users u ON c.owner_id = u.id 
+                                                 WHERE c.id = ?"
+                                            )
+                                            .bind(conversation_id.to_string())
+                                            .fetch_optional(&state.pool)
+                                            .await
+                                            .unwrap_or(None);
+                                            
+                                            if let Some((owner_id, owner_username)) = owner_data {
+                                                // Broadcast il messaggio di sistema a tutti i partecipanti rimanenti
+                                                let system_msg_broadcast = json!({
+                                                    "type": "message",
+                                                    "id": msg_id,
+                                                    "conversation_id": conversation_id,
+                                                    "author_id": owner_id,
+                                                    "author_username": owner_username,
+                                                    "content": system_message_content.clone(),
+                                                    "created_at": timestamp,
+                                                    "sequence_num": sequence
+                                                });
+                                                
+                                                let _ = crate::web_socket::helpers::broadcast_to_conversation(&state, conversation_id, system_msg_broadcast.clone()).await;
+                                                
+                                                // Invia anche come evento sequenziato a tutti i partecipanti rimanenti
+                                                for participant_id in &remaining_participants {
+                                                    if let Err(e) = state.send_sequenced_event_to_user(
+                                                        *participant_id,
+                                                        "new_message",
+                                                        system_msg_broadcast.clone(),
+                                                        Some(conversation_id),
+                                                    ).await {
+                                                        warn!("Failed to send leave system message event to {}: {}", participant_id, e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to create leave system message (non-fatal): {}", e);
+                                        }
+                                    }
+
+                                    // Invia anche member_list_updated con la lista aggiornata
+                                    let members_data = match crate::services::conversation_service::ConversationService::get_members(
+                                        &state.pool, 
+                                        conversation_id, 
+                                        remaining_participants[0] // Usa il primo partecipante rimanente
+                                    ).await {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            warn!("Failed to get updated members list after user left: {}", e);
+                                            Vec::new()
+                                        }
+                                    };
+
+                                    let members: Vec<serde_json::Value> = members_data
+                                        .into_iter()
+                                        .map(|(user_id, username, role, joined_at)| json!({
+                                            "user_id": user_id,
+                                            "username": username,
+                                            "role": role,
+                                            "joined_at": joined_at
+                                        }))
+                                        .collect();
+
+                                    let payload = json!({
+                                        "conversation_id": conversation_id,
+                                        "members": members,
+                                        "timestamp": chrono::Utc::now().timestamp()
+                                    });
+
+                                    for participant_id in &remaining_participants {
+                                        if let Err(e) = state.send_sequenced_event_to_user(
+                                            *participant_id,
+                                            "member_list_updated",
+                                            payload.clone(),
+                                            Some(conversation_id),
+                                        ).await {
+                                            tracing::error!("Failed to send member_list_updated event to {}: {}", participant_id, e);
+                                        }
+                                    }
+                                    
+                                    info!("Sent member_list_updated event to {} participants", remaining_participants.len());
                                 } else {
                                     info!("No remaining participants to notify (group now empty)");
                                 }
