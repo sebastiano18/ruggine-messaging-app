@@ -59,13 +59,28 @@ impl ConversationsSidebar {
 
     fn show_header(&self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
         ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            ui.label(RichText::new(format!("{} Conversazioni", egui_remixicon::icons::CHAT_4_FILL)).heading().strong());
+            ui.add_space(8.0);
+
+            // Usa il colore del testo adattivo al tema
+            let text_color = ui.visuals().text_color();
+
+            ui.label(
+                RichText::new(format!("{} Conversazioni", egui_remixicon::icons::CHAT_4_FILL))
+                    .size(18.0)
+                    .color(text_color)
+                    .strong()
+            );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .small_button("🔄")
-                    .on_hover_text("Carica conversazioni")
+                // Bottone refresh con stile minimale
+                let refresh_btn = egui::Button::new(
+                    RichText::new("🔄").size(14.0)
+                )
+                    .frame(false)
+                    .fill(egui::Color32::TRANSPARENT);
+
+                if ui.add(refresh_btn)
+                    .on_hover_text("Aggiorna conversazioni")
                     .clicked()
                 {
                     self.refresh_conversations(state, token);
@@ -73,37 +88,50 @@ impl ConversationsSidebar {
 
                 ui.add_space(4.0);
 
-                if ui
-                    .small_button("➕")
+                // Bottone crea gruppo con stile minimale
+                let create_btn = egui::Button::new(
+                    RichText::new("➕").size(14.0)
+                )
+                    .frame(false)
+                    .fill(egui::Color32::TRANSPARENT);
+
+                if ui.add(create_btn)
                     .on_hover_text("Gestione gruppi")
                     .clicked()
                 {
                     state.page = Page::GroupManagement;
                 }
+
+                ui.add_space(4.0);
             });
         });
     }
 
     fn show_search_section(&mut self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
-        Frame::group(ui.style())
-            .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.06))
-            .stroke(Stroke::new(
-                0.5,
-                egui::Color32::from_rgb(240, 140, 80).linear_multiply(0.3),
-            ))
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        // Frame minimale che si adatta al tema
+        let bg_color = if ui.visuals().dark_mode {
+            ui.visuals().extreme_bg_color
+        } else {
+            egui::Color32::from_gray(245)
+        };
+
+        Frame::none()
+            .fill(bg_color)
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
             .rounding(egui::Rounding::same(8.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // Icona ricerca con colore adattivo
+                    let icon_color = ui.visuals().weak_text_color();
                     ui.label(
                         RichText::new("🔍")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(200, 100, 40)),
+                            .size(14.0)
+                            .color(icon_color),
                     );
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
 
                     TextEdit::singleline(&mut self.search_query)
-                        .hint_text("Cerca nelle conversazioni...")
+                        .hint_text("Cerca conversazioni...")
                         .desired_width(ui.available_width())
                         .show(ui);
                 });
@@ -156,10 +184,10 @@ impl ConversationsSidebar {
             .filter(|conv| {
                 conv.title.to_lowercase().contains(&query)
                     || match conv.kind.as_str() {
-                        "group" => "gruppo".contains(&query),
-                        "dm" => "privata".contains(&query) || "dm".contains(&query),
-                        _ => false,
-                    }
+                    "group" => "gruppo".contains(&query),
+                    "dm" => "privata".contains(&query) || "dm".contains(&query),
+                    _ => false,
+                }
             })
             .collect()
     }
@@ -187,82 +215,93 @@ impl ConversationsSidebar {
         let response =
             ui.allocate_response(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
 
-        // Determina se il puntatore è dentro l'intera riga, indipendentemente da widget sovrapposti
+        // Determina se il puntatore è dentro l'intera riga
         let pointer_over_row = ui.rect_contains_pointer(response.rect);
-        // Usato per evitare l'apertura della chat quando si clicca sulla 'X'
         let mut delete_clicked = false;
 
+        // Colori adattivi per light/dark mode con arancione solo per interazioni
+        let orange = egui::Color32::from_rgb(200, 100, 40);
+        let orange_hover = egui::Color32::from_rgb(240, 140, 80);
+
         let (bg_color, text_color, preview_color) = if is_selected {
+            // Selezionato: arancione
             (
-                egui::Color32::from_rgb(200, 100, 40),
+                orange,
                 egui::Color32::WHITE,
                 egui::Color32::WHITE,
             )
-        } else if response.hovered() {
+        } else if pointer_over_row {
+            // Hover: sfondo sottile adattivo con testo arancione
+            let hover_bg = if ui.visuals().dark_mode {
+                egui::Color32::from_gray(40)
+            } else {
+                egui::Color32::from_gray(240)
+            };
             (
-                egui::Color32::from_rgb(240, 140, 80),
-                egui::Color32::BLACK,
-                egui::Color32::BLACK,
+                hover_bg,
+                orange_hover,
+                ui.visuals().text_color(),
             )
         } else {
+            // Normale: trasparente con colori del tema
             (
                 egui::Color32::TRANSPARENT,
-                egui::Color32::from_rgb(200, 100, 40),
-                egui::Color32::from_rgb(200, 100, 40),
+                ui.visuals().text_color(),
+                ui.visuals().weak_text_color(),
             )
         };
 
+        // Disegna sfondo con bordi arrotondati
         if bg_color != egui::Color32::TRANSPARENT {
             ui.painter()
-                .rect_filled(response.rect, egui::Rounding::same(6.0), bg_color);
+                .rect_filled(response.rect, egui::Rounding::same(8.0), bg_color);
         }
 
         let is_owner = state.user_id.map_or(false, |uid| uid == conv.owner_id);
-
         let is_participant = !is_owner && conv.kind == "group";
 
-        ui.allocate_ui_at_rect(response.rect.shrink(10.0), |ui| {
+        ui.allocate_ui_at_rect(response.rect.shrink(12.0), |ui| {
             ui.horizontal(|ui| {
+                // Icona con colore adattivo
                 let (icon, icon_color) = match conv.kind.as_str() {
                     "group" => {
                         let color = if is_selected {
                             egui::Color32::WHITE
-                        } else if response.hovered() {
-                            egui::Color32::BLACK
+                        } else if pointer_over_row {
+                            orange_hover
                         } else {
-                            egui::Color32::from_rgb(200, 100, 40)
+                            ui.visuals().weak_text_color()
                         };
                         (egui_remixicon::icons::TEAM_FILL, color)
                     },
                     "dm" => {
                         let color = if is_selected {
                             egui::Color32::WHITE
-                        } else if response.hovered() {
-                            egui::Color32::BLACK
+                        } else if pointer_over_row {
+                            orange_hover
                         } else {
-                            egui::Color32::from_rgb(200, 100, 40)
+                            ui.visuals().weak_text_color()
                         };
                         (egui_remixicon::icons::CHAT_1_FILL, color)
                     },
                     _ => {
                         let color = if is_selected {
                             egui::Color32::WHITE
-                        } else if response.hovered() {
-                            egui::Color32::BLACK
+                        } else if pointer_over_row {
+                            orange_hover
                         } else {
-                            egui::Color32::from_rgb(200, 100, 40)
+                            ui.visuals().weak_text_color()
                         };
                         (egui_remixicon::icons::FILE_TEXT_FILL, color)
                     },
                 };
 
-                ui.label(RichText::new(icon).size(18.0).color(icon_color));
-                ui.add_space(8.0);
+                ui.label(RichText::new(icon).size(16.0).color(icon_color));
+                ui.add_space(10.0);
 
                 ui.vertical(|ui| {
                     ui.label(
                         RichText::new(&conv.title)
-                            .strong()
                             .size(14.0)
                             .color(text_color),
                     );
@@ -272,30 +311,38 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Mostra prima la X (che apparirà più a destra nel layout right_to_left)
+                    // Mostra X solo su hover
                     if conv.kind == "group" {
-                        // Mostra la 'X' solo quando il mouse è sopra la riga
                         if (is_owner || is_participant) && pointer_over_row {
                             let (button_text, hover_text) = if is_owner {
-                                ("X", "Elimina gruppo")
+                                ("×", "Elimina gruppo")
                             } else {
-                                ("X", "Esci dal gruppo")
+                                ("×", "Esci dal gruppo")
                             };
 
-                            let delete_button = egui::Button::new(RichText::new(button_text).size(16.0).color(egui::Color32::BLACK))
-                                .small()
+                            let delete_color = if ui.visuals().dark_mode {
+                                egui::Color32::from_gray(180)
+                            } else {
+                                egui::Color32::from_gray(100)
+                            };
+
+                            let delete_button = egui::Button::new(
+                                RichText::new(button_text)
+                                    .size(20.0)
+                                    .color(delete_color)
+                            )
                                 .frame(false)
                                 .fill(egui::Color32::TRANSPARENT);
 
                             let del_resp = ui.add(delete_button).on_hover_text(hover_text);
-                            
+
                             if del_resp.hovered() {
                                 ui.painter().text(
                                     del_resp.rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    "X",
-                                    egui::FontId::proportional(16.0),
-                                    egui::Color32::WHITE,
+                                    "×",
+                                    egui::FontId::proportional(20.0),
+                                    egui::Color32::from_rgb(220, 80, 60),
                                 );
                             }
 
@@ -304,27 +351,35 @@ impl ConversationsSidebar {
                                 state.request_delete_confirmation(conv);
                             }
 
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
                         }
                     } else {
-                        // Per le chat private mostra la 'X' solo quando il mouse è sopra la riga
                         if pointer_over_row {
-                            let delete_button = egui::Button::new(RichText::new("X").size(16.0).color(egui::Color32::BLACK))
-                                .small()
+                            let delete_color = if ui.visuals().dark_mode {
+                                egui::Color32::from_gray(180)
+                            } else {
+                                egui::Color32::from_gray(100)
+                            };
+
+                            let delete_button = egui::Button::new(
+                                RichText::new("×")
+                                    .size(20.0)
+                                    .color(delete_color)
+                            )
                                 .frame(false)
                                 .fill(egui::Color32::TRANSPARENT);
 
                             let del_resp = ui
                                 .add(delete_button)
                                 .on_hover_text("Elimina conversazione");
-                            
+
                             if del_resp.hovered() {
                                 ui.painter().text(
                                     del_resp.rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    "X",
-                                    egui::FontId::proportional(16.0),
-                                    egui::Color32::WHITE,
+                                    "×",
+                                    egui::FontId::proportional(20.0),
+                                    egui::Color32::from_rgb(220, 80, 60),
                                 );
                             }
 
@@ -333,11 +388,11 @@ impl ConversationsSidebar {
                                 state.request_delete_confirmation(conv);
                             }
 
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
                         }
                     }
 
-                    // ⭐ Badge con contatore unread (apparirà a sinistra della X nel layout right_to_left)
+                    // Badge unread con arancione
                     if let Some(&unread_count) = state.conversation_unread_counts.get(&conv.id) {
                         if unread_count > 0 {
                             let badge_text = if unread_count > 99 {
@@ -346,33 +401,33 @@ impl ConversationsSidebar {
                                 unread_count.to_string()
                             };
 
-                            let badge_size = egui::vec2(24.0, 24.0);
+                            let badge_size = egui::vec2(22.0, 22.0);
                             let (rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
 
-                            // Cerchio arancione
+                            // Cerchio arancione minimalista
                             ui.painter().circle_filled(
                                 rect.center(),
-                                12.0,
-                                egui::Color32::from_rgb(255, 100, 30)
+                                11.0,
+                                orange
                             );
 
-                            // Testo bianco centrato
+                            // Testo bianco
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 &badge_text,
-                                egui::FontId::proportional(11.0),
+                                egui::FontId::proportional(10.0),
                                 egui::Color32::WHITE,
                             );
 
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
                         }
                     }
                 });
             });
         });
 
-        // Click sull'elemento per aprire la conversazione (solo se non si è cliccato elimina)
+        // Click per aprire
         if response.clicked() && !delete_clicked {
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
             state.page = Page::Chat;
@@ -391,10 +446,10 @@ impl ConversationsSidebar {
         let mut cancel = false;
 
         let is_stub = state.is_dm_stub(conversation.id);
-        
+
         // Determina se l'utente è l'owner del gruppo
         let is_owner = state.user_id.map_or(false, |uid| uid == conversation.owner_id);
-        
+
         let (title, main_message, detail_message, confirm_label) = if is_stub {
             (
                 "Conferma eliminazione",
@@ -458,7 +513,7 @@ impl ConversationsSidebar {
                         let confirm_button = egui::Button::new(
                             RichText::new(confirm_label).color(egui::Color32::WHITE),
                         )
-                        .fill(egui::Color32::from_rgb(200, 100, 40));
+                            .fill(egui::Color32::from_rgb(200, 100, 40));
 
                         ui.add_space(80.0);
 
@@ -503,29 +558,46 @@ impl ConversationsSidebar {
 
     fn show_empty_state(&self, ui: &mut egui::Ui, state: &mut AppState) {
         ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.label(RichText::new("📭").size(32.0));
-            ui.add_space(8.0);
-            ui.label(RichText::new("Nessuna conversazione").color(egui::Color32::GRAY));
+            ui.add_space(60.0);
+
+            let icon_color = ui.visuals().weak_text_color();
+            ui.label(RichText::new("📭").size(48.0));
+
             ui.add_space(12.0);
+
+            ui.label(
+                RichText::new("Nessuna conversazione")
+                    .size(16.0)
+                    .color(ui.visuals().text_color())
+            );
+
+            ui.add_space(8.0);
 
             ui.label(
                 RichText::new("Clicca 🔄 per caricare le conversazioni")
                     .size(12.0)
-                    .color(egui::Color32::GRAY),
+                    .color(ui.visuals().weak_text_color()),
             );
 
-            ui.add_space(8.0);
+            ui.add_space(12.0);
 
             ui.label(
                 RichText::new("oppure")
                     .size(11.0)
-                    .color(egui::Color32::GRAY),
+                    .color(ui.visuals().weak_text_color()),
             );
 
-            ui.add_space(8.0);
+            ui.add_space(12.0);
 
-            if ui.button("Crea una nuova conversazione").clicked() {
+            // Bottone con stile arancione minimalista
+            let btn = egui::Button::new(
+                RichText::new("Crea nuova conversazione")
+                    .color(egui::Color32::WHITE)
+            )
+                .fill(egui::Color32::from_rgb(200, 100, 40))
+                .rounding(egui::Rounding::same(6.0));
+
+            if ui.add(btn).clicked() {
                 state.page = Page::GroupManagement;
             }
         });
@@ -533,24 +605,32 @@ impl ConversationsSidebar {
 
     fn show_no_search_results(&self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
+            ui.add_space(50.0);
+
+            let icon_color = ui.visuals().weak_text_color();
             ui.label(
                 RichText::new("🔍")
-                    .size(28.0)
-                    .color(egui::Color32::from_rgb(160, 100, 60)),
+                    .size(40.0)
+                    .color(icon_color),
             );
-            ui.add_space(8.0);
+
+            ui.add_space(12.0);
+
             ui.label(
-                RichText::new("Nessun risultato").color(egui::Color32::from_rgb(160, 100, 60)),
+                RichText::new("Nessun risultato")
+                    .size(15.0)
+                    .color(ui.visuals().text_color())
             );
-            ui.add_space(4.0);
+
+            ui.add_space(6.0);
+
             ui.label(
                 RichText::new(format!(
                     "Nessuna conversazione trovata per '{}'",
                     self.search_query
                 ))
-                .size(12.0)
-                .color(egui::Color32::GRAY),
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
             );
         });
     }
