@@ -88,3 +88,13 @@ pub async fn post(
     Ok(Json(CreatedId { id: message_id }))
 }
 
+#[cfg_attr(debug_assertions, axum::debug_handler)]
+pub async fn delete_message(
+    user: AuthUser,
+    Path(message_id): Path<Uuid>,
+    State(st): State<AppState>,
+) -> Result<StatusCode> {
+    MessageService::delete(&st.pool, message_id, user.id, &st).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+

@@ -200,4 +200,65 @@ impl MessageService {
 
         Ok(msg_id)
     }
+
+    pub async fn delete(
+        pool: &SqlitePool,
+        message_id: Uuid,
+        author_id: Uuid,
+        state: &AppState,
+    ) -> Result<()> {
+        // 1. Trova il messaggio per ottenere conversation_id e verificare l'autore
+        let message: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, author_id, conversation_id FROM messages WHERE id = ?",
+        )
+        .bind(message_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+
+        let (message_id_str, author_id_str, conversation_id_str) = match message {
+            Some((id, author, conv)) => (id, author, conv),
+            None => return Err(crate::error::AppError::NotFound),
+        };
+
+        let db_author_id = Uuid::parse_str(&author_id_str).unwrap_or_default();
+        let conversation_id = Uuid::parse_str(&conversation_id_str).unwrap_or_default();
+
+        // 2. Verifica che l'utente che elimina sia l'autore del messaggio
+        if db_author_id != author_id {
+            return Err(crate::error::AppError::Forbidden);
+        }
+
+        // 3. Elimina il messaggio
+        let rows_affected = MessageRepo::delete(pool, message_id, author_id).await?;
+
+        if rows_affected > 0 {
+            // 4. Broadcast dell'evento di eliminazione
+            let event = json!({
+                "type": "message_deleted",
+                "message_id": message_id,
+                "conversation_id": conversation_id,
+            });
+
+            match broadcast_to_conversation(state, conversation_id, event).await {
+                Ok(delivered) => {
+                    tracing::info!(
+                        "Broadcast delete for message {} to {} users in conversation {}",
+                        message_id,
+                        delivered,
+                        conversation_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to broadcast delete for message {} to conversation {}: {}",
+                        message_id,
+                        conversation_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

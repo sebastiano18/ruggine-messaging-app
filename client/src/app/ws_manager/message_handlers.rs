@@ -61,6 +61,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "error" => handle_server_error(tx, &parsed_value),
         "message_ack" => handle_message_ack(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
+        "message_deleted" => handle_message_deleted(tx, &parsed_value),
         _ => {
             debug!("Unhandled message type: {}", msg_type);
         }
@@ -892,6 +893,35 @@ fn handle_conversation_deleted(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
             );
         }
     }
+}
+
+/// Gestisce l'evento di eliminazione di un messaggio
+fn handle_message_deleted(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let message_id = match parse_uuid_field(value, "message_id") {
+        Some(id) => id,
+        None => {
+            warn!("Invalid or missing message_id in message_deleted event");
+            return;
+        }
+    };
+
+    let conversation_id = match parse_uuid_field(value, "conversation_id") {
+        Some(id) => id,
+        None => {
+            warn!("Invalid or missing conversation_id in message_deleted event");
+            return;
+        }
+    };
+
+    info!(
+        "Handling message_deleted event for message {} in conversation {}",
+        message_id, conversation_id
+    );
+
+    let _ = tx.send(UiEvent::MessageDeleted {
+        message_id,
+        conversation_id,
+    });
 }
 
 /// Handler per eventi member_added (quando un utente viene aggiunto a un gruppo)

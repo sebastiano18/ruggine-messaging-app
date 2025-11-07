@@ -235,6 +235,10 @@ pub enum UiEvent {
         sequence: Option<u64>,
         status: String,
     },
+    MessageDeleted {
+        message_id: Uuid,
+        conversation_id: Uuid,
+    },
 
     // General events
     InviteCreated(String),
