@@ -231,6 +231,10 @@ impl EventDispatcher {
             }
 
             UiEvent::MembersLoaded(members) => {
+                info!("MembersLoaded event: {} members loaded", members.len());
+                for member in &members {
+                    info!("  - {} ({})", member.username, member.role);
+                }
                 state.members_list = members;
                 state.is_loading_members = false;
             }

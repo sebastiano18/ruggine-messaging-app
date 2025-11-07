@@ -38,6 +38,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     // Handle messages by type
     match msg_type {
         "chat_message" => handle_chat_message(tx, &parsed_value),
+        "message" => handle_new_message_event(tx, &parsed_value), // Messaggi broadcast (inclusi quelli di sistema)
         "new_message" => handle_new_message_event(tx, &parsed_value),
         "initial_state" => handle_initial_state(tx, &parsed_value),
         "conversation_messages" => handle_conversation_messages(tx, &parsed_value),

@@ -20,7 +20,7 @@ impl MessageService {
              FROM messages m
              JOIN users u ON m.author_id = u.id
              WHERE m.conversation_id = ?
-             ORDER BY COALESCE(m.sequence_num, m.created_at) DESC
+             ORDER BY COALESCE(m.sequence_num, m.created_at) ASC
              LIMIT ?",
         )
             .bind(conversation_id.to_string())

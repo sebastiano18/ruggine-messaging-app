@@ -378,6 +378,19 @@ impl ConversationHandler {
                 cid
             );
         }
+        
+        // Carica i membri della conversazione (solo per gruppi)
+        if let Some(conversations) = &state.conversations {
+            if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
+                if conv.kind == "group" {
+                    // Triggera il fetch completo per ottenere i membri aggiornati
+                    let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
+                        cid,
+                        "Load group members".to_string()
+                    ));
+                }
+            }
+        }
     }
 
     pub fn handle_conversation_deleted(state: &mut AppState, cid: Uuid) {
@@ -543,6 +556,11 @@ impl ConversationHandler {
                     .await
                 {
                     Ok(conv_with_msgs) => {
+                        // Invia i membri se presenti
+                        if !conv_with_msgs.members.is_empty() {
+                            let _ = tx.send(UiEvent::MembersLoaded(conv_with_msgs.members));
+                        }
+                        // Invia la conversazione e i messaggi
                         let _ = tx.send(UiEvent::ConversationCompleteFetched(
                             conv_with_msgs.conversation,
                             conv_with_msgs.messages,
