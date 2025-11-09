@@ -848,23 +848,22 @@ fn handle_member_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         username, user_id, conversation_id, added_by
     );
 
-    // Gestisci la sequence se presente per sincronizzazione
-    if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
-        let _ = tx.send(UiEvent::UserNotification {
-            sequence: seq,
-            event_type: "member_added".to_string(),
-            event_data: value.clone(),
-            conversation_id: Some(conversation_id),
-            recovery: false,
-        });
-    }
+    // Gestisci SEMPRE tramite UserNotification (con o senza sequence)
+    let sequence = value.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+
+    let _ = tx.send(UiEvent::UserNotification {
+        sequence,
+        event_type: "member_added".to_string(),
+        event_data: value.clone(),
+        conversation_id: Some(conversation_id),
+        recovery: false,
+    });
 
     // Mostra notifica all'utente
     let message = format!("✅ {} è stato aggiunto al gruppo", username);
     let _ = tx.send(UiEvent::Info(message));
 
-    // Richiedi aggiornamento della lista conversazioni per vedere il nuovo membro
-    let _ = tx.send(UiEvent::ConversationListUpdated);
+    // ✅ RIMOSSO: Non triggerare più ConversationListUpdated
 }
 
 fn handle_leave_group_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

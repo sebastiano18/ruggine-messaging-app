@@ -703,4 +703,88 @@ impl AppState {
         }
     }
 
+    /// Helper per creare un gruppo con partecipanti
+    pub fn create_group_with_participants(&mut self) {
+        use crate::models::{ConversationDto, MessageDto, Outgoing, Page};
+        use uuid::Uuid;
+
+        let group_name = self.create_group_popup.group_name.trim().to_string();
+        let participants: Vec<String> = self
+            .create_group_popup
+            .selected_participants
+            .iter()
+            .cloned()
+            .collect();
+
+        tracing::info!(
+        "Creating group '{}' with {} participants via WebSocket: {:?}",
+        group_name,
+        participants.len(),
+        participants
+    );
+
+        // Crea stub per il gruppo
+        let stub_id = Uuid::new_v4();
+
+        let stub_conversation = ConversationDto {
+            id: stub_id,
+            kind: "group".to_string(),
+            title: group_name.clone(),
+            owner_id: self.user_id.unwrap_or(Uuid::nil()),
+            created_at: chrono::Utc::now().timestamp(),
+            last_read_sequence: 0,
+            last_activity: chrono::Utc::now().timestamp(),
+            last_msg_seq: 0,
+        };
+
+        // Aggiungi stub alla lista conversazioni
+        if let Some(ref mut convs) = self.conversations {
+            convs.insert(0, stub_conversation);
+        }
+
+        // Traccia lo stub
+        self.group_stubs.insert(stub_id, group_name.clone());
+
+        // Apri il gruppo stub
+        self.cid = Some(stub_id);
+        self.page = Page::Chat;
+        self.conv_title = group_name.clone();
+
+        // Messaggio di sistema nello stub
+        let system_msg =
+            MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
+        self.conversation_messages
+            .entry(stub_id)
+            .or_insert_with(Vec::new)
+            .push(system_msg.clone());
+        self.messages = vec![system_msg];
+
+        // Invia al server
+        let outgoing = Outgoing::CreateGroupWithParticipants {
+            group_name,
+            participant_usernames: participants,
+            client_temp_id: Some(stub_id.to_string()),
+        };
+
+        if let Err(e) = self.ui_to_net_tx.try_send(outgoing) {
+            // Cleanup in caso di errore
+            if let Some(ref mut convs) = self.conversations {
+                convs.retain(|c| c.id != stub_id);
+            }
+            self.group_stubs.remove(&stub_id);
+            self.conversation_messages.remove(&stub_id);
+            self.messages.clear();
+            self.cid = None;
+            self.page = Page::Conversations;
+
+            let _ = self
+                .ui_tx
+                .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
+            return;
+        }
+
+        tracing::info!("Created group stub {} and opened it", stub_id);
+        self.create_group_popup.reset();
+    }
+
 }

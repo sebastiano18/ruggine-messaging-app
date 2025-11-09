@@ -127,9 +127,7 @@ impl UserNotificationHandler {
 
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-
-                // Richiedi aggiornamento della lista conversazioni
-                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+                
             }
             "member_removed" => {
                 // Gestisce quando un utente viene espulso dal gruppo
@@ -142,9 +140,7 @@ impl UserNotificationHandler {
 
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-
-                // Richiedi aggiornamento della lista conversazioni
-                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+                
             }
             "member_list_updated" => {
                 // Aggiorna la lista dei membri in real-time

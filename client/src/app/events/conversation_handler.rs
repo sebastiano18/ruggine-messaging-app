@@ -240,7 +240,11 @@ impl ConversationHandler {
             conversations.retain(|c| c.id != conversation.id);
             conversations.push(conversation.clone());
             conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-            info!("Added conversation {} to list ({} total)", conversation.id, conversations.len());
+            info!(
+                "Added conversation {} to list ({} total)",
+                conversation.id,
+                conversations.len()
+            );
         } else {
             state.conversations = Some(vec![conversation.clone()]);
             info!("Initialized conversations list with {}", conversation.id);
@@ -389,18 +393,8 @@ impl ConversationHandler {
             );
         }
 
-        // Carica i membri della conversazione (solo per gruppi)
-        if let Some(conversations) = &state.conversations {
-            if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
-                if conv.kind == "group" {
-                    // Triggera il fetch completo per ottenere i membri aggiornati
-                    let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
-                        cid,
-                        "Load group members".to_string()
-                    ));
-                }
-            }
-        }
+        // ✅ RIMOSSO: Non viene più fatto fetch esplicito quando si apre un gruppo
+        // I messaggi vengono caricati dalla cache o tramite LoadConversationMessages come per i DM
     }
 
     pub fn handle_conversation_deleted(state: &mut AppState, cid: Uuid) {
@@ -425,6 +419,8 @@ impl ConversationHandler {
         if state.is_dm_stub(cid) {
             state.remove_dm_stub(cid);
         }
+
+        state.request_conversations_refresh = true;
     }
 
     pub fn handle_conversation_created(state: &mut AppState, cid: Uuid) {
