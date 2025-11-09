@@ -122,12 +122,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} added to group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -137,12 +137,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} removed from group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -166,12 +166,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} left the group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -180,6 +180,9 @@ impl UserNotificationHandler {
             }
             "new_conversation" => {
                 Self::handle_new_conversation(state, event_data);
+            }
+            "conversation_confirmation" => {
+                Self::handle_conversation_confirmation_event(state, event_data);
             }
             _ => {
                 debug!("Unhandled notification type: {}", event_type);
@@ -676,5 +679,144 @@ impl UserNotificationHandler {
         } else {
             warn!("new_conversation event missing conversation object");
         }
+    }
+
+    /// Gestisce conversation_confirmation da UserNotification
+    fn handle_conversation_confirmation_event(
+        state: &mut AppState,
+        event_data: serde_json::Value,
+    ) {
+        use crate::models::{ConversationDto, MessageDto};
+        use uuid::Uuid;
+
+        debug!("Parsing conversation_confirmation from event_data...");
+
+        // Parsa i dati della conversazione
+        let conversation_data = event_data.get("conversation").and_then(|conv_obj| {
+            debug!("Found conversation object in event_data");
+
+            // Parse UUID fields
+            let id_str = conv_obj.get("id")?.as_str()?;
+            let id = Uuid::parse_str(id_str).ok()?;
+            debug!("Parsed conversation id: {}", id);
+
+            let owner_id_str = conv_obj.get("owner_id")?.as_str()?;
+            let owner_id = Uuid::parse_str(owner_id_str).ok()?;
+            debug!("Parsed owner_id: {}", owner_id);
+
+            let client_temp_id = conv_obj
+                .get("client_temp_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            if let Some(ref temp_id) = client_temp_id {
+                info!("Received conversation_confirmation for temp_id: {}", temp_id);
+            } else {
+                warn!("No client_temp_id found in conversation_confirmation");
+            }
+
+            let kind = conv_obj.get("kind")?.as_str()?.to_string();
+            debug!("Parsed kind: {}", kind);
+
+            let created_at = conv_obj.get("created_at")?.as_i64()?;
+            debug!("Parsed created_at: {}", created_at);
+
+            let title = conv_obj
+                .get("display_title")
+                .and_then(|t| t.as_str())
+                .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
+                .unwrap_or("")
+                .to_string();
+            debug!("Parsed conversation title: {}", title);
+
+            let last_read_sequence = conv_obj
+                .get("last_read_sequence")
+                .and_then(|s| s.as_i64())
+                .unwrap_or(0);
+
+            // Calcola last_activity
+            let last_message_time = conv_obj
+                .get("last_message")
+                .and_then(|msg| msg.get("created_at"))
+                .and_then(|t| t.as_i64())
+                .unwrap_or(0);
+
+            let last_activity = std::cmp::max(created_at, last_message_time);
+
+            let last_msg_seq = conv_obj
+                .get("last_message")
+                .and_then(|msg| msg.get("sequence_num"))
+                .and_then(|t| t.as_i64())
+                .unwrap_or(0);
+
+            let conversation = ConversationDto {
+                id,
+                kind,
+                title,
+                owner_id,
+                created_at,
+                last_read_sequence,
+                last_activity,
+                last_msg_seq,
+            };
+
+            // Parse dell'ultimo messaggio se presente
+            let messages = if let Some(last_msg) = conv_obj.get("last_message") {
+                debug!("Parsing last_message from conversation_confirmation");
+                Self::parse_message_from_event(last_msg, id)
+                    .map(|m| vec![m])
+                    .unwrap_or_default()
+            } else {
+                debug!("No last_message in conversation_confirmation");
+                Vec::new()
+            };
+
+            debug!("Successfully parsed conversation_confirmation data");
+            Some((conversation, messages, client_temp_id))
+        });
+
+        if let Some((conv, messages, client_temp_id)) = conversation_data {
+            info!(
+                "Conversation confirmed: {} (temp_id: {:?})",
+                conv.id, client_temp_id
+            );
+
+            // Chiama il conversation_handler per gestire lo stub e aggiungere la conversazione
+            super::conversation_handler::ConversationHandler::handle_conversation_confirmed(
+                state,
+                conv,
+                messages,
+                client_temp_id,
+            );
+        } else {
+            warn!("Invalid conversation_confirmation structure - parsing failed");
+            warn!("Raw event_data: {:?}", event_data);
+        }
+    }
+
+    /// Helper per parsare un messaggio da JSON
+    fn parse_message_from_event(msg_obj: &serde_json::Value, conversation_id: uuid::Uuid) -> Option<MessageDto> {
+        let id_str = msg_obj.get("id")?.as_str()?;
+        let id = uuid::Uuid::parse_str(id_str).ok()?;
+
+        let author_id_str = msg_obj.get("author_id")?.as_str()?;
+        let author_id = uuid::Uuid::parse_str(author_id_str).ok()?;
+
+        let author_username = msg_obj.get("author_username")?.as_str()?.to_string();
+        let content = msg_obj.get("content")?.as_str()?.to_string();
+        let created_at = msg_obj.get("created_at")?.as_i64()?;
+        let sequence_num = msg_obj.get("sequence_num").and_then(|s| s.as_i64()).map(|s| s as u64);
+
+        Some(MessageDto {
+            id,
+            author_id,
+            conversation_id,
+            author_username,
+            content,
+            created_at,
+            sequence_num,
+            client_msg_id: None,
+            is_confirmed: Some(true),
+        })
     }
 }

@@ -20,6 +20,7 @@ pub struct ConnectionManager {
     last_attempt: Option<Instant>,
     next_retry_delay: Duration,
     last_ws_status: WsStatus,
+    is_connecting_in_progress: bool,  // ← NUOVO FLAG
 }
 
 impl ConnectionManager {
@@ -30,6 +31,7 @@ impl ConnectionManager {
             last_attempt: None,
             next_retry_delay: Duration::from_secs(0),
             last_ws_status: WsStatus::Disconnected,
+            is_connecting_in_progress: false,  // ← INIZIALIZZAZIONE
         }
     }
 
@@ -38,6 +40,14 @@ impl ConnectionManager {
         let current_status = state.ws_status.clone();
 
         if current_status != self.last_ws_status {
+            // 🔧 Reset del flag quando cambia lo stato
+            match &current_status {
+                WsStatus::Connected | WsStatus::Disconnected => {
+                    self.is_connecting_in_progress = false;
+                }
+                _ => {}
+            }
+
             match (&self.last_ws_status, &current_status) {
                 (_, WsStatus::Connected) => {
                     self.reset_backoff();
@@ -55,7 +65,7 @@ impl ConnectionManager {
                         // CRITICAL: Reset backoff COMPLETO dopo il logout per evitare loop
                         self.consecutive_failures = 0;
                         self.next_retry_delay = Duration::from_secs(0);
-                        self.last_attempt = None; // ← Aggiungi questo
+                        self.last_attempt = None;
                         self.last_ws_status = current_status;
                         return;
                     }
@@ -75,22 +85,31 @@ impl ConnectionManager {
             if self.consecutive_failures > 0 {
                 self.consecutive_failures = 0;
                 self.next_retry_delay = Duration::from_secs(0);
-                self.last_attempt = None; // ← Aggiungi questo
+                self.last_attempt = None;
             }
             return;
         }
 
-        // Gestisce richieste di riconnessione
-        if state.request_ws_reconnect && state.ws_status != WsStatus::Connecting {
+        // 🔧 FIX: Reset la flag IMMEDIATAMENTE per prevenire race condition
+        // Questo impedisce che manage_connection venga chiamato più volte
+        // nello stesso frame o in frame successivi con la flag ancora true
+        if state.request_ws_reconnect {
             info!("Reconnection requested");
-            state.request_ws_reconnect = false;
-            self.disconnect_websocket(state);
+            state.request_ws_reconnect = false; // ← SPOSTATO QUI (prima era dopo il check)
+
+            // Solo se NON stiamo già connettendo, disconnetti e riconnetti
+            if state.ws_status != WsStatus::Connecting {
+                self.disconnect_websocket(state);
+            } else {
+                debug!("Reconnection already in progress, ignoring duplicate request");
+            }
         }
 
         // Avvia connessione se necessario
         match state.ws_status {
             WsStatus::Disconnected => {
-                if state.is_authenticated() {
+                // 🔧 CHECK CRITICO: Previene doppie connessioni anche se lo stato non è ancora aggiornato
+                if state.is_authenticated() && !self.is_connecting_in_progress {
                     // Backoff esponenziale: controlla se è il momento di riprovare
                     if let Some(last_attempt) = self.last_attempt {
                         let elapsed = last_attempt.elapsed();
@@ -138,6 +157,14 @@ impl ConnectionManager {
 
     /// Avvia connessione WebSocket
     fn start_websocket_connection(&mut self, state: &mut AppState) {
+        // 🔧 LOCK IMMEDIATO: Previene altre chiamate mentre questa è in corso
+        if self.is_connecting_in_progress {
+            debug!("Connection already in progress, skipping duplicate attempt");
+            return;
+        }
+
+        self.is_connecting_in_progress = true;  // ← LOCK
+
         let base = state.base.clone();
         let token = match state.token.clone() {
             Some(t) if !t.trim().is_empty() => t,
@@ -211,11 +238,16 @@ impl ConnectionManager {
                 }
             }
         });
+
+        // NOTA: is_connecting_in_progress viene resettato quando arriva WsConnected o WsDisconnected
     }
 
     /// Disconnette WebSocket pulendo lo stato
     fn disconnect_websocket(&mut self, state: &mut AppState) {
         info!("Disconnecting WebSocket");
+
+        // 🔧 Reset del flag di connessione
+        self.is_connecting_in_progress = false;
 
         state.ws_status = WsStatus::Disconnected;
 

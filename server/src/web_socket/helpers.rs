@@ -9,7 +9,7 @@ use crate::{
     error::{AppError, Result},
     state::AppState,
 };
-
+use crate::models::Message;
 use super::actor::OutboundMsg;
 
 /// Struttura per i dati di una nuova conversazione
@@ -42,9 +42,9 @@ pub async fn create_system_message(
     let owner_id: String = sqlx::query_scalar(
         "SELECT owner_id FROM conversations WHERE id = ?"
     )
-    .bind(conversation_id.to_string())
-    .fetch_one(&state.pool)
-    .await?;
+        .bind(conversation_id.to_string())
+        .fetch_one(&state.pool)
+        .await?;
 
     // Ottieni sequence number per il messaggio
     let sequence = state.get_next_message_sequence(conversation_id).await?;
@@ -55,14 +55,14 @@ pub async fn create_system_message(
         "INSERT INTO messages (id, conversation_id, author_id, content, created_at, sequence_num) 
          VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .bind(message_id.to_string())
-    .bind(conversation_id.to_string())
-    .bind(&owner_id)
-    .bind(&content)
-    .bind(timestamp)
-    .bind(sequence as i64)
-    .execute(&state.pool)
-    .await?;
+        .bind(message_id.to_string())
+        .bind(conversation_id.to_string())
+        .bind(&owner_id)
+        .bind(&content)
+        .bind(timestamp)
+        .bind(sequence as i64)
+        .execute(&state.pool)
+        .await?;
 
     info!("Created system message: {} in conversation {}", content, conversation_id);
 
@@ -908,11 +908,11 @@ async fn verify_participant(
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
     )
-    .bind(conversation_id.to_string())
-    .bind(user_id.to_string())
-    .fetch_one(&state.pool)
-    .await
-    .map_err(AppError::from)?;
+        .bind(conversation_id.to_string())
+        .bind(user_id.to_string())
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::from)?;
 
     Ok(count > 0)
 }
@@ -960,7 +960,6 @@ async fn send_message_confirmation(
 }
 
 /// Invia conferma di creazione conversazione (per duplicati)
-#[allow(dead_code)]
 async fn send_conversation_confirmation(
     state: &AppState,
     conversation_id: Uuid,
@@ -968,32 +967,113 @@ async fn send_conversation_confirmation(
     user_id: Uuid,
 ) -> Result<()> {
     // Recupera i dettagli della conversazione dal database
-    let conv_row = sqlx::query("SELECT kind, owner_id, created_at FROM conversations WHERE id = ?")
+    let conv_row = sqlx::query("SELECT kind, owner_id, created_at, title FROM conversations WHERE id = ?")
         .bind(conversation_id.to_string())
         .fetch_one(&state.pool)
         .await
         .map_err(AppError::from)?;
 
     let kind: String = conv_row.try_get("kind").map_err(AppError::from)?;
+    let owner_id: String = conv_row.try_get("owner_id").map_err(AppError::from)?;
     let created_at: i64 = conv_row.try_get("created_at").map_err(AppError::from)?;
+    let title: Option<String> = conv_row.try_get("title").ok();
+
+    // Per DM, il display_title è l'username dell'altro partecipante
+    let display_title = if kind == "dm" {
+        // Query per ottenere l'username dell'altro partecipante
+        let other_username: Option<String> = sqlx::query_scalar(
+            "SELECT u.username
+             FROM participants p
+             JOIN users u ON p.user_id = u.id
+             WHERE p.conversation_id = ? AND p.user_id != ?
+             LIMIT 1"
+        )
+            .bind(conversation_id.to_string())
+            .bind(user_id.to_string())
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+
+        other_username.unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        // Per i gruppi, usa il title della conversazione
+        title.unwrap_or_else(|| "Group".to_string())
+    };
+
+    // Recupera last_read_sequence del partecipante
+    let last_read_sequence: i64 = sqlx::query_scalar(
+        "SELECT last_read_sequence FROM participants WHERE conversation_id = ? AND user_id = ?"
+    )
+        .bind(conversation_id.to_string())
+        .bind(user_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+
+    // Recupera solo i campi necessari dell'ultimo messaggio
+    let last_message_data = sqlx::query(
+        "SELECT id, author_id, author_username, content, created_at, sequence_num 
+         FROM messages 
+         WHERE conversation_id = ? 
+         ORDER BY sequence_num DESC 
+         LIMIT 1"
+    )
+        .bind(conversation_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+
+    let last_msg_seq = last_message_data.as_ref()
+        .and_then(|row| row.try_get::<i64, _>("sequence_num").ok())
+        .unwrap_or(0);
+
+    let mut conversation_obj = json!({
+        "id": conversation_id,
+        "client_temp_id": client_temp_id,
+        "kind": kind,
+        "owner_id": owner_id,
+        "created_at": created_at,
+        "display_title": display_title,
+        "last_read_sequence": last_read_sequence,
+        "last_msg_seq": last_msg_seq,
+        "status": "already_exists"
+    });
+
+    // Aggiungi last_message se presente
+    if let Some(row) = last_message_data {
+        if let (Ok(id), Ok(author_id), Ok(author_username), Ok(content), Ok(created_at)) = (
+            row.try_get::<String, _>("id"),
+            row.try_get::<String, _>("author_id"),
+            row.try_get::<String, _>("author_username"),
+            row.try_get::<String, _>("content"),
+            row.try_get::<i64, _>("created_at"),
+        ) {
+            conversation_obj["last_message"] = json!({
+                "id": id,
+                "author_id": author_id,
+                "author_username": author_username,
+                "content": content,
+                "created_at": created_at,
+                "sequence_num": row.try_get::<Option<i64>, _>("sequence_num").ok().flatten(),
+            });
+        }
+    }
 
     let confirmation = json!({
         "type": "conversation_confirmation",
-        "conversation": {
-            "id": conversation_id,
-            "client_temp_id": client_temp_id,
-            "kind": kind,
-            "created_at": created_at,
-            "status": "already_exists"
-        }
+        "conversation": conversation_obj
     });
 
     let user_tx = state.get_or_create_user_notification_channel(user_id).await;
     match user_tx.send(confirmation) {
         Ok(_) => {
             info!(
-                "Sent duplicate conversation confirmation to user {}",
-                user_id
+                "Sent conversation confirmation to user {} for conversation {}",
+                user_id, conversation_id
             );
             Ok(())
         }
@@ -1216,11 +1296,11 @@ async fn setup_conversation_subscription(
     let is_participant: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
     )
-    .bind(&conversation_id_str)
-    .bind(&user_id_str)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(AppError::from)?;
+        .bind(&conversation_id_str)
+        .bind(&user_id_str)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::from)?;
 
     if is_participant == 0 {
         return Err(AppError::Forbidden);
@@ -1601,18 +1681,18 @@ pub async fn handle_invite_user(
         match create_system_message(state, conversation_id, system_message_content.clone()).await {
             Ok((msg_id, sequence)) => {
                 info!("Created persistent system message (id={}, seq={})", msg_id, sequence);
-                
+
                 // Ottieni owner_id e username per il broadcast
                 let owner_data: Option<(String, String)> = sqlx::query_as(
-                    "SELECT c.owner_id, u.username FROM conversations c 
-                     JOIN users u ON c.owner_id = u.id 
+                    "SELECT c.owner_id, u.username FROM conversations c
+                     JOIN users u ON c.owner_id = u.id
                      WHERE c.id = ?"
                 )
-                .bind(conversation_id.to_string())
-                .fetch_optional(&state.pool)
-                .await
-                .unwrap_or(None);
-                
+                    .bind(conversation_id.to_string())
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None);
+
                 if let Some((owner_id, owner_username)) = owner_data {
                     // Broadcast il messaggio di sistema a tutti i partecipanti via canale conversazione
                     let system_msg_broadcast = json!({
@@ -1625,12 +1705,12 @@ pub async fn handle_invite_user(
                         "created_at": ts,
                         "sequence_num": sequence
                     });
-                    
+
                     let _ = broadcast_to_conversation(state, conversation_id, system_msg_broadcast.clone()).await;
-                    
+
                     // Invia anche come evento sequenziato a tutti i partecipanti per garantire ricezione in tempo reale
                     let participant_ids_for_msg = match crate::services::conversation_service::ConversationService::list_participant_ids(
-                        &state.pool, 
+                        &state.pool,
                         conversation_id
                     ).await {
                         Ok(ids) => ids,
@@ -1639,7 +1719,7 @@ pub async fn handle_invite_user(
                             Vec::new()
                         }
                     };
-                    
+
                     for participant_id in participant_ids_for_msg {
                         if let Err(e) = state.send_sequenced_event_to_user(
                             participant_id,
@@ -1659,7 +1739,7 @@ pub async fn handle_invite_user(
 
         // Invia evento sequenziato member_added a tutti i partecipanti esistenti (escluso il nuovo membro)
         let participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
-            &state.pool, 
+            &state.pool,
             conversation_id
         ).await {
             Ok(ids) => ids,
@@ -1695,8 +1775,8 @@ pub async fn handle_invite_user(
         // Invia member_list_updated DOPO ogni aggiunta (non solo alla fine)
         // Ottieni la lista aggiornata dei membri
         let members_data = match crate::services::conversation_service::ConversationService::get_members(
-            &state.pool, 
-            conversation_id, 
+            &state.pool,
+            conversation_id,
             inviter_id
         ).await {
             Ok(data) => data,
@@ -1719,7 +1799,7 @@ pub async fn handle_invite_user(
 
             // Ottieni lista partecipanti aggiornata per inviare l'evento
             let current_participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
-                &state.pool, 
+                &state.pool,
                 conversation_id
             ).await {
                 Ok(ids) => ids,
@@ -1745,7 +1825,7 @@ pub async fn handle_invite_user(
                     warn!("Failed to send member_list_updated event to {}: {}", participant_id, e);
                 }
             }
-            
+
             info!("Sent member_list_updated to all participants after adding {}", target_username_actual);
         }
 
