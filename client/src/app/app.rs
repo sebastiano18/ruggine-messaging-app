@@ -48,7 +48,7 @@ impl eframe::App for App {
             self.show_main_layout(ctx);
         }
 
-        // Pop-up dettagli account account centrale
+        // Pop-up dettagli account  centrale
         if self.state.show_account_modal {
             let mut open = self.state.show_account_modal;
             egui::Window::new(
@@ -71,9 +71,7 @@ impl eframe::App for App {
             });
             self.state.show_account_modal = open;
         }
-
-        // NOTA: Il popup di creazione gruppo è ora gestito in sidebar_conversation.rs
-        // Non serve chiamarlo qui perché viene già renderizzato dalla sidebar
+        
 
         self.periodic_cleanup();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
