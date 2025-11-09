@@ -415,6 +415,8 @@ impl ConversationHandler {
         if state.is_dm_stub(cid) {
             state.remove_dm_stub(cid);
         }
+        
+        state.request_conversations_refresh = true;
     }
 
     pub fn handle_conversation_created(state: &mut AppState, cid: Uuid) {
