@@ -746,14 +746,13 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
                             .min_size(egui::vec2(180.0, 40.0));
 
                         if ui.add_enabled(can_create, create_button).clicked() {
-                            create_group_with_participants(state);
+                            state.create_group_with_participants();
                             should_close = true;
                         }
                     });
                 });
             });
 
-            ui.add_space(20.0);
         });
 
     if should_close {
@@ -763,90 +762,7 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
     state.show_create_group_modal = open;
 }
 
-/// Helper per creare un gruppo con partecipanti
-fn create_group_with_participants(state: &mut AppState) {
-    use crate::models::{ConversationDto, MessageDto, Outgoing, Page};
-    use uuid::Uuid;
 
-    let group_name = state.create_group_popup.group_name.trim().to_string();
-    let participants: Vec<String> = state
-        .create_group_popup
-        .selected_participants
-        .iter()
-        .cloned()
-        .collect();
-
-    tracing::info!(
-        "Creating group '{}' with {} participants via WebSocket: {:?}",
-        group_name,
-        participants.len(),
-        participants
-    );
-
-    // Crea stub per il gruppo
-    let stub_id = Uuid::new_v4();
-
-    let stub_conversation = ConversationDto {
-        id: stub_id,
-        kind: "group".to_string(),
-        title: group_name.clone(),
-        owner_id: state.user_id.unwrap_or(Uuid::nil()),
-        created_at: chrono::Utc::now().timestamp(),
-        last_read_sequence: 0,
-        last_activity: chrono::Utc::now().timestamp(),
-        last_msg_seq: 0,
-    };
-
-    // Aggiungi stub alla lista conversazioni
-    if let Some(ref mut convs) = state.conversations {
-        convs.insert(0, stub_conversation);
-    }
-
-    // Traccia lo stub
-    state.group_stubs.insert(stub_id, group_name.clone());
-
-    // Apri il gruppo stub
-    state.cid = Some(stub_id);
-    state.page = Page::Chat;
-    state.conv_title = group_name.clone();
-
-    // Messaggio di sistema nello stub
-    let system_msg =
-        MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
-    state.conversation_messages
-        .entry(stub_id)
-        .or_insert_with(Vec::new)
-        .push(system_msg.clone());
-    state.messages = vec![system_msg];
-
-    // Invia al server
-    let outgoing = Outgoing::CreateGroupWithParticipants {
-        group_name,
-        participant_usernames: participants,
-        client_temp_id: Some(stub_id.to_string()),
-    };
-
-    if let Err(e) = state.ui_to_net_tx.try_send(outgoing) {
-        // Cleanup in caso di errore
-        if let Some(ref mut convs) = state.conversations {
-            convs.retain(|c| c.id != stub_id);
-        }
-        state.group_stubs.remove(&stub_id);
-        state.conversation_messages.remove(&stub_id);
-        state.messages.clear();
-        state.cid = None;
-        state.page = Page::Conversations;
-
-        let _ = state
-            .ui_tx
-            .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
-        return;
-    }
-
-    tracing::info!("Created group stub {} and opened it", stub_id);
-    state.create_group_popup.reset();
-}
-// AGGIUNGI QUESTA FUNZIONE ALLA FINE DI conversation_popups.rs (dopo riga 848)
 
 /// Mostra il popup per invitare utenti a un gruppo
 pub fn show_invite_popup(
@@ -1197,7 +1113,6 @@ pub fn show_invite_popup(
                 });
             });
 
-            ui.add_space(20.0);
         });
 
     if should_close {
