@@ -122,12 +122,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} added to group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -137,12 +137,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} removed from group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -166,12 +166,12 @@ impl UserNotificationHandler {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                
+
                 info!("User {} left the group (conversation: {:?})", username, conversation_id);
-                
+
                 // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
                 // Non serve più creare un messaggio locale
-                
+
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
             }
@@ -180,6 +180,12 @@ impl UserNotificationHandler {
             }
             "new_conversation" => {
                 Self::handle_new_conversation(state, event_data);
+            }
+            "conversation_confirmation" => {
+                // Questo evento viene già gestito da ConversationConfirmed
+                // che viene inviato separatamente da message_handlers.
+                // Qui dobbiamo solo aggiornare la user_sequence (già fatto sopra)
+                debug!("conversation_confirmation processed (sequence updated)");
             }
             _ => {
                 debug!("Unhandled notification type: {}", event_type);

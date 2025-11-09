@@ -4,6 +4,8 @@ use eframe::egui::{self, Frame, RichText, TextEdit};
 use uuid::Uuid;
 use tracing::info;
 
+use chrono::{DateTime, Local, Datelike, NaiveDate};
+
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     if s.token.is_none() {
         ui.vertical_centered(|ui| {
@@ -119,11 +121,29 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 // Clona i messaggi per evitare problemi di borrow
                 let messages = s.messages.clone();
                 let message_count = messages.len();
-                
+
+                // Variabile per tenere traccia dell'ultima data visualizzata
+                let mut last_date: Option<NaiveDate> = None;
+
                 // Renderizza tutti i messaggi, cercando l'ancora
                 for i in 0..message_count {
                     let message = &messages[i];
-                    
+
+                    // Controlla se dobbiamo mostrare un separatore di data
+                    if let Some(current_date) = get_date_from_timestamp(message.created_at) {
+                        let should_show_separator = match last_date {
+                            None => true,
+                            Some(prev_date) => prev_date != current_date,
+                        };
+
+                        if should_show_separator {
+                            show_date_separator(ui, message.created_at);
+                            ui.add_space(8.0);
+                        }
+
+                        last_date = Some(current_date);
+                    }
+
                     // Se questo è il messaggio ancora e abbiamo appena caricato nuovi messaggi
                     if message_count > last_message_count && Some(message.id) == anchor_message_id {
                         // Scrolla a questo messaggio
@@ -727,7 +747,7 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                             egui::Label::new(
                                 egui::RichText::new(&message.content).color(egui::Color32::WHITE),
                             )
-                            .wrap(true),
+                                .wrap(true),
                         );
                         ui.add_space(3.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -743,7 +763,7 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                         });
                     });
                 });
-            
+
             // Questo corregge un bug di layout in egui dove il layout da destra a sinistra
             // non riserva correttamente lo spazio verticale per il contenuto wrappato.
             ui.add_space(bubble.response.rect.height());
@@ -977,5 +997,52 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     // Se c'è un membro da espellere, chiamiamo la funzione
     if let Some(user_id) = member_to_kick {
         s.kick_member(cid, user_id);
+    }
+}
+// === Funzioni per i separatori di data ===
+
+/// Estrae la data (NaiveDate) da un timestamp
+fn get_date_from_timestamp(timestamp: i64) -> Option<NaiveDate> {
+    DateTime::from_timestamp(timestamp, 0).map(|dt| {
+        let local_dt = dt.with_timezone(&Local);
+        local_dt.date_naive()
+    })
+}
+
+/// Mostra un separatore con la data formattata
+fn show_date_separator(ui: &mut egui::Ui, timestamp: i64) {
+    let date_text = format_date_label(timestamp);
+
+    ui.add_space(6.0);
+
+    // Testo centrato semplice
+    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+        ui.label(
+            RichText::new(date_text)
+                .size(12.0)
+                .color(egui::Color32::from_rgb(140, 140, 140))
+        );
+    });
+
+    ui.add_space(6.0);
+}
+
+/// Formatta la data come "Oggi", "Ieri" o "gg/mm/aa"
+fn format_date_label(timestamp: i64) -> String {
+    let dt = match DateTime::from_timestamp(timestamp, 0) {
+        Some(dt) => dt.with_timezone(&Local),
+        None => return "Data sconosciuta".to_string(),
+    };
+
+    let now = Local::now();
+    let today = now.date_naive();
+    let msg_date = dt.date_naive();
+
+    let days_diff = (today - msg_date).num_days();
+
+    match days_diff {
+        0 => "Oggi".to_string(),
+        1 => "Ieri".to_string(),
+        _ => dt.format("%d/%m/%y").to_string(),
     }
 }
