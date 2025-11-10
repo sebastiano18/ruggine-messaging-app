@@ -1,7 +1,7 @@
-use crate::models::{Page, UiEvent};
+use crate::models::UiEvent;
 use crate::state::AppState;
 use eframe::egui;
-use egui::{Align, Align2, Frame, Layout, RichText, Stroke, TextEdit};
+use egui::{Align, Align2, Frame, Layout, RichText, TextEdit};
 use chrono::{DateTime, Local};
 use crate::app::sidebar_components::conversation_popups;
 
@@ -116,7 +116,7 @@ impl ConversationsSidebar {
         });
     }
 
-    fn show_search_section(&mut self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
+    fn show_search_section(&mut self, ui: &mut egui::Ui, _state: &mut AppState, _token: &str) {
         let bg_color = if ui.visuals().dark_mode {
             ui.visuals().extreme_bg_color
         } else {
@@ -332,7 +332,7 @@ impl ConversationsSidebar {
             .collect()
     }
 
-    fn show_empty_state(&self, ui: &mut egui::Ui, state: &mut AppState) {
+    fn show_empty_state(&mut self, ui: &mut egui::Ui, _state: &mut AppState) {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
             ui.label(RichText::new("📭").size(48.0));
@@ -349,7 +349,7 @@ impl ConversationsSidebar {
                 .rounding(egui::Rounding::same(6.0));
 
             if ui.add(btn).clicked() {
-                state.show_create_group_modal = true;
+                self.show_action_popup = true;
             }
         });
     }

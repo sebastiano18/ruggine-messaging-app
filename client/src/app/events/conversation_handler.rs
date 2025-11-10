@@ -412,6 +412,7 @@ impl ConversationHandler {
 
         if state.cid == Some(cid) {
             state.cid = None;
+            state.conv_title.clear();
             state.messages.clear();
             state.page = Page::Conversations;
         }

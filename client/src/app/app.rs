@@ -35,6 +35,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ws_manager.ensure_ws_lifecycle(&mut self.state);
         self.state.drain_events();
+        // Prune expired toast notifications
+        self.state.prune_expired_toasts(std::time::Duration::from_secs(5));
         self.handle_global_shortcuts(ctx);
         self.header_manager.show_header(ctx, &mut self.state);
 
@@ -46,6 +48,10 @@ impl eframe::App for App {
             self.show_auth_layout(ctx);
         } else {
             self.show_main_layout(ctx);
+        }
+
+        if self.state.token.is_some() && !matches!(self.state.page, Page::Auth) {
+            self.show_toasts(ctx);
         }
 
         // Pop-up dettagli account  centrale
@@ -505,6 +511,157 @@ impl App {
                 stats.get("cached_messages").unwrap_or(&"0".to_string()),
                 stats.get("dm_stubs").unwrap_or(&"0".to_string())
             );
+        }
+    }
+
+    fn show_toasts(&mut self, ctx: &egui::Context) {
+    const TOP_MARGIN: f32 = 100.0;
+    const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
+    const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
+        const RIGHT_PADDING: f32 = 48.0;
+
+        const ICON_WIDTH: f32 = 24.0;
+        const CLOSE_WIDTH: f32 = 22.0;
+        const H_PADDING: f32 = 28.0;
+        const MIN_WIDTH: f32 = 220.0;
+        const MAX_ABS_WIDTH: f32 = 640.0;      
+        const MIN_MAX_WIDTH: f32 = 300.0;      
+        const SCREEN_RATIO: f32 = 0.55;        
+        const MULTILINE_MIN_TEXT: f32 = 80.0;
+        const MULTILINE_SECOND_MIN: f32 = 60.0;
+        const BASE_ALPHA: f32 = 0.4;
+        const FADE_START: f32 = 9.5;
+        const FADE_END: f32 = 10.0;
+
+        let screen_rect = ctx.input(|i| i.screen_rect());
+        let max_width = (screen_rect.width() * SCREEN_RATIO)
+            .min(MAX_ABS_WIDTH)
+            .max(MIN_MAX_WIDTH);
+
+        use std::collections::HashSet;
+        let mut to_remove: HashSet<uuid::Uuid> = HashSet::new();
+        let mut y_offset = 0.0;
+
+    for toast in &self.state.toasts {
+            let (bg, icon) = match toast.kind {
+                crate::state::ToastKind::Info => (
+                    egui::Color32::from_rgb(40, 120, 40),
+                    egui_remixicon::icons::INFORMATION_LINE,
+                ),
+                crate::state::ToastKind::Error => (
+                    egui::Color32::from_rgb(160, 40, 40),
+                    egui_remixicon::icons::ERROR_WARNING_LINE,
+                ),
+            };
+
+            let font_id = egui::TextStyle::Body.resolve(&ctx.style());
+
+            // Tentativo single-line: larghezza infinita (nessun wrap)
+            let single_line_galley = ctx.fonts(|f| {
+                f.layout(
+                    toast.message.clone(),
+                    font_id.clone(),
+                    egui::Color32::WHITE,
+                    f32::INFINITY, // no wrapping
+                )
+            });
+
+            let raw_text_width = single_line_galley.size().x;
+            let desired_single_line_width = raw_text_width + ICON_WIDTH + CLOSE_WIDTH + H_PADDING;
+
+            let (galley, toast_width, final_text_width) = if desired_single_line_width <= max_width {
+                let tw = desired_single_line_width.clamp(MIN_WIDTH, max_width);
+                let inner = tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING;
+                (single_line_galley, tw, inner)
+            } else {
+                let first_text_width = (max_width - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_MIN_TEXT);
+                let galley_initial = ctx.fonts(|f| {
+                    f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, first_text_width)
+                });
+
+                let text_width_est = galley_initial.size().x;
+                let tw = (text_width_est + ICON_WIDTH + CLOSE_WIDTH + H_PADDING).clamp(MIN_WIDTH, max_width);
+                let final_text_width = (tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_SECOND_MIN);
+                let galley_final = if (final_text_width - first_text_width).abs() > 1.0 {
+                    ctx.fonts(|f| {
+                        f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, final_text_width)
+                    })
+                } else {
+                    galley_initial
+                };
+                (galley_final, tw, final_text_width)
+            };
+
+            let toast_height = galley.size().y + 12.0;
+
+            let pos_x = (screen_rect.max.x - toast_width - 12.0 - RIGHT_PADDING)
+                .clamp(8.0, screen_rect.max.x - toast_width - 8.0);
+
+            let ttl = toast.created.elapsed().as_secs_f32();
+            let alpha = if ttl >= FADE_START {
+                let t = ((FADE_END - ttl) / (FADE_END - FADE_START)).clamp(0.0, 1.0);
+                t * BASE_ALPHA
+            } else {
+                BASE_ALPHA
+            };
+            let frame_bg = egui::Color32::from_rgba_premultiplied(bg.r(), bg.g(), bg.b(), (alpha * 255.0) as u8);
+
+            // Slide-in: calcola offset verticale animato con easing (ease-out cubic)
+            let mut slide_t = (ttl / SLIDE_IN_DURATION).clamp(0.0, 1.0);
+            // Ease-out cubic: y = 1 - (1-t)^3
+            slide_t = 1.0 - (1.0 - slide_t).powi(3);
+            let slide_offset = SLIDE_IN_OFFSET * (1.0 - slide_t);
+            let pos_y = TOP_MARGIN + y_offset - slide_offset;
+
+            let area_id = egui::Id::new("toast").with(toast.id);
+            let response = egui::Area::new(area_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(pos_x, pos_y))
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(frame_bg)
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 60)))
+                        .rounding(egui::Rounding::same(8.0))
+                        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                        .show(ui, |ui| {
+                            ui.set_width(toast_width);
+                            ui.set_min_height(toast_height);
+
+                            ui.horizontal_top(|ui| {
+                                ui.label(egui::RichText::new(icon).size(18.0).color(egui::Color32::WHITE));
+                                ui.add_space(6.0);
+
+                                ui.vertical(|ui| {
+                                    ui.set_width(final_text_width);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&toast.message)
+                                                .size(13.0)
+                                                .color(egui::Color32::WHITE),
+                                        ).wrap(true)
+                                    );
+                                });
+
+                                ui.add_space(4.0);
+
+                                let close_btn = egui::Button::new(
+                                    egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                                        .size(14.0)
+                                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 200)),
+                                ).frame(false);
+
+                                if ui.add(close_btn).on_hover_text("Chiudi").clicked() {
+                                    to_remove.insert(toast.id);
+                                }
+                            });
+                        });
+                });
+
+            y_offset += response.response.rect.height() + 8.0;
+        }
+
+        if !to_remove.is_empty() {
+            self.state.toasts.retain(|t| !to_remove.contains(&t.id));
         }
     }
 }
