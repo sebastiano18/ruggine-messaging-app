@@ -156,7 +156,7 @@ pub struct AppState {
     pub show_account_modal: bool,
 
     // UI Messages - separati per pagina
-    pub ui_message: Option<String>,        // Messaggi per pagine interne (dopo login)
+    pub toasts: Vec<Toast>,                 // Toast notifications
     pub auth_message: Option<String>,      // Messaggi solo per pagina auth
     pub auth_message_is_error: bool,       // true = errore (rosso), false = info (verde)
 
@@ -222,7 +222,6 @@ impl AppState {
             confirm_delete_account: false,
             show_account_modal: false,
 
-            ui_message: None,
             auth_message: None,
             auth_message_is_error: false,
 
@@ -283,6 +282,9 @@ impl AppState {
             show_members_popup: false,
             members_list: Vec::new(),
             is_loading_members: false,
+
+            // Toasts
+            toasts: Vec::new(),
         }
     }
 
@@ -348,9 +350,16 @@ impl AppState {
                 } else {
                     // Owner che elimina il gruppo o eliminazione di DM
                     self.send_via_websocket(Outgoing::DeleteConversation { cid });
-                    let _ = self
-                        .ui_tx
-                        .send(UiEvent::Info("Eliminazione conversazione...".into()));
+                    
+                    if conversation.kind == "group" {
+                        let _ = self
+                            .ui_tx
+                            .send(UiEvent::Info("Gruppo eliminato".into()));
+                    } else {
+                        let _ = self
+                            .ui_tx
+                            .send(UiEvent::Info("Conversazione eliminata".into()));
+                    }
                 }
             } else {
                 let _ = self
@@ -664,17 +673,6 @@ impl AppState {
     }
 
     // UI Message handling
-    pub fn set_ui_message(&mut self, msg: String) {
-        // Messaggi per le pagine interne (dopo login)
-        if self.token.is_some() {
-            self.ui_message = Some(msg);
-        }
-    }
-
-    pub fn clear_ui_message(&mut self) {
-        self.ui_message = None;
-    }
-
     pub fn set_auth_message(&mut self, msg: String, is_error: bool) {
         // Messaggi per la pagina di autenticazione
         self.auth_message = Some(msg);
@@ -691,7 +689,7 @@ impl AppState {
         if self.token.is_none() {
             self.set_auth_message(msg, false); // Info = non errore
         } else {
-            self.set_ui_message(msg);
+            self.push_toast(ToastKind::Info, msg);
         }
     }
 
@@ -699,7 +697,25 @@ impl AppState {
         if self.token.is_none() {
             self.set_auth_message(msg, true); // Error = errore
         } else {
-            self.set_ui_message(msg);
+            self.push_toast(ToastKind::Error, msg);
+        }
+    }
+
+    // === Toast helpers ===
+    pub fn push_toast(&mut self, kind: ToastKind, message: String) {
+        // Escludi explicitamente la pagina di autenticazione
+        if matches!(self.page, Page::Auth) || self.token.is_none() {
+            return;
+        }
+        self.toasts.push(Toast {
+            id: Uuid::new_v4(),
+            message,
+            kind,
+            created: Instant::now(),
+        });
+        // Limita al massimo 5 toasts attivi per evitare overflow
+        if self.toasts.len() > 5 {
+            self.toasts.drain(0..self.toasts.len() - 5);
         }
     }
 
@@ -787,4 +803,21 @@ impl AppState {
         self.create_group_popup.reset();
     }
 
+    pub fn prune_expired_toasts(&mut self, lifetime: Duration) {
+        let now = Instant::now();
+        self.toasts.retain(|t| now.duration_since(t.created) < lifetime);
+    }
+
+}
+
+// === Toast models ===
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind { Info, Error }
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub id: Uuid,
+    pub message: String,
+    pub kind: ToastKind,
+    pub created: Instant,
 }

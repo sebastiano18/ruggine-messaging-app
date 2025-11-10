@@ -361,10 +361,20 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 
 fn show_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
     if message.is_system_message() {
-        ui.horizontal(|ui| {
-            ui.add_space(ui.available_width() * 0.3);
-            ui.colored_label(egui::Color32::GRAY, &message.content);
-        });
+        // Center system messages across the full chat width
+        let full_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(full_w, ui.spacing().interact_size.y),
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+                ui.label(
+                    RichText::new(&message.content)
+                        .color(egui::Color32::GRAY)
+                        .italics(),
+                );
+            },
+        );
+        ui.add_space(4.0);
     } else {
         let is_my_message = s.user_id.map_or(false, |uid| uid == message.author_id);
         if is_my_message {
