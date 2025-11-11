@@ -393,24 +393,19 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
             // 1. Aggiungiamo il padding a destra dello schermo (10px).
             ui.add_space(10.0);
 
-            // 2. Disegniamo il pulsante di eliminazione.
-            let delete_button = egui::Button::new(RichText::new("🗑").size(16.0)).frame(false);
-            if ui.add(delete_button).on_hover_text("Elimina messaggio").clicked() {
-                s.delete_message(message.id);
-            }
-
-            // 3. Aggiungiamo un piccolo spazio tra il cestino e la bolla.
-            ui.add_space(5.0);
-
-            // 4. Calcoliamo la larghezza della bolla e la disegniamo.
+            // 2. Calcoliamo la larghezza della bolla in base al contenuto.
             // Questo calcolo ora avviene in un contesto di layout stabile.
-            let bubble_max_width = ui.available_width() * 0.10;
+            let row_w = ui.available_width();
+            let max_bubble_width = (row_w * 0.70).clamp(220.0, 500.0);
+            let inner_pad_x = 20.0;
+            let optimal_width = bubble_width(ui, &message.content, max_bubble_width - inner_pad_x, inner_pad_x);
+
             let bubble = Frame::none()
                 .fill(egui::Color32::from_rgb(200, 100, 40))
                 .rounding(egui::Rounding::same(12.0))
                 .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                 .show(ui, |ui| {
-                    ui.set_max_width(bubble_max_width); // Impostiamo la larghezza massima
+                    ui.set_width(optimal_width); // Impostiamo la larghezza calcolata
                     ui.vertical(|ui| {
                         ui.add(
                             egui::Label::new(
@@ -432,7 +427,7 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                         });
                     });
                 });
-
+            
             // Questo corregge un bug di layout in egui dove il layout da destra a sinistra
             // non riserva correttamente lo spazio verticale per il contenuto wrappato.
             ui.add_space(bubble.response.rect.height());
