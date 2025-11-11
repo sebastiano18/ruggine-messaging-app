@@ -427,7 +427,18 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                         });
                     });
                 });
-            
+
+            // Menu contestuale al click destro sulla bolla
+            bubble.response.context_menu(|ui| {
+                if ui.button(
+                    RichText::new(format!("{} Elimina", egui_remixicon::icons::DELETE_BIN_LINE))
+                        .size(14.0)
+                ).clicked() {
+                    s.delete_message(message.id);
+                    ui.close_menu();
+                }
+            });
+
             // Questo corregge un bug di layout in egui dove il layout da destra a sinistra
             // non riserva correttamente lo spazio verticale per il contenuto wrappato.
             ui.add_space(bubble.response.rect.height());
