@@ -309,6 +309,13 @@ impl MessageProcessor {
                     "conversation_id": cid.to_string()
                 })
             }
+
+            Outgoing::DeleteMessage { mid } => {
+                serde_json::json!({
+                    "type": "delete_message",
+                    "mid": mid.to_string()
+                })
+            }
         };
 
         serde_json::to_string(&json_obj).map_err(|e| format!("JSON serialization error: {}", e))

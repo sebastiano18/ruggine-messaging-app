@@ -165,6 +165,9 @@ pub struct AppState {
 
     // DM management
     pub dm_username: String,
+
+    // Message deletion confirmation
+    pub pending_message_deletion: Option<Uuid>,
 }
 impl AppState {
     pub fn new() -> Self {
@@ -266,6 +269,8 @@ impl AppState {
             show_members_popup: false,
             members_list: Vec::new(),
             is_loading_members: false,
+
+            pending_message_deletion: None,
         }
     }
 
@@ -636,24 +641,13 @@ impl AppState {
     }
 
     pub fn delete_message(&mut self, message_id: Uuid) {
-        let Some(ref token) = self.token else { return };
-
-        let base = self.base.clone();
-        let token = token.clone();
-        let tx = self.ui_tx.clone();
-
-        self.rt.spawn(async move {
-            match crate::api::chat::delete_message(&base, &token, message_id).await {
-                Ok(_) => {
-                    info!("Delete request for message {} sent successfully", message_id);
-                    // L'aggiornamento dell'UI avverrà tramite l'evento WebSocket
-                }
-                Err(e) => {
-                    error!("Failed to delete message {}: {}", message_id, e);
-                    let _ = tx.send(UiEvent::Error(format!("Errore eliminazione: {}", e)));
-                }
-            }
-        });
+        if self.ws_status == WsStatus::Connected {
+            self.send_via_websocket(Outgoing::DeleteMessage { mid: message_id });
+            info!("Sent delete request for message {} via WebSocket", message_id);
+        } else {
+            error!("Cannot delete message, WebSocket is not connected.");
+            let _ = self.ui_tx.send(UiEvent::Error("Errore di connessione".into()));
+        }
     }
 
     // UI Message handling

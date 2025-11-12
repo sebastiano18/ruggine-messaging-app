@@ -201,6 +201,51 @@ impl MessageService {
         Ok(msg_id)
     }
 
+    pub async fn delete_message(
+        pool: &SqlitePool,
+        message_id: Uuid,
+        requester_id: Uuid,
+    ) -> Result<Uuid> {
+        // 1. Find the message to get conversation_id and verify the author
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT author_id, conversation_id FROM messages WHERE id = ?",
+        )
+        .bind(message_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+
+        let (author_id_str, conversation_id_str) = match row {
+            Some((author, conv)) => (author, conv),
+            None => return Err(crate::error::AppError::NotFound),
+        };
+
+        let author_id = Uuid::parse_str(&author_id_str)
+            .map_err(|_| crate::error::AppError::Internal("Invalid author_id in DB".into()))?;
+        
+        let conversation_id = Uuid::parse_str(&conversation_id_str)
+            .map_err(|_| crate::error::AppError::Internal("Invalid conversation_id in DB".into()))?;
+
+        // 2. Authorization check: only the author can delete the message
+        if author_id != requester_id {
+            return Err(crate::error::AppError::Forbidden);
+        }
+
+        // 3. Delete the message
+        let result = sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(message_id.to_string())
+            .execute(pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            // This could happen in a race condition where the message was already deleted.
+            // We can treat it as a success from the client's perspective.
+            tracing::warn!("Attempted to delete message {} which was already deleted.", message_id);
+        }
+
+        // 4. Return the conversation_id for broadcasting purposes
+        Ok(conversation_id)
+    }
+
     pub async fn delete(
         pool: &SqlitePool,
         message_id: Uuid,
