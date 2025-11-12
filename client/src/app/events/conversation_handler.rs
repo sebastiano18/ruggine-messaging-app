@@ -565,7 +565,7 @@ impl ConversationHandler {
                     Ok(conv_with_msgs) => {
                         // Invia i membri se presenti
                         if !conv_with_msgs.members.is_empty() {
-                            let _ = tx.send(UiEvent::MembersLoaded(conv_with_msgs.members));
+                            let _ = tx.send(UiEvent::MembersLoaded(cid, conv_with_msgs.members));
                         }
                         // Invia la conversazione e i messaggi
                         let _ = tx.send(UiEvent::ConversationCompleteFetched(

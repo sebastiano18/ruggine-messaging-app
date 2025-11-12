@@ -241,7 +241,7 @@ pub enum UiEvent {
 
     // General events
     InviteCreated(String),
-    MembersLoaded(Vec<ParticipantInfo>),
+    MembersLoaded(Uuid, Vec<ParticipantInfo>),
 
     // Sistema unificato di fetch conversazione
     TriggerConversationFetch(Uuid, String),
