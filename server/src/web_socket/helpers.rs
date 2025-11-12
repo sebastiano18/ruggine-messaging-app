@@ -1676,64 +1676,43 @@ pub async fn handle_invite_user(
             Err(e) => warn!("Failed to broadcast member_added (non-fatal): {}", e),
         }
 
-        // Crea messaggio di sistema persistente
+        // Invia messaggio di sistema come evento sequenziato (NON salvato nel DB messages)
+        // Ma salvato in user_events per persistenza
         let system_message_content = format!("{} è stato aggiunto al gruppo", target_username_actual);
-        match create_system_message(state, conversation_id, system_message_content.clone()).await {
-            Ok((msg_id, sequence)) => {
-                info!("Created persistent system message (id={}, seq={})", msg_id, sequence);
 
-                // Ottieni owner_id e username per il broadcast
-                let owner_data: Option<(String, String)> = sqlx::query_as(
-                    "SELECT c.owner_id, u.username FROM conversations c
-                     JOIN users u ON c.owner_id = u.id
-                     WHERE c.id = ?"
-                )
-                    .bind(conversation_id.to_string())
-                    .fetch_optional(&state.pool)
-                    .await
-                    .unwrap_or(None);
-
-                if let Some((owner_id, owner_username)) = owner_data {
-                    // Broadcast il messaggio di sistema a tutti i partecipanti via canale conversazione
-                    let system_msg_broadcast = json!({
-                        "type": "message",
-                        "id": msg_id,
-                        "conversation_id": conversation_id,
-                        "author_id": owner_id,
-                        "author_username": owner_username,
-                        "content": system_message_content.clone(),
-                        "created_at": ts,
-                        "sequence_num": sequence
-                    });
-
-                    let _ = broadcast_to_conversation(state, conversation_id, system_msg_broadcast.clone()).await;
-
-                    // Invia anche come evento sequenziato a tutti i partecipanti per garantire ricezione in tempo reale
-                    let participant_ids_for_msg = match crate::services::conversation_service::ConversationService::list_participant_ids(
-                        &state.pool,
-                        conversation_id
-                    ).await {
-                        Ok(ids) => ids,
-                        Err(e) => {
-                            warn!("Failed to get participant ids for system message broadcast: {}", e);
-                            Vec::new()
-                        }
-                    };
-
-                    for participant_id in participant_ids_for_msg {
-                        if let Err(e) = state.send_sequenced_event_to_user(
-                            participant_id,
-                            "new_message",
-                            system_msg_broadcast.clone(),
-                            Some(conversation_id),
-                        ).await {
-                            warn!("Failed to send system message event to {}: {}", participant_id, e);
-                        }
-                    }
-                }
-            }
+        // Ottieni lista di tutti i partecipanti per inviare il messaggio di sistema
+        let all_participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
+            &state.pool,
+            conversation_id
+        ).await {
+            Ok(ids) => ids,
             Err(e) => {
-                warn!("Failed to create system message (non-fatal): {}", e);
+                warn!("Failed to get participant ids for system message: {}", e);
+                Vec::new()
+            }
+        };
+
+        // Crea il payload del messaggio di sistema
+        let system_msg = json!({
+            "type": "message",
+            "id": Uuid::new_v4(),
+            "conversation_id": conversation_id,
+            "author_id": Uuid::nil(),
+            "author_username": "system",
+            "content": system_message_content,
+            "created_at": ts,
+            "sequence_num": null
+        });
+
+        // Invia come evento new_message a tutti (salvato in user_events, non in messages)
+        for participant_id in all_participant_ids {
+            if let Err(e) = state.send_sequenced_event_to_user(
+                participant_id,
+                "new_message",
+                system_msg.clone(),
+                Some(conversation_id),
+            ).await {
+                warn!("Failed to send system message to {}: {}", participant_id, e);
             }
         }
 

@@ -322,56 +322,31 @@ pub async fn kick_member(
     // Ottieni lista partecipanti rimanenti per il broadcast
     let participant_ids = ConversationService::list_participant_ids(&st.pool, conversation_id).await?;
     
-    // Crea messaggio di sistema persistente per l'espulsione
+    // Invia messaggio di sistema come evento sequenziato (NON salvato nel DB messages)
     let system_message_content = format!("{} è stato espulso dal gruppo", kicked_username);
-    match crate::web_socket::helpers::create_system_message(&st, conversation_id, system_message_content.clone()).await {
-        Ok((msg_id, sequence)) => {
-            tracing::info!("Created persistent kick system message (id={}, seq={})", msg_id, sequence);
-            
-            // Ottieni owner_id e username per il broadcast
-            let owner_data: Option<(String, String)> = sqlx::query_as(
-                "SELECT c.owner_id, u.username FROM conversations c 
-                 JOIN users u ON c.owner_id = u.id 
-                 WHERE c.id = ?"
-            )
-            .bind(conversation_id.to_string())
-            .fetch_optional(&st.pool)
-            .await
-            .unwrap_or(None);
-            
-            if let Some((owner_id, owner_username)) = owner_data {
-                // Broadcast il messaggio di sistema a tutti i partecipanti rimanenti
-                let system_msg_broadcast = json!({
-                    "type": "message",
-                    "id": msg_id,
-                    "conversation_id": conversation_id,
-                    "author_id": owner_id,
-                    "author_username": owner_username,
-                    "content": system_message_content.clone(),
-                    "created_at": timestamp,
-                    "sequence_num": sequence
-                });
-                
-                let _ = crate::web_socket::helpers::broadcast_to_conversation(&st, conversation_id, system_msg_broadcast.clone()).await;
-                
-                // Invia anche come evento sequenziato a tutti i partecipanti rimanenti
-                for participant_id in &participant_ids {
-                    if let Err(e) = st.send_sequenced_event_to_user(
-                        *participant_id,
-                        "new_message",
-                        system_msg_broadcast.clone(),
-                        Some(conversation_id),
-                    ).await {
-                        tracing::warn!("Failed to send kick system message event to {}: {}", participant_id, e);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to create kick system message (non-fatal): {}", e);
+    let system_msg = serde_json::json!({
+        "type": "message",
+        "id": uuid::Uuid::new_v4(),
+        "conversation_id": conversation_id,
+        "author_id": uuid::Uuid::nil(),
+        "author_username": "system",
+        "content": system_message_content,
+        "created_at": timestamp,
+        "sequence_num": null
+    });
+
+    // Invia come evento new_message a tutti i partecipanti rimanenti
+    for participant_id in &participant_ids {
+        if let Err(e) = st.send_sequenced_event_to_user(
+            *participant_id,
+            "new_message",
+            system_msg.clone(),
+            Some(conversation_id),
+        ).await {
+            tracing::warn!("Failed to send system message to {}: {}", participant_id, e);
         }
     }
-    
+
     // Invia member_removed a tutti i partecipanti rimanenti
     for participant_id in &participant_ids {
         if let Err(e) = st.send_sequenced_event_to_user(

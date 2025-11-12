@@ -173,7 +173,7 @@ pub struct AppState {
 
     // Members popup state
     pub show_members_popup: bool,
-    pub members_list: Vec<ParticipantInfo>,
+    pub members_list: HashMap<Uuid, Vec<ParticipantInfo>>,
     pub is_loading_members: bool,
 
     // Create group popup state
@@ -280,7 +280,7 @@ impl AppState {
             dm_username: String::new(),
 
             show_members_popup: false,
-            members_list: Vec::new(),
+            members_list: HashMap::new(),
             is_loading_members: false,
 
             // Toasts
@@ -622,7 +622,7 @@ impl AppState {
         self.rt.spawn(async move {
             match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
                 Ok(members) => {
-                    let _ = tx.send(UiEvent::MembersLoaded(members));
+                    let _ = tx.send(UiEvent::MembersLoaded(conversation_id, members));
                 }
                 Err(e) => {
                     error!("Failed to load members: {}", e);

@@ -125,9 +125,8 @@ impl UserNotificationHandler {
 
                 info!("User {} added to group (conversation: {:?})", username, conversation_id);
 
-                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
-                // Non serve più creare un messaggio locale
-                
+                // Il messaggio di sistema arriverà come evento new_message dal server
+                // salvato in user_events per persistenza
             }
             "member_removed" => {
                 // Gestisce quando un utente viene espulso dal gruppo
@@ -138,22 +137,30 @@ impl UserNotificationHandler {
 
                 info!("User {} removed from group (conversation: {:?})", username, conversation_id);
 
-                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
-                // Non serve più creare un messaggio locale
-                
+                // Il messaggio di sistema arriverà come evento new_message dal server
+                // salvato in user_events per persistenza
             }
             "member_list_updated" => {
-                // Aggiorna la lista dei membri in real-time
-                if let Ok(members) = serde_json::from_value::<Vec<crate::models::ParticipantInfo>>(
-                    event_data.get("members").cloned().unwrap_or(serde_json::Value::Array(vec![]))
-                ) {
-                    info!("Received member list update with {} members for conversation {:?}", members.len(), conversation_id);
-                    for member in &members {
-                        info!("  - {} ({})", member.username, member.role);
+                // Aggiorna la lista dei membri SOLO se è per la conversazione corrente
+                if let Some(conv_id) = conversation_id {
+                    // Processa solo se stiamo visualizzando questa specifica conversazione
+                    if state.cid == Some(conv_id) {
+                        if let Ok(members) = serde_json::from_value::<Vec<crate::models::ParticipantInfo>>(
+                            event_data.get("members").cloned().unwrap_or(serde_json::Value::Array(vec![]))
+                        ) {
+                            info!("Received member list update with {} members for conversation {:?}", members.len(), conv_id);
+                            for member in &members {
+                                info!("  - {} ({})", member.username, member.role);
+                            }
+                            let _ = state.ui_tx.send(UiEvent::MembersLoaded(conv_id, members));
+                        } else {
+                            warn!("Failed to parse members from member_list_updated event");
+                        }
+                    } else {
+                        // Non stiamo visualizzando quella conversazione, ignoriamo
+                        // I membri verranno caricati quando apri la popup
+                        info!("Skipping member_list_updated for conversation {:?} (not currently relevant)", conv_id);
                     }
-                    let _ = state.ui_tx.send(UiEvent::MembersLoaded(members));
-                } else {
-                    warn!("Failed to parse members from member_list_updated event");
                 }
             }
             "user_left_group" => {
@@ -165,8 +172,8 @@ impl UserNotificationHandler {
 
                 info!("User {} left the group (conversation: {:?})", username, conversation_id);
 
-                // Il messaggio di sistema viene ora salvato dal server e arriverà come messaggio normale
-                // Non serve più creare un messaggio locale
+                // Il messaggio di sistema arriverà come evento new_message dal server
+                // salvato in user_events per persistenza
 
                 // Richiedi aggiornamento della lista conversazioni
                 let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
@@ -660,13 +667,8 @@ impl UserNotificationHandler {
                 state.conversation_sequences_confirmed.entry(id).or_insert(0);
                 state.conversation_messages.entry(id).or_insert_with(Vec::new);
 
-                if stub_to_replace.is_none() {
-                    // Solo se NON è uno stub, mostra il messaggio di sistema
-                    helpers::add_system_message(
-                        state,
-                        format!("✅ Sei stato aggiunto al gruppo '{}'", conversation.title),
-                    );
-                }
+                // Il messaggio "X è stato aggiunto al gruppo" arriva già dal server
+                // come evento new_message salvato in user_events, non serve aggiungerlo qui
 
                 super::utils::move_conversation_to_top(state, id);
 

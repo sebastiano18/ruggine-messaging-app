@@ -300,7 +300,7 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 .clicked()
                             {
                                 s.show_members_popup = true;
-                                // I membri sono già stati caricati con get_conversation_with_messages
+                                // I membri verranno caricati se necessario quando si apre la popup
                             }
 
                             // Bottone aggiungi - solo per l'owner
@@ -593,6 +593,13 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
     let mut member_to_kick: Option<Uuid> = None;
 
+    // Se la lista è vuota per questa conversazione e non stiamo già caricando, richiedi i membri
+    if !s.members_list.contains_key(&cid) && !s.is_loading_members {
+        if let Some(token) = s.token.clone() {
+            s.load_conversation_members(cid, token);
+        }
+    }
+
     egui::Window::new("Membri del gruppo")
         .collapsible(false)
         .resizable(false)
@@ -610,7 +617,10 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        if s.members_list.is_empty() {
+                        // Ottieni la lista dei membri per questa conversazione specifica
+                        let members = s.members_list.get(&cid);
+
+                        if members.is_none() || members.unwrap().is_empty() {
                             ui.label("Nessun membro trovato.");
                         } else {
                             // Trova l'owner del gruppo e l'utente corrente
@@ -622,7 +632,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                             let current_user_id = s.user_id;
                             let is_owner = Some(current_user_id) == owner_id.map(Some);
 
-                            for member in &s.members_list {
+                            for member in members.unwrap() {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(&member.username).size(14.0));
 
