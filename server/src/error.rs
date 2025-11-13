@@ -8,17 +8,17 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("Unauthorized")]
+    #[error("Non autorizzato")]
     Unauthorized,
-    #[error("Forbidden")]
+    #[error("Azione non permessa")]
     Forbidden,
-    #[error("Not Found")]
+    #[error("Risorsa non trovata")]
     NotFound,
-    #[error("Bad Request: {0}")]
+    #[error("{0}")]
     BadRequest(String),
-    #[error("Conflict: {0}")]
+    #[error("Conflitto: {0}")]
     Conflict(String),
-    #[error("Internal Server Error: {0}")]
+    #[error("Errore interno del server: {0}")]
     Internal(String),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),

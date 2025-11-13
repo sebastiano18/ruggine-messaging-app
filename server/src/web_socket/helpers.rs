@@ -1819,7 +1819,7 @@ pub async fn handle_invite_user(
 
     if added_count == 0 && skipped_count > 0 {
         return Err(AppError::BadRequest(format!(
-            "No users were added. {} user(s) skipped.",
+            "Nessun utente è stato aggiunto. {} utente/i sono stati saltati.",
             skipped_count
         )));
     }

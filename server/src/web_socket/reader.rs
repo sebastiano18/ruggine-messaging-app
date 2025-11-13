@@ -577,9 +577,17 @@ pub fn spawn_reader(
                                 }
                                 Err(e) => {
                                     error!("Failed to invite user: {}", e);
+                                    // Traduci messaggio per l'utente
+                                    let user_message = if e.to_string().contains("Nessun utente è stato aggiunto") {
+                                        "Nessun utente è stato aggiunto al gruppo.".to_string()
+                                    } else if e.to_string().contains("solo per i gruppi") {
+                                        "Puoi invitare utenti solo nei gruppi.".to_string()
+                                    } else {
+                                        e.to_string()
+                                    };
                                     let error_response = json!({
                                         "type": "error",
-                                        "message": e.to_string(),
+                                        "message": user_message,
                                         "error_code": "INVITE_USER_FAILED"
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
@@ -599,9 +607,16 @@ pub fn spawn_reader(
                                 }
                                 Err(e) => {
                                     error!("Failed to create group with participants: {}", e);
+                                    let user_message = if e.to_string().contains("username richiesti") {
+                                        "Devi inserire username e password.".to_string()
+                                    } else if e.to_string().contains("già partecipante") {
+                                        "Sei già in questa conversazione.".to_string()
+                                    } else {
+                                        e.to_string()
+                                    };
                                     let error_response = json!({
                                         "type": "error",
-                                        "message": e.to_string(),
+                                        "message": user_message,
                                         "error_code": "CREATE_GROUP_FAILED"
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
@@ -654,10 +669,10 @@ pub fn spawn_reader(
 
                             if let Err(e) = leave_res {
                                 let (code, message) = match &e {
-                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
-                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "Non sei autorizzato a eseguire questa azione".to_string()),
+                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversazione non trovata".to_string()),
                                     crate::error::AppError::BadRequest(msg) => ("BAD_REQUEST", msg.clone()),
-                                    _ => ("LEAVE_FAILED", format!("Leave failed: {}", e)),
+                                    _ => ("LEAVE_FAILED", "Impossibile uscire dal gruppo. Riprova.".to_string()),
                                 };
                                 let err = json!({
                                     "type":"error",

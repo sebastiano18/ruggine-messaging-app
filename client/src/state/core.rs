@@ -431,8 +431,8 @@ impl AppState {
                 }
 
                 // Notifica l'utente
-                let _ = self.ui_tx.send(UiEvent::Info(
-                    "⚠️ Messaggio potrebbe non essere stato inviato".into(),
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    "Il messaggio potrebbe non essere stato inviato".into(),
                 ));
             }
         }
