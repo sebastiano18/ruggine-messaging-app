@@ -188,6 +188,9 @@ pub enum Outgoing {
     LeaveGroup {
         cid: Uuid,
     },
+    DeleteMessage {
+        mid: Uuid,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===

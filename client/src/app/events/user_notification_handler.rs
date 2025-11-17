@@ -184,6 +184,16 @@ impl UserNotificationHandler {
             "new_conversation" => {
                 Self::handle_new_conversation(state, event_data);
             }
+            "message_deleted" => {
+                if let (Some(cid_val), Some(mid_val)) = (event_data.get("conversation_id"), event_data.get("message_id")) {
+                    if let (Some(cid_str), Some(mid_str)) = (cid_val.as_str(), mid_val.as_str()) {
+                        if let (Ok(cid), Ok(mid)) = (Uuid::parse_str(cid_str), Uuid::parse_str(mid_str)) {
+                            info!("Applying message_deleted from UserNotification for message {} in conversation {}", mid, cid);
+                            let _ = state.ui_tx.send(UiEvent::MessageDeleted { message_id: mid, conversation_id: cid });
+                        }
+                    }
+                }
+            }
             "conversation_confirmation" => {
                 Self::handle_conversation_confirmation_event(state, event_data);
             }

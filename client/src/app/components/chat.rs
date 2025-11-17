@@ -31,6 +31,11 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     } else {
         show_empty_state(ui);
     }
+
+    // Mostra il popup di conferma eliminazione messaggio se necessario
+    if s.pending_message_deletion.is_some() {
+        show_delete_message_confirmation(ui, s);
+    }
 }
 
 fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
@@ -393,7 +398,17 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
             // 1. Aggiungiamo il padding a destra dello schermo (10px).
             ui.add_space(10.0);
 
-            // 2. Calcoliamo la larghezza della bolla in base al contenuto.
+            // 2. Disegniamo il pulsante di eliminazione.
+            let delete_button = egui::Button::new(RichText::new("🗑").size(16.0)).frame(false);
+            if ui.add(delete_button).on_hover_text("Elimina messaggio").clicked() {
+                // Apri il popup di conferma invece di eliminare direttamente
+                s.pending_message_deletion = Some(message.id);
+            }
+
+            // 3. Aggiungiamo un piccolo spazio tra il cestino e la bolla.
+            ui.add_space(5.0);
+
+            // 4. Calcoliamo la larghezza della bolla e la disegniamo.
             // Questo calcolo ora avviene in un contesto di layout stabile.
             let row_w = ui.available_width();
             let max_bubble_width = (row_w * 0.70).clamp(220.0, 500.0);
@@ -587,6 +602,64 @@ fn bubble_width(ui: &egui::Ui, text: &str, max_wrap: f32, pad_x: f32) -> f32 {
         let galley = fonts.layout_job(job);
         (galley.rect.size().x + pad_x).clamp(96.0, max_wrap + pad_x)
     })
+}
+
+fn show_delete_message_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
+    let mut should_delete = false;
+    let mut should_cancel = false;
+
+    egui::Window::new("Conferma eliminazione")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(320.0);
+
+            ui.add_space(10.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Vuoi confermare l'eliminazione del messaggio?").size(14.0));
+            });
+            ui.add_space(20.0);
+
+            ui.horizontal(|ui| {
+                // Calcola la larghezza disponibile e centra i pulsanti
+                let button_width = 80.0;
+                let spacing = 20.0;
+                let total_width = button_width * 2.0 + spacing;
+                let available_width = ui.available_width();
+                let offset = (available_width - total_width) / 2.0;
+                
+                ui.add_space(offset);
+
+                if ui.add_sized([button_width, 30.0], 
+                    egui::Button::new(RichText::new("❌ NO").size(16.0).color(egui::Color32::WHITE)))
+                    .on_hover_text("Annulla")
+                    .clicked() 
+                {
+                    should_cancel = true;
+                }
+
+                ui.add_space(spacing);
+
+                if ui.add_sized([button_width, 30.0],
+                    egui::Button::new(RichText::new("✔️ SI").size(16.0).color(egui::Color32::WHITE)))
+                    .on_hover_text("Conferma eliminazione")
+                    .clicked() 
+                {
+                    should_delete = true;
+                }
+            });
+
+            ui.add_space(10.0);
+        });
+
+    if should_delete {
+        if let Some(message_id) = s.pending_message_deletion.take() {
+            s.delete_message(message_id);
+        }
+    } else if should_cancel {
+        s.pending_message_deletion = None;
+    }
 }
 
 fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {

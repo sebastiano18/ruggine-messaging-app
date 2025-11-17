@@ -81,6 +81,57 @@ async fn handle_mark_read(
     Ok(())
 }
 
+async fn handle_delete_message(
+    state: &AppState,
+    value: &serde_json::Value,
+    user_id: Uuid,
+    out_tx: &mpsc::Sender<OutboundMsg>,
+) -> crate::error::Result<()> {
+    use crate::services::message_service::MessageService;
+
+    // 1. Extract message_id (mid)
+    let message_id_str = value
+        .get("mid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| crate::error::AppError::BadRequest("Missing message_id (mid)".into()))?;
+    
+    let message_id = Uuid::parse_str(message_id_str)
+        .map_err(|_| crate::error::AppError::BadRequest("Invalid message_id format".into()))?;
+
+    info!("Processing delete request for message {} from user {}", message_id, user_id);
+
+    // 2. Call the service to delete the message. This also performs authorization.
+    // The service returns the conversation_id on success.
+    let conversation_id = MessageService::delete_message(&state.pool, message_id, user_id).await?;
+    
+    info!("Message {} in conversation {} deleted successfully from DB", message_id, conversation_id);
+
+    // 3. Get all participants of the conversation to notify them.
+    let participants = ConversationService::list_participant_ids(&state.pool, conversation_id).await?;
+
+    // 4. Broadcast the deletion event to all participants.
+    ConversationService::broadcast_message_deleted(
+        state,
+        conversation_id,
+        message_id,
+        participants,
+    ).await;
+
+    // 5. (Optional) Send an ACK to the original sender
+    let ack = json!({
+        "type": "delete_message_ack",
+        "message_id": message_id,
+        "status": "ok"
+    });
+    if let Ok(txt) = serde_json::to_string(&ack) {
+        if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+            warn!("Failed to send delete_message_ack to user {}", user_id);
+        }
+    }
+
+    Ok(())
+}
+
 pub fn spawn_reader(
     mut ws_rx: SplitStream<WebSocket>,
     state: AppState,
@@ -791,6 +842,21 @@ pub fn spawn_reader(
                             }
                             
                             continue;
+                        }
+
+                        "delete_message" => {
+                            last_heartbeat = Instant::now();
+                            if let Err(e) = handle_delete_message(&state, &value, user_id, &out_tx).await {
+                                error!("Failed to handle delete_message from user {}: {}", user_id, e);
+                                let error_response = json!({
+                                    "type": "error",
+                                    "message": e.to_string(),
+                                    "error_code": "DELETE_MESSAGE_FAILED"
+                                });
+                                if let Ok(txt) = serde_json::to_string(&error_response) {
+                                    let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                }
+                            }
                         }
 
                         _ => {

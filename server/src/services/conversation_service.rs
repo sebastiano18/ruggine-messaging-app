@@ -153,6 +153,41 @@ impl ConversationService {
         ConversationRepo::get_members(pool, conversation_id).await
     }
 
+    pub async fn broadcast_message_deleted(
+        st: &AppState,
+        conversation_id: Uuid,
+        message_id: Uuid,
+        participant_ids: Vec<Uuid>,
+    ) {
+        info!(
+            "Broadcasting and persisting message_deleted event for message {} in conversation {}",
+            message_id, conversation_id
+        );
+
+        // The event payload that will be saved to the DB and sent to clients.
+        let event_data = json!({
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+        });
+
+        for pid in participant_ids {
+            if let Err(e) = st
+                .send_sequenced_event_to_user(
+                    pid,
+                    "message_deleted",
+                    event_data.clone(),
+                    Some(conversation_id),
+                )
+                .await
+            {
+                warn!(
+                    "Failed to send/persist message_deleted event for user {}: {}",
+                    pid, e
+                );
+            }
+        }
+    }
+
     pub async fn broadcast_conversation_deleted(
         st: &AppState,
         conversation_id: Uuid,
