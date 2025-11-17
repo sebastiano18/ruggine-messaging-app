@@ -38,11 +38,11 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     // Handle messages by type
     match msg_type {
         "chat_message" => handle_chat_message(tx, &parsed_value),
+        "message" => handle_new_message_event(tx, &parsed_value), // Messaggi broadcast (inclusi quelli di sistema)
         "new_message" => handle_new_message_event(tx, &parsed_value),
         "initial_state" => handle_initial_state(tx, &parsed_value),
         "conversation_messages" => handle_conversation_messages(tx, &parsed_value),
         "conversation_created_complete" => handle_conversation_created_complete(tx, &parsed_value),
-        "conversation_confirmation" => handle_conversation_confirmation(tx, &parsed_value),
         "user_notification" => handle_user_notification(tx, &parsed_value),
         "user_event" => handle_user_notification(tx, &parsed_value),  // Gestito come user_notification
         "pong" => handle_pong(tx, &parsed_value),
@@ -68,117 +68,6 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
     }
 }
 
-fn handle_conversation_confirmation(
-    tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
-    value: &Value,
-) {
-    // NUOVO: Prima di tutto, gestisci la sequence se presente
-    if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
-        info!("Found sequence {} in conversation_confirmation, sending UserNotification", seq);
-
-        // Estrai conversation_id dal campo conversation
-        let conversation_id = value.get("conversation")
-            .and_then(|c| c.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
-
-        // Invia come UserNotification per aggiornare la user_sequence
-        let _ = tx.send(UiEvent::UserNotification {
-            sequence: seq,
-            event_type: "conversation_confirmation".to_string(),
-            event_data: value.clone(),
-            conversation_id,
-            recovery: false,
-        });
-    }
-
-    // Continua con il codice esistente
-    let conversation_data = value.get("conversation").and_then(|conv_obj| {
-        let id = parse_uuid_field(conv_obj, "id")?;
-        let client_temp_id = conv_obj
-            .get("client_temp_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // IMPORTANTE: Log per debug
-        if let Some(ref temp_id) = client_temp_id {
-            info!(
-                "Received conversation_confirmation for temp_id: {}",
-                temp_id
-            );
-        }
-
-        let kind = conv_obj.get("kind")?.as_str()?.to_string();
-        let owner_id = parse_uuid_field(conv_obj, "owner_id")?;
-        let created_at = conv_obj.get("created_at")?.as_i64()?;
-        let title = conv_obj
-            .get("display_title")
-            .and_then(|t| t.as_str())
-            .or_else(|| conv_obj.get("title").and_then(|t| t.as_str()))
-            .unwrap_or("")
-            .to_string();
-
-        let last_read_sequence = conv_obj
-            .get("last_read_sequence")
-            .and_then(|s| s.as_i64())
-            .unwrap_or(0);
-
-        // Calcola last_activity
-        let last_message_time = conv_obj
-            .get("last_message")
-            .and_then(|msg| msg.get("created_at"))
-            .and_then(|t| t.as_i64())
-            .unwrap_or(0);
-
-        let last_activity = std::cmp::max(created_at, last_message_time);
-
-        let last_msg_seq = conv_obj
-            .get("last_message")
-            .and_then(|msg| msg.get("sequence_num"))
-            .and_then(|t| t.as_i64())
-            .unwrap_or(0);
-
-
-
-        let conversation = ConversationDto {
-            id,
-            kind,
-            title,
-            owner_id,
-            created_at,
-            last_read_sequence,
-            last_activity,
-            last_msg_seq
-        };
-
-        // Parse dell'ultimo messaggio se presente
-        let messages = if let Some(last_msg) = conv_obj.get("last_message") {
-            parse_message_from_json(last_msg, id)
-                .map(|m| vec![m])
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        Some((conversation, messages, client_temp_id))
-    });
-
-    if let Some((conv, messages, client_temp_id)) = conversation_data {
-        info!(
-            "Conversation confirmed: {} (temp_id: {:?})",
-            conv.id, client_temp_id
-        );
-
-        // CRITICO: Invia l'evento con il client_temp_id
-        let _ = tx.send(UiEvent::ConversationConfirmed {
-            conversation: conv,
-            messages,
-            client_temp_id, // Questo è importante!
-        });
-    } else {
-        warn!("Invalid conversation_confirmation structure");
-    }
-}
 
 fn handle_message_confirmation(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let client_msg_id = value
@@ -959,23 +848,22 @@ fn handle_member_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
         username, user_id, conversation_id, added_by
     );
 
-    // Gestisci la sequence se presente per sincronizzazione
-    if let Some(seq) = value.get("sequence").and_then(|s| s.as_u64()) {
-        let _ = tx.send(UiEvent::UserNotification {
-            sequence: seq,
-            event_type: "member_added".to_string(),
-            event_data: value.clone(),
-            conversation_id: Some(conversation_id),
-            recovery: false,
-        });
-    }
+    // Gestisci SEMPRE tramite UserNotification (con o senza sequence)
+    let sequence = value.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+
+    let _ = tx.send(UiEvent::UserNotification {
+        sequence,
+        event_type: "member_added".to_string(),
+        event_data: value.clone(),
+        conversation_id: Some(conversation_id),
+        recovery: false,
+    });
 
     // Mostra notifica all'utente
-    let message = format!("✅ {} è stato aggiunto al gruppo", username);
+    let message = format!("{} è stato aggiunto al gruppo", username);
     let _ = tx.send(UiEvent::Info(message));
 
-    // Richiedi aggiornamento della lista conversazioni per vedere il nuovo membro
-    let _ = tx.send(UiEvent::ConversationListUpdated);
+    // ✅ RIMOSSO: Non triggerare più ConversationListUpdated
 }
 
 fn handle_leave_group_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
@@ -1011,15 +899,15 @@ fn parse_conversation_id(value: &Value) -> Option<Uuid> {
 /// Handler per messaggi user_notification dal server
 fn handle_user_notification(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let sequence = value.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
-    
+
     let event_type = value
         .get("event_type")
         .and_then(|t| t.as_str())
         .unwrap_or("unknown")
         .to_string();
-    
+
     let event_data = value.get("event_data").cloned().unwrap_or(value.clone());
-    
+
     let conversation_id = value
         .get("conversation_id")
         .and_then(|id| id.as_str())

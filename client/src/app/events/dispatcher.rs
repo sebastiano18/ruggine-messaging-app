@@ -230,8 +230,12 @@ impl EventDispatcher {
                 state.last_created_invite = Some(token);
             }
 
-            UiEvent::MembersLoaded(members) => {
-                state.members_list = members;
+            UiEvent::MembersLoaded(conversation_id, members) => {
+                info!("MembersLoaded event: {} members loaded for conversation {:?}", members.len(), conversation_id);
+                for member in &members {
+                    info!("  - {} ({})", member.username, member.role);
+                }
+                state.members_list.insert(conversation_id, members);
                 state.is_loading_members = false;
             }
 

@@ -226,14 +226,28 @@ impl ConversationHandler {
 
             state.conversation_sequences.remove(&stub_id);
             state.conversation_sequences_confirmed.remove(&stub_id);
+
+            // IMPORTANTE: Rimuovi lo stub anche da conversations se presente
+            if let Some(ref mut conversations) = state.conversations {
+                conversations.retain(|c| c.id != stub_id);
+                info!("Removed stub {} from conversations list", stub_id);
+            }
         }
 
+        // Aggiungi o aggiorna la conversazione reale
         if let Some(ref mut conversations) = state.conversations {
+            // Rimuovi eventuali conversazioni con lo stesso ID reale (non dovrebbe succedere)
             conversations.retain(|c| c.id != conversation.id);
             conversations.push(conversation.clone());
             conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            info!(
+                "Added conversation {} to list ({} total)",
+                conversation.id,
+                conversations.len()
+            );
         } else {
             state.conversations = Some(vec![conversation.clone()]);
+            info!("Initialized conversations list with {}", conversation.id);
         }
 
         if !messages.is_empty() {
@@ -378,6 +392,9 @@ impl ConversationHandler {
                 cid
             );
         }
+
+        // ✅ RIMOSSO: Non viene più fatto fetch esplicito quando si apre un gruppo
+        // I messaggi vengono caricati dalla cache o tramite LoadConversationMessages come per i DM
     }
 
     pub fn handle_conversation_deleted(state: &mut AppState, cid: Uuid) {
@@ -395,6 +412,7 @@ impl ConversationHandler {
 
         if state.cid == Some(cid) {
             state.cid = None;
+            state.conv_title.clear();
             state.messages.clear();
             state.page = Page::Conversations;
         }
@@ -402,6 +420,8 @@ impl ConversationHandler {
         if state.is_dm_stub(cid) {
             state.remove_dm_stub(cid);
         }
+
+        state.request_conversations_refresh = true;
     }
 
     pub fn handle_conversation_created(state: &mut AppState, cid: Uuid) {
@@ -543,6 +563,11 @@ impl ConversationHandler {
                     .await
                 {
                     Ok(conv_with_msgs) => {
+                        // Invia i membri se presenti
+                        if !conv_with_msgs.members.is_empty() {
+                            let _ = tx.send(UiEvent::MembersLoaded(cid, conv_with_msgs.members));
+                        }
+                        // Invia la conversazione e i messaggi
                         let _ = tx.send(UiEvent::ConversationCompleteFetched(
                             conv_with_msgs.conversation,
                             conv_with_msgs.messages,
@@ -607,7 +632,8 @@ impl ConversationHandler {
 
         state.remove_dm_stub(conv.id);
 
-        super::utils::move_conversation_to_top(state, conv.id);
+        // Rimosso move_conversation_to_top per evitare che la chat venga spostata in alto al click
+        // super::utils::move_conversation_to_top(state, conv.id);
     }
 
     pub fn handle_conversation_list_updated(state: &mut AppState) {

@@ -45,6 +45,23 @@ impl CreateGroupPopupState {
     }
 }
 
+#[derive(Default)]
+pub struct InvitePopupState {
+    pub search_query: String,
+    pub selected_users: HashSet<String>,
+}
+
+impl InvitePopupState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.search_query.clear();
+        self.selected_users.clear();
+    }
+}
+
 pub struct AppState {
     pub rt: Runtime,
     pub base: String,
@@ -139,7 +156,7 @@ pub struct AppState {
     pub show_account_modal: bool,
 
     // UI Messages - separati per pagina
-    pub ui_message: Option<String>,        // Messaggi per pagine interne (dopo login)
+    pub toasts: Vec<Toast>,                 // Toast notifications
     pub auth_message: Option<String>,      // Messaggi solo per pagina auth
     pub auth_message_is_error: bool,       // true = errore (rosso), false = info (verde)
 
@@ -152,11 +169,11 @@ pub struct AppState {
 
     // Invite popup state
     pub show_invite_popup: bool,
-    pub invite_username_input: String,
+    pub invite_popup: InvitePopupState,
 
     // Members popup state
     pub show_members_popup: bool,
-    pub members_list: Vec<ParticipantInfo>,
+    pub members_list: HashMap<Uuid, Vec<ParticipantInfo>>,
     pub is_loading_members: bool,
 
     // Create group popup state
@@ -208,7 +225,6 @@ impl AppState {
             confirm_delete_account: false,
             show_account_modal: false,
 
-            ui_message: None,
             auth_message: None,
             auth_message_is_error: false,
 
@@ -257,7 +273,7 @@ impl AppState {
             conversation_unread_counts: HashMap::new(),
 
             show_invite_popup: false,
-            invite_username_input: String::new(),
+            invite_popup: InvitePopupState::new(),
 
             // Create group popup
             show_create_group_modal: false,
@@ -267,9 +283,13 @@ impl AppState {
             dm_username: String::new(),
 
             show_members_popup: false,
-            members_list: Vec::new(),
+            members_list: HashMap::new(),
             is_loading_members: false,
 
+            // Toasts
+            toasts: Vec::new(),
+
+            // Message deletion confirmation
             pending_message_deletion: None,
         }
     }
@@ -326,7 +346,7 @@ impl AppState {
             if self.ws_status == WsStatus::Connected {
                 // Determina se l'utente è owner o partecipante
                 let is_owner = self.user_id.map_or(false, |uid| uid == conversation.owner_id);
-                
+
                 if conversation.kind == "group" && !is_owner {
                     // Partecipante che vuole uscire dal gruppo
                     self.send_via_websocket(Outgoing::LeaveGroup { cid });
@@ -336,9 +356,16 @@ impl AppState {
                 } else {
                     // Owner che elimina il gruppo o eliminazione di DM
                     self.send_via_websocket(Outgoing::DeleteConversation { cid });
-                    let _ = self
-                        .ui_tx
-                        .send(UiEvent::Info("Eliminazione conversazione...".into()));
+                    
+                    if conversation.kind == "group" {
+                        let _ = self
+                            .ui_tx
+                            .send(UiEvent::Info("Gruppo eliminato".into()));
+                    } else {
+                        let _ = self
+                            .ui_tx
+                            .send(UiEvent::Info("Conversazione eliminata".into()));
+                    }
                 }
             } else {
                 let _ = self
@@ -379,9 +406,9 @@ impl AppState {
         }
     }
 
-    pub fn send_invite_user(&self, cid: Uuid, username: String) {
-        info!("Sending invite for user '{}' to conversation {}", username, cid);
-        self.send_via_websocket(Outgoing::InviteUser { cid, username });
+    pub fn send_invite_users(&self, cid: Uuid, usernames: Vec<String>) {
+        info!("Sending invite for {} users to conversation {}", usernames.len(), cid);
+        self.send_via_websocket(Outgoing::InviteUser { cid, usernames });
     }
 
     // === Message Confirmation Methods ===
@@ -410,8 +437,8 @@ impl AppState {
                 }
 
                 // Notifica l'utente
-                let _ = self.ui_tx.send(UiEvent::Info(
-                    "⚠️ Messaggio potrebbe non essere stato inviato".into(),
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    "Il messaggio potrebbe non essere stato inviato".into(),
                 ));
             }
         }
@@ -601,7 +628,7 @@ impl AppState {
         self.rt.spawn(async move {
             match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
                 Ok(members) => {
-                    let _ = tx.send(UiEvent::MembersLoaded(members));
+                    let _ = tx.send(UiEvent::MembersLoaded(conversation_id, members));
                 }
                 Err(e) => {
                     error!("Failed to load members: {}", e);
@@ -613,28 +640,18 @@ impl AppState {
 
     pub fn kick_member(&mut self, conversation_id: Uuid, user_id: Uuid) {
         let Some(ref token) = self.token else { return };
-        
+
         let base = self.base.clone();
         let token = token.clone();
-        let tx = self.ui_tx.clone();
 
         self.rt.spawn(async move {
             match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id).await {
                 Ok(_) => {
-                    info!("Member kicked successfully");
-                    // Ricarica la lista dei membri
-                    match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
-                        Ok(members) => {
-                            let _ = tx.send(UiEvent::MembersLoaded(members));
-                        }
-                        Err(e) => {
-                            error!("Failed to reload members: {}", e);
-                        }
-                    }
+                    info!("Member kicked successfully - will receive update via WebSocket");
+                    // Non serve ricaricare manualmente, arriverà l'evento member_list_updated via WebSocket
                 }
                 Err(e) => {
                     error!("Failed to kick member: {}", e);
-                    let _ = tx.send(UiEvent::Error(format!("Errore espulsione membro: {}", e)));
                 }
             }
         });
@@ -651,17 +668,6 @@ impl AppState {
     }
 
     // UI Message handling
-    pub fn set_ui_message(&mut self, msg: String) {
-        // Messaggi per le pagine interne (dopo login)
-        if self.token.is_some() {
-            self.ui_message = Some(msg);
-        }
-    }
-
-    pub fn clear_ui_message(&mut self) {
-        self.ui_message = None;
-    }
-
     pub fn set_auth_message(&mut self, msg: String, is_error: bool) {
         // Messaggi per la pagina di autenticazione
         self.auth_message = Some(msg);
@@ -678,7 +684,7 @@ impl AppState {
         if self.token.is_none() {
             self.set_auth_message(msg, false); // Info = non errore
         } else {
-            self.set_ui_message(msg);
+            self.push_toast(ToastKind::Info, msg);
         }
     }
 
@@ -686,8 +692,127 @@ impl AppState {
         if self.token.is_none() {
             self.set_auth_message(msg, true); // Error = errore
         } else {
-            self.set_ui_message(msg);
+            self.push_toast(ToastKind::Error, msg);
         }
     }
 
+    // === Toast helpers ===
+    pub fn push_toast(&mut self, kind: ToastKind, message: String) {
+        // Escludi explicitamente la pagina di autenticazione
+        if matches!(self.page, Page::Auth) || self.token.is_none() {
+            return;
+        }
+        self.toasts.push(Toast {
+            id: Uuid::new_v4(),
+            message,
+            kind,
+            created: Instant::now(),
+        });
+        // Limita al massimo 5 toasts attivi per evitare overflow
+        if self.toasts.len() > 5 {
+            self.toasts.drain(0..self.toasts.len() - 5);
+        }
+    }
+
+    /// Helper per creare un gruppo con partecipanti
+    pub fn create_group_with_participants(&mut self) {
+        use crate::models::{ConversationDto, MessageDto, Outgoing, Page};
+        use uuid::Uuid;
+
+        let group_name = self.create_group_popup.group_name.trim().to_string();
+        let participants: Vec<String> = self
+            .create_group_popup
+            .selected_participants
+            .iter()
+            .cloned()
+            .collect();
+
+        tracing::info!(
+        "Creating group '{}' with {} participants via WebSocket: {:?}",
+        group_name,
+        participants.len(),
+        participants
+    );
+
+        // Crea stub per il gruppo
+        let stub_id = Uuid::new_v4();
+
+        let stub_conversation = ConversationDto {
+            id: stub_id,
+            kind: "group".to_string(),
+            title: group_name.clone(),
+            owner_id: self.user_id.unwrap_or(Uuid::nil()),
+            created_at: chrono::Utc::now().timestamp(),
+            last_read_sequence: 0,
+            last_activity: chrono::Utc::now().timestamp(),
+            last_msg_seq: 0,
+        };
+
+        // Aggiungi stub alla lista conversazioni
+        if let Some(ref mut convs) = self.conversations {
+            convs.insert(0, stub_conversation);
+        }
+
+        // Traccia lo stub
+        self.group_stubs.insert(stub_id, group_name.clone());
+
+        // Apri il gruppo stub
+        self.cid = Some(stub_id);
+        self.page = Page::Chat;
+        self.conv_title = group_name.clone();
+
+        // Messaggio di sistema nello stub
+        let system_msg =
+            MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
+        self.conversation_messages
+            .entry(stub_id)
+            .or_insert_with(Vec::new)
+            .push(system_msg.clone());
+        self.messages = vec![system_msg];
+
+        // Invia al server
+        let outgoing = Outgoing::CreateGroupWithParticipants {
+            group_name,
+            participant_usernames: participants,
+            client_temp_id: Some(stub_id.to_string()),
+        };
+
+        if let Err(e) = self.ui_to_net_tx.try_send(outgoing) {
+            // Cleanup in caso di errore
+            if let Some(ref mut convs) = self.conversations {
+                convs.retain(|c| c.id != stub_id);
+            }
+            self.group_stubs.remove(&stub_id);
+            self.conversation_messages.remove(&stub_id);
+            self.messages.clear();
+            self.cid = None;
+            self.page = Page::Conversations;
+
+            let _ = self
+                .ui_tx
+                .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
+            return;
+        }
+
+        tracing::info!("Created group stub {} and opened it", stub_id);
+        self.create_group_popup.reset();
+    }
+
+    pub fn prune_expired_toasts(&mut self, lifetime: Duration) {
+        let now = Instant::now();
+        self.toasts.retain(|t| now.duration_since(t.created) < lifetime);
+    }
+
+}
+
+// === Toast models ===
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind { Info, Error }
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub id: Uuid,
+    pub message: String,
+    pub kind: ToastKind,
+    pub created: Instant,
 }

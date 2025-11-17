@@ -1,10 +1,16 @@
 // services/user_service.rs
-use crate::{error::{AppError, Result}, repositories::user_repo::UserRepo};
+use crate::{
+    error::{AppError, Result}, 
+    repositories::{user_repo::UserRepo, conversation_repo::ConversationRepo},
+    state::AppState,
+};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier, password_hash::{PasswordHash, SaltString}};
 use chrono::Duration;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde::Serialize;
+use serde_json::json;
 use uuid::Uuid;
+use tracing::{info, error};
 
 #[derive(Serialize)]
 struct Claims {
@@ -84,5 +90,63 @@ impl UserService {
         // 2) Pulisce message_sequences delle conversazioni che saranno eliminate (owner_id = user_id)
         // 3) Elimina l'utente (le FK con CASCADE faranno il resto)
         UserRepo::delete_user_cascade(pool, user_id).await
+    }
+
+    pub async fn notify_participants_of_deleted_user(
+        state: &AppState,
+        deleted_user_id: Uuid,
+    ) -> Result<()> {
+        
+        let conversations = ConversationRepo::by_user(&state.pool, deleted_user_id).await?;
+        
+        info!(
+            "Notifying participants about deletion of user {} in {} conversations",
+            deleted_user_id,
+            conversations.len()
+        );
+
+        for (conv_id, _kind, _title, _owner_id, _created_at, _last_read, _last_activity, _last_msg_seq) in conversations {
+            // Ottieni tutti i partecipanti della conversazione
+            match ConversationRepo::list_participant_ids(&state.pool, conv_id).await {
+                Ok(participant_ids) => {
+                    // Invia notifica a tutti i partecipanti ECCETTO l'utente eliminato
+                    for participant_id in participant_ids {
+                        if participant_id != deleted_user_id {
+                            // Ottieni il canale di notifica dell'utente
+                            let user_tx = state.get_or_create_user_notification_channel(participant_id).await;
+                            
+                            // Crea il messaggio di notifica
+                            let notification = json!({
+                                "type": "conversation_deleted",
+                                "conversation_id": conv_id.to_string(),
+                                "reason": "user_deleted",
+                                "deleted_user_id": deleted_user_id.to_string(),
+                            });
+
+                            // Invia la notifica
+                            if let Err(e) = user_tx.send(notification) {
+                                error!(
+                                    "Failed to notify user {} about conversation {} deletion: {}",
+                                    participant_id, conv_id, e
+                                );
+                            } else {
+                                info!(
+                                    "Notified user {} about deletion of conversation {} (user {} deleted account)",
+                                    participant_id, conv_id, deleted_user_id
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to get participants for conversation {}: {}",
+                        conv_id, e
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }

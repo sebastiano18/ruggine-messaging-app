@@ -170,14 +170,28 @@ impl MessageProcessor {
                 json_obj
             }
 
-            Outgoing::InviteUser { cid, username } => {
-                if username.trim().is_empty() {
-                    return Err("Empty username".into());
+            Outgoing::InviteUser { cid, usernames, .. } => {
+                if usernames.is_empty() {
+                    return Err("Empty usernames list".into());
                 }
+
+                // Filtra e pulisci gli username
+                let cleaned: Vec<String> = usernames
+                    .iter()
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect();
+
+                if cleaned.is_empty() {
+                    return Err("No valid usernames after filtering".into());
+                }
+
+                info!("Formatting invite for {} users", cleaned.len());
+
                 serde_json::json!({
                     "type": "invite_user",
                     "cid": cid,
-                    "username": username.trim()
+                    "usernames": cleaned
                 })
             }
 

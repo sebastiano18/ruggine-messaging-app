@@ -628,9 +628,17 @@ pub fn spawn_reader(
                                 }
                                 Err(e) => {
                                     error!("Failed to invite user: {}", e);
+                                    // Traduci messaggio per l'utente
+                                    let user_message = if e.to_string().contains("Nessun utente è stato aggiunto") {
+                                        "Nessun utente è stato aggiunto al gruppo.".to_string()
+                                    } else if e.to_string().contains("solo per i gruppi") {
+                                        "Puoi invitare utenti solo nei gruppi.".to_string()
+                                    } else {
+                                        e.to_string()
+                                    };
                                     let error_response = json!({
                                         "type": "error",
-                                        "message": e.to_string(),
+                                        "message": user_message,
                                         "error_code": "INVITE_USER_FAILED"
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
@@ -650,9 +658,16 @@ pub fn spawn_reader(
                                 }
                                 Err(e) => {
                                     error!("Failed to create group with participants: {}", e);
+                                    let user_message = if e.to_string().contains("username richiesti") {
+                                        "Devi inserire username e password.".to_string()
+                                    } else if e.to_string().contains("già partecipante") {
+                                        "Sei già in questa conversazione.".to_string()
+                                    } else {
+                                        e.to_string()
+                                    };
                                     let error_response = json!({
                                         "type": "error",
-                                        "message": e.to_string(),
+                                        "message": user_message,
                                         "error_code": "CREATE_GROUP_FAILED"
                                     });
                                     if let Ok(txt) = serde_json::to_string(&error_response) {
@@ -705,10 +720,10 @@ pub fn spawn_reader(
 
                             if let Err(e) = leave_res {
                                 let (code, message) = match &e {
-                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "User not authorized".to_string()),
-                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversation not found".to_string()),
+                                    crate::error::AppError::Unauthorized => ("FORBIDDEN", "Non sei autorizzato a eseguire questa azione".to_string()),
+                                    crate::error::AppError::NotFound => ("NOT_FOUND", "Conversazione non trovata".to_string()),
                                     crate::error::AppError::BadRequest(msg) => ("BAD_REQUEST", msg.clone()),
-                                    _ => ("LEAVE_FAILED", format!("Leave failed: {}", e)),
+                                    _ => ("LEAVE_FAILED", "Impossibile uscire dal gruppo. Riprova.".to_string()),
                                 };
                                 let err = json!({
                                     "type":"error",
@@ -740,9 +755,77 @@ pub fn spawn_reader(
                                         &state,
                                         conversation_id,
                                         user_id,
-                                        username,
-                                        remaining_participants,
+                                        username.clone(),
+                                        remaining_participants.clone(),
                                     ).await;
+
+                                    // Invia messaggio di sistema come evento sequenziato (NON salvato nel DB messages)
+                                    let system_message_content = format!("{} ha lasciato il gruppo", username);
+                                    let timestamp = chrono::Utc::now().timestamp();
+                                    let system_msg = json!({
+                                        "type": "message",
+                                        "id": uuid::Uuid::new_v4(),
+                                        "conversation_id": conversation_id,
+                                        "author_id": uuid::Uuid::nil(),
+                                        "author_username": "system",
+                                        "content": system_message_content,
+                                        "created_at": timestamp,
+                                        "sequence_num": null
+                                    });
+
+                                    // Invia come evento new_message ai partecipanti rimanenti
+                                    for participant_id in &remaining_participants {
+                                        if let Err(e) = state.send_sequenced_event_to_user(
+                                            *participant_id,
+                                            "new_message",
+                                            system_msg.clone(),
+                                            Some(conversation_id),
+                                        ).await {
+                                            warn!("Failed to send system message to {}: {}", participant_id, e);
+                                        }
+                                    }
+
+                                    // Invia anche member_list_updated con la lista aggiornata
+                                    let members_data = match crate::services::conversation_service::ConversationService::get_members(
+                                        &state.pool, 
+                                        conversation_id, 
+                                        remaining_participants[0] // Usa il primo partecipante rimanente
+                                    ).await {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            warn!("Failed to get updated members list after user left: {}", e);
+                                            Vec::new()
+                                        }
+                                    };
+
+                                    let members: Vec<serde_json::Value> = members_data
+                                        .into_iter()
+                                        .map(|(user_id, username, role, joined_at)| json!({
+                                            "user_id": user_id,
+                                            "username": username,
+                                            "role": role,
+                                            "joined_at": joined_at
+                                        }))
+                                        .collect();
+
+                                    let payload = json!({
+                                        "conversation_id": conversation_id,
+                                        "members": members,
+                                        "timestamp": chrono::Utc::now().timestamp()
+                                    });
+
+                                    for participant_id in &remaining_participants {
+                                        if let Err(e) = state.send_sequenced_event_to_user(
+                                            *participant_id,
+                                            "member_list_updated",
+                                            payload.clone(),
+                                            Some(conversation_id),
+                                        ).await {
+                                            tracing::error!("Failed to send member_list_updated event to {}: {}", participant_id, e);
+                                        }
+                                    }
+                                    
+                                    info!("Sent member_list_updated event to {} participants", remaining_participants.len());
                                 } else {
                                     info!("No remaining participants to notify (group now empty)");
                                 }

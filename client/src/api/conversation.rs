@@ -40,6 +40,8 @@ pub struct JoinByTokenReq<'a> {
 pub struct ConversationWithMessages {
     pub conversation: ConversationDto,
     pub messages: Vec<MessageDto>,
+    #[serde(default)]
+    pub members: Vec<crate::models::ParticipantInfo>,
 }
 
 // Get conversation with its messages in a single API call
