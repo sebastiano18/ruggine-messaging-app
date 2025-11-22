@@ -139,6 +139,10 @@ impl EventDispatcher {
                 ConversationHandler::handle_opened(state, cid);
             }
 
+            UiEvent::Closed(cid) => {
+                ConversationHandler::handle_closed(state, cid);
+            }
+
             UiEvent::ConversationDeleted(cid) => {
                 ConversationHandler::handle_conversation_deleted(state, cid);
             }

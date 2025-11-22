@@ -217,6 +217,7 @@ pub enum UiEvent {
 
     // Conversation events
     Opened(Uuid),
+    Closed(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
     ConversationDeleted(Uuid),

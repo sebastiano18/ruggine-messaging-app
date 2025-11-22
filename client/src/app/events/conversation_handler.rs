@@ -93,10 +93,7 @@ impl ConversationHandler {
             state,
             format!("Sincronizzate {} conversazioni", conversations.len()),
         );
-
-        if state.cid.is_some() && state.messages.is_empty() {
-            state.request_conversations_refresh = true;
-        }
+        
     }
 
     pub fn handle_last_message_update(
@@ -420,8 +417,7 @@ impl ConversationHandler {
         if state.is_dm_stub(cid) {
             state.remove_dm_stub(cid);
         }
-
-        state.request_conversations_refresh = true;
+        
     }
 
     pub fn handle_conversation_created(state: &mut AppState, cid: Uuid) {
@@ -429,7 +425,6 @@ impl ConversationHandler {
         state.cid = Some(cid);
         state.page = Page::Chat;
         state.messages.clear();
-        state.request_conversations_refresh = true;
     }
 
     pub fn handle_dm_stub_created(state: &mut AppState, stub_id: Uuid, target_username: String) {
@@ -638,6 +633,11 @@ impl ConversationHandler {
 
     pub fn handle_conversation_list_updated(state: &mut AppState) {
         debug!("Conversation list update requested");
-        state.request_conversations_refresh = true;
+        //state.request_conversations_refresh = true;
+    }
+
+    pub fn handle_closed(state: &mut AppState, _cid: Uuid) {
+        state.show_members_popup = false;
+        state.show_invite_popup = false;
     }
 }

@@ -36,9 +36,9 @@ impl ConversationsSidebar {
 
         let token = state.token.clone().unwrap();
 
+        ui.add_space(8.0);
         // Header principale
         self.show_header(ui, state, &token);
-        ui.separator();
         ui.add_space(6.0);
 
         // Sezione ricerca
@@ -84,25 +84,16 @@ impl ConversationsSidebar {
             let text_color = ui.visuals().text_color();
 
             ui.label(
-                RichText::new(format!("{} Conversazioni", egui_remixicon::icons::CHAT_4_FILL))
+                RichText::new("Conversazioni".to_string())
                     .size(18.0)
                     .color(text_color)
                     .strong()
             );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let refresh_btn = egui::Button::new(RichText::new("🔄").size(14.0))
-                    .frame(false)
-                    .fill(egui::Color32::TRANSPARENT);
-
-                if ui.add(refresh_btn).on_hover_text("Aggiorna conversazioni").clicked() {
-                    self.refresh_conversations(state, token);
-                }
-
-                ui.add_space(4.0);
 
                 let create_btn = egui::Button::new(
-                    RichText::new(format!("{}", egui_remixicon::icons::CHAT_NEW_FILL)).size(16.0)
+                    RichText::new(format!("{}", egui_remixicon::icons::CHAT_NEW_LINE)).size(16.0)
                 )
                     .frame(false)
                     .fill(egui::Color32::TRANSPARENT);
@@ -181,7 +172,6 @@ impl ConversationsSidebar {
         let is_selected = state.cid.map_or(false, |cid| cid == conv.id);
         let response = ui.allocate_response(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
         let pointer_over_row = ui.rect_contains_pointer(response.rect);
-        let mut delete_clicked = false;
 
         let orange = egui::Color32::from_rgb(200, 100, 40);
         let orange_hover = egui::Color32::from_rgb(240, 140, 80);
@@ -223,43 +213,6 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ((conv.kind == "group" && (is_owner || is_participant)) || conv.kind != "group") && pointer_over_row {
-                        let delete_color = if ui.visuals().dark_mode {
-                            egui::Color32::from_gray(180)
-                        } else {
-                            egui::Color32::from_gray(100)
-                        };
-
-                        let delete_button = egui::Button::new(RichText::new("×").size(20.0).color(delete_color))
-                            .frame(false)
-                            .fill(egui::Color32::TRANSPARENT);
-
-                        let del_resp = ui.add(delete_button).on_hover_text(
-                            if conv.kind == "group" {
-                                if is_owner { "Elimina gruppo" } else { "Esci dal gruppo" }
-                            } else {
-                                "Elimina conversazione"
-                            }
-                        );
-
-                        if del_resp.hovered() {
-                            ui.painter().text(
-                                del_resp.rect.center(),
-                                Align2::CENTER_CENTER,
-                                "×",
-                                egui::FontId::proportional(20.0),
-                                egui::Color32::from_rgb(220, 80, 60),
-                            );
-                        }
-
-                        if del_resp.clicked() {
-                            delete_clicked = true;
-                            state.request_delete_confirmation(conv);
-                        }
-
-                        ui.add_space(6.0);
-                    }
-
                     if let Some(date_text) = self.get_last_message_date(state, conv) {
                         ui.add(egui::Label::new(RichText::new(date_text).size(10.0).color(preview_color)).selectable(false));
                         ui.add_space(4.0);
@@ -278,7 +231,32 @@ impl ConversationsSidebar {
             });
         });
 
-        if !delete_clicked && response.clicked() {
+        // Menu contestuale al click destro sulla conversazione
+        if ((conv.kind == "group" && (is_owner || is_participant)) || conv.kind != "group") {
+            response.context_menu(|ui| {
+                let label = if conv.kind == "group" {
+                    if is_owner {
+                        format!("{} Elimina gruppo", egui_remixicon::icons::DELETE_BIN_LINE)
+                    } else {
+                        format!("{} Esci dal gruppo", egui_remixicon::icons::LOGOUT_BOX_LINE)
+                    }
+                } else {
+                    format!("{} Elimina conversazione", egui_remixicon::icons::DELETE_BIN_LINE)
+                };
+
+                if ui.button(RichText::new(label).size(14.0)).clicked() {
+                    state.request_delete_confirmation(conv);
+                    ui.close_menu();
+                }
+            });
+        }
+
+        if response.clicked() {
+            if let Some(current_cid) = state.cid {
+                if current_cid != conv.id {
+                    let _ = state.ui_tx.send(UiEvent::Closed(current_cid));
+                }
+            }
             let _ = state.ui_tx.send(UiEvent::Opened(conv.id));
         }
     }
