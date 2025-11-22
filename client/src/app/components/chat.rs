@@ -36,6 +36,11 @@ pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     if s.pending_message_deletion.is_some() {
         show_delete_message_confirmation(ui, s);
     }
+
+    // Mostra il popup di conferma espulsione membro se necessario
+    if s.pending_member_kick.is_some() {
+        show_kick_member_confirmation(ui, s);
+    }
 }
 
 fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
@@ -398,17 +403,7 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
             // 1. Aggiungiamo il padding a destra dello schermo (10px).
             ui.add_space(10.0);
 
-            // 2. Disegniamo il pulsante di eliminazione.
-            let delete_button = egui::Button::new(RichText::new("🗑").size(16.0)).frame(false);
-            if ui.add(delete_button).on_hover_text("Elimina messaggio").clicked() {
-                // Apri il popup di conferma invece di eliminare direttamente
-                s.pending_message_deletion = Some(message.id);
-            }
-
-            // 3. Aggiungiamo un piccolo spazio tra il cestino e la bolla.
-            ui.add_space(5.0);
-
-            // 4. Calcoliamo la larghezza della bolla e la disegniamo.
+            // 2. Calcoliamo la larghezza della bolla e la disegniamo.
             // Questo calcolo ora avviene in un contesto di layout stabile.
             let row_w = ui.available_width();
             let max_bubble_width = (row_w * 0.70).clamp(220.0, 500.0);
@@ -449,7 +444,7 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                     RichText::new(format!("{} Elimina", egui_remixicon::icons::DELETE_BIN_LINE))
                         .size(14.0)
                 ).clicked() {
-                    s.delete_message(message.id);
+                    s.pending_message_deletion = Some(message.id);
                     ui.close_menu();
                 }
             });
@@ -608,49 +603,64 @@ fn show_delete_message_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
     let mut should_delete = false;
     let mut should_cancel = false;
 
-    egui::Window::new("Conferma eliminazione")
+    egui::Window::new("")
+        .id(egui::Id::new("delete_message_confirmation"))
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
+        .fixed_size([400.0, 180.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            ui.set_width(320.0);
-
-            ui.add_space(10.0);
+            // Titolo centrato
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Vuoi confermare l'eliminazione del messaggio?").size(14.0));
-            });
-            ui.add_space(20.0);
-
-            ui.horizontal(|ui| {
-                // Calcola la larghezza disponibile e centra i pulsanti
-                let button_width = 80.0;
-                let spacing = 20.0;
-                let total_width = button_width * 2.0 + spacing;
-                let available_width = ui.available_width();
-                let offset = (available_width - total_width) / 2.0;
-                
-                ui.add_space(offset);
-
-                if ui.add_sized([button_width, 30.0], 
-                    egui::Button::new(RichText::new("❌ NO").size(16.0).color(egui::Color32::WHITE)))
-                    .on_hover_text("Annulla")
-                    .clicked() 
-                {
-                    should_cancel = true;
-                }
-
-                ui.add_space(spacing);
-
-                if ui.add_sized([button_width, 30.0],
-                    egui::Button::new(RichText::new("✔️ SI").size(16.0).color(egui::Color32::WHITE)))
-                    .on_hover_text("Conferma eliminazione")
-                    .clicked() 
-                {
-                    should_delete = true;
-                }
+                ui.add_space(20.0);
+                ui.label(
+                    RichText::new(format!("{} Conferma eliminazione", egui_remixicon::icons::DELETE_BIN_FILL))
+                        .size(22.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Vuoi confermare l'eliminazione del messaggio?")
+                        .size(13.0)
+                        .color(ui.visuals().weak_text_color())
+                );
             });
 
-            ui.add_space(10.0);
+            ui.add_space(30.0);
+
+            // Bottoni ai lati
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(20.0, 0.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let cancel_button = egui::Button::new(
+                            RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                                .size(14.0)
+                        )
+                            .fill(ui.visuals().widgets.inactive.bg_fill)
+                            .min_size(egui::vec2(140.0, 36.0));
+
+                        if ui.add(cancel_button).clicked() {
+                            should_cancel = true;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_button = egui::Button::new(
+                                RichText::new(format!("{} Elimina", egui_remixicon::icons::DELETE_BIN_LINE))
+                                    .size(14.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                                .fill(egui::Color32::from_rgb(200, 100, 40))
+                                .min_size(egui::vec2(140.0, 36.0));
+
+                            if ui.add(delete_button).clicked() {
+                                should_delete = true;
+                            }
+                        });
+                    });
+                });
         });
 
     if should_delete {
@@ -662,9 +672,85 @@ fn show_delete_message_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
     }
 }
 
+fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
+    let mut should_kick = false;
+    let mut should_cancel = false;
+
+    let username = s.pending_member_kick.as_ref().map(|(_, _, name)| name.clone());
+
+    egui::Window::new("")
+        .id(egui::Id::new("kick_member_confirmation"))
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([400.0, 200.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            // Titolo centrato
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    RichText::new(format!("{} Conferma espulsione", egui_remixicon::icons::USER_UNFOLLOW_LINE))
+                        .size(22.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+                ui.add_space(8.0);
+                if let Some(ref name) = username {
+                    ui.label(
+                        RichText::new(format!("Vuoi espellere {} dal gruppo?", name))
+                            .size(13.0)
+                            .color(ui.visuals().weak_text_color())
+                    );
+                }
+            });
+
+            ui.add_space(30.0);
+
+            // Bottoni ai lati
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(20.0, 0.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let cancel_button = egui::Button::new(
+                            RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                                .size(14.0)
+                        )
+                            .fill(ui.visuals().widgets.inactive.bg_fill)
+                            .min_size(egui::vec2(140.0, 36.0));
+
+                        if ui.add(cancel_button).clicked() {
+                            should_cancel = true;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let kick_button = egui::Button::new(
+                                RichText::new(format!("{} Espelli", egui_remixicon::icons::USER_UNFOLLOW_LINE))
+                                    .size(14.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                                .fill(egui::Color32::from_rgb(180, 50, 50))
+                                .min_size(egui::vec2(140.0, 36.0));
+
+                            if ui.add(kick_button).clicked() {
+                                should_kick = true;
+                            }
+                        });
+                    });
+                });
+        });
+
+    if should_kick {
+        if let Some((cid, user_id, _)) = s.pending_member_kick.take() {
+            s.kick_member(cid, user_id);
+        }
+    } else if should_cancel {
+        s.pending_member_kick = None;
+    }
+}
+
 fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
-    let mut member_to_kick: Option<Uuid> = None;
 
     // Se la lista è vuota per questa conversazione e non stiamo già caricando, richiedi i membri
     if !s.members_list.contains_key(&cid) && !s.is_loading_members {
@@ -673,88 +759,206 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         }
     }
 
-    egui::Window::new("Membri del gruppo")
+    egui::Window::new("")
+        .id(egui::Id::new("members_popup"))
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
+        .fixed_size([450.0, 550.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            ui.set_width(400.0);
-            ui.set_height(400.0);
+            // Bottone X in alto a destra
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                let close_button = egui::Button::new(
+                    RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                        .size(18.0)
+                )
+                    .frame(false);
+
+                if ui.add(close_button).on_hover_text("Chiudi").clicked() {
+                    close_popup = true;
+                }
+            });
+
+            // Titolo centrato con nome del gruppo
+            ui.vertical_centered(|ui| {
+                ui.add_space(5.0);
+
+                let group_title = s.conversations
+                    .as_ref()
+                    .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                    .map(|conv| conv.title.as_str())
+                    .unwrap_or("Gruppo");
+
+                ui.label(
+                    RichText::new(format!("{} Membri di {}", egui_remixicon::icons::TEAM_FILL, group_title))
+                        .size(24.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+            });
+
+            ui.add_space(20.0);
+            ui.add_space(15.0);
 
             if s.is_loading_members {
-                ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(150.0);
                     ui.spinner();
+                    ui.add_space(8.0);
                     ui.label("Caricamento membri...");
                 });
             } else {
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
+                // Determina se l'utente è owner o partecipante
+                let owner_id = s.conversations
+                    .as_ref()
+                    .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                    .map(|conv| conv.owner_id);
+
+                let current_user_id = s.user_id;
+                let is_owner = match (owner_id, current_user_id) {
+                    (Some(oid), Some(uid)) => oid == uid,
+                    _ => false,
+                };
+
+                // Verifica se l'utente è un partecipante (non owner)
+                let is_participant = if let Some(uid) = current_user_id {
+                    s.members_list.get(&cid)
+                        .map(|members| {
+                            members.iter().any(|m| {
+                                m.user_id == uid && owner_id.map_or(true, |oid| oid != m.user_id)
+                            })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                egui::Frame::none()
+                    .inner_margin(egui::Margin::symmetric(20.0, 0.0))
                     .show(ui, |ui| {
-                        // Ottieni la lista dei membri per questa conversazione specifica
-                        let members = s.members_list.get(&cid);
+                        egui::ScrollArea::vertical()
+                            .max_height(340.0)
+                            .show(ui, |ui| {
+                                let members = s.members_list.get(&cid);
 
-                        if members.is_none() || members.unwrap().is_empty() {
-                            ui.label("Nessun membro trovato.");
-                        } else {
-                            // Trova l'owner del gruppo e l'utente corrente
-                            let owner_id = s.conversations
-                                .as_ref()
-                                .and_then(|convs| convs.iter().find(|c| c.id == cid))
-                                .map(|conv| conv.owner_id);
+                                if members.is_none() || members.unwrap().is_empty() {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(140.0);
+                                        ui.label(
+                                            RichText::new("Nessun membro trovato")
+                                                .italics()
+                                                .color(ui.visuals().weak_text_color())
+                                        );
+                                    });
+                                } else {
+                                    for member in members.unwrap() {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(egui_remixicon::icons::USER_LINE)
+                                                    .size(16.0)
+                                                    .color(egui::Color32::from_rgb(200, 100, 40))
+                                            );
+                                            ui.add_space(8.0);
+                                            ui.label(RichText::new(&member.username).size(14.0));
 
-                            let current_user_id = s.user_id;
-                            let is_owner = Some(current_user_id) == owner_id.map(Some);
+                                            if owner_id.map_or(false, |oid| oid == member.user_id) {
+                                                ui.label(
+                                                    RichText::new(egui_remixicon::icons::VIP_CROWN_FILL)
+                                                        .size(16.0)
+                                                        .color(egui::Color32::from_rgb(255, 215, 0))
+                                                );
+                                            }
 
-                            for member in members.unwrap() {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&member.username).size(14.0));
+                                            ui.label(
+                                                RichText::new(format!("({})", member.role))
+                                                    .size(12.0)
+                                                    .color(ui.visuals().weak_text_color())
+                                            );
 
-                                    // Se questo membro è l'owner, mostra la corona
-                                    if Some(member.user_id) == owner_id {
-                                        ui.label(RichText::new("👑").size(14.0));
-                                    }
+                                            if is_owner && owner_id.map_or(true, |oid| oid != member.user_id) {
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    let kick_button = egui::Button::new(
+                                                        RichText::new(format!("{} Espelli", egui_remixicon::icons::USER_UNFOLLOW_LINE))
+                                                            .size(12.0)
+                                                            .color(egui::Color32::WHITE)
+                                                    )
+                                                        .fill(egui::Color32::from_rgb(180, 50, 50))
+                                                        .min_size(egui::vec2(80.0, 24.0));
 
-                                    // Mostra il ruolo
-                                    ui.label(
-                                        RichText::new(format!("({})", member.role))
-                                            .size(12.0)
-                                            .color(egui::Color32::GRAY)
-                                    );
-
-                                    // Bottone espelli: solo se l'utente corrente è owner,
-                                    // il membro non è l'owner stesso
-                                    if is_owner && Some(member.user_id) != owner_id {
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.button(RichText::new("🗑️ Espelli").color(egui::Color32::RED))
-                                                .on_hover_text("Rimuovi questo membro dal gruppo")
-                                                .clicked()
-                                            {
-                                                member_to_kick = Some(member.user_id);
+                                                    if ui.add(kick_button)
+                                                        .on_hover_text("Rimuovi questo membro dal gruppo")
+                                                        .clicked()
+                                                    {
+                                                        s.pending_member_kick = Some((cid, member.user_id, member.username.clone()));
+                                                    }
+                                                });
                                             }
                                         });
+                                        ui.add_space(8.0);
                                     }
-                                });
-                                ui.add_space(4.0);
+                                }
+                            });
+                    });
+
+                ui.add_space(20.0);
+                ui.add_space(15.0);
+
+                // Bottone azione in base al ruolo - centrato
+                ui.vertical_centered(|ui| {
+                    if is_owner {
+                        // Bottone elimina gruppo per owner
+                        let delete_btn = egui::Button::new(
+                            RichText::new(format!("{} Elimina Gruppo", egui_remixicon::icons::DELETE_BIN_FILL))
+                                .size(13.0)
+                                .color(egui::Color32::WHITE)
+                        )
+                            .fill(egui::Color32::from_rgb(180, 50, 50))
+                            .min_size(egui::vec2(200.0, 36.0));
+
+                        if ui.add(delete_btn)
+                            .on_hover_text("Elimina definitivamente questo gruppo")
+                            .clicked()
+                        {
+                            // Clona la conversazione prima per evitare problemi di borrow
+                            if let Some(conv) = s.conversations.as_ref()
+                                .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                                .cloned()
+                            {
+                                s.request_delete_confirmation(&conv);
                             }
                         }
-                    });
+                    } else if is_participant {
+                        // Bottone esci dal gruppo per partecipanti
+                        let leave_btn = egui::Button::new(
+                            RichText::new(format!("{} Esci dal Gruppo", egui_remixicon::icons::LOGOUT_BOX_R_LINE))
+                                .size(13.0)
+                                .color(egui::Color32::WHITE)
+                        )
+                            .fill(egui::Color32::from_rgb(200, 100, 40))
+                            .min_size(egui::vec2(200.0, 36.0));
+
+                        if ui.add(leave_btn)
+                            .on_hover_text("Abbandona questo gruppo")
+                            .clicked()
+                        {
+                            // Clona la conversazione prima per evitare problemi di borrow
+                            if let Some(conv) = s.conversations.as_ref()
+                                .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                                .cloned()
+                            {
+                                s.request_delete_confirmation(&conv);
+                            }
+                        }
+                    }
+                });
             }
 
-            ui.add_space(12.0);
-
-            // Pulsante Chiudi
-            if ui.button("Chiudi").clicked() {
-                close_popup = true;
-            }
+            ui.add_space(10.0);
         });
 
     if close_popup {
         s.show_members_popup = false;
-    }
-
-    // Se c'è un membro da espellere, chiamiamo la funzione
-    if let Some(user_id) = member_to_kick {
-        s.kick_member(cid, user_id);
     }
 }
 // === Funzioni per i separatori di data ===

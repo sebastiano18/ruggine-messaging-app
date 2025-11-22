@@ -25,9 +25,21 @@ pub fn show_action_selection_popup(
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
-            // Titolo centrato
+            // Bottone X in alto a destra
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                let close_button = egui::Button::new(
+                    RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                        .size(18.0)
+                )
+                    .frame(false);
+
+                if ui.add(close_button).on_hover_text("Chiudi").clicked() {
+                    *show_action_popup = false;
+                }
+            });
+
             ui.vertical_centered(|ui| {
-                ui.add_space(20.0);
+                ui.add_space(5.0);
                 ui.label(
                     RichText::new(format!("{} Nuova Conversazione", egui_remixicon::icons::CHAT_NEW_FILL))
                         .size(24.0)
@@ -44,13 +56,10 @@ pub fn show_action_selection_popup(
 
             ui.add_space(30.0);
 
-            // Container per i due bottoni
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(40.0, 0.0))
                 .show(ui, |ui| {
-                    // Card Crea Gruppo
                     let group_frame = egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.08))
                         .stroke(Stroke::new(1.0, egui::Color32::from_rgb(200, 100, 40).linear_multiply(0.4)))
                         .rounding(egui::Rounding::same(12.0))
                         .inner_margin(20.0);
@@ -100,9 +109,7 @@ pub fn show_action_selection_popup(
 
                     ui.add_space(16.0);
 
-                    // Card Messaggio Privato
                     let dm_frame = egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.08))
                         .stroke(Stroke::new(1.0, egui::Color32::from_rgb(200, 100, 40).linear_multiply(0.4)))
                         .rounding(egui::Rounding::same(12.0))
                         .inner_margin(20.0);
@@ -151,7 +158,6 @@ pub fn show_action_selection_popup(
                     }
                 });
 
-            // Padding in basso
             ui.add_space(20.0);
         });
 
@@ -182,11 +188,10 @@ pub fn show_create_dm_popup(
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
-            // Titolo centrato
             ui.vertical_centered(|ui| {
                 ui.add_space(20.0);
                 ui.label(
-                    RichText::new(format!("{} Nuovo Messaggio Privato", egui_remixicon::icons::CHAT_1_FILL))
+                    RichText::new(format!("{} Nuova Conversazione Privata", egui_remixicon::icons::CHAT_1_FILL))
                         .size(24.0)
                         .strong()
                         .color(egui::Color32::from_rgb(200, 100, 40))
@@ -195,11 +200,9 @@ pub fn show_create_dm_popup(
 
             ui.add_space(30.0);
 
-            // Contenuto
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(30.0, 0.0))
                 .show(ui, |ui| {
-                    // Campo username
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
                         ui.label(RichText::new(egui_remixicon::icons::USER_FILL).size(20.0).color(egui::Color32::from_rgb(200, 100, 40)));
@@ -215,27 +218,18 @@ pub fn show_create_dm_popup(
                                 .hint_text("Inserisci username...")
                                 .desired_width(available_width);
 
-                            let response = ui.add(username_field);
-
-                            if dm_username.trim().is_empty() && response.changed() {
-                                ui.painter().rect_stroke(
-                                    response.rect,
-                                    2.0,
-                                    Stroke::new(1.5, ui.visuals().error_fg_color)
-                                );
-                            }
+                            ui.add(username_field);
                         });
                     });
 
                     ui.add_space(30.0);
 
-                    // Bottoni
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
 
                         // Bottone Annulla
                         let cancel_btn = egui::Button::new(
-                            RichText::new("Annulla")
+                            RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
                                 .size(14.0)
                         )
                             .min_size(egui::vec2(120.0, 36.0))
@@ -251,7 +245,7 @@ pub fn show_create_dm_popup(
                         // Bottone Crea
                         let can_create = !dm_username.trim().is_empty();
                         let create_btn = egui::Button::new(
-                            RichText::new(format!("{} Invia", egui_remixicon::icons::SEND_PLANE_FILL))
+                            RichText::new(format!("{} Crea", egui_remixicon::icons::CHAT_NEW_LINE))
                                 .size(14.0)
                                 .color(if can_create {
                                     egui::Color32::WHITE
@@ -268,18 +262,28 @@ pub fn show_create_dm_popup(
                             .rounding(egui::Rounding::same(8.0));
 
                         if ui.add_enabled(can_create, create_btn).clicked() {
-                            // Crea solo stub locale - il server creerà la conversazione al primo messaggio
                             let username = dm_username.trim().to_string();
 
-                            // Genera UUID per lo stub locale
-                            let stub_id = uuid::Uuid::new_v4();
+                            // Controlla se esiste già una conversazione DM con questo utente
+                            let existing_dm = state.conversations.as_ref().and_then(|convs| {
+                                convs.iter().find(|conv| {
+                                    conv.kind == "dm" && conv.title == username
+                                })
+                            });
 
-                            // Invia eventi per creare stub e aprire la chat
-                            let _ = state.ui_tx.send(UiEvent::DmStubCreated(stub_id, username));
-                            let _ = state.ui_tx.send(UiEvent::Opened(stub_id));
-
-                            dm_username.clear();
-                            *show_create_dm_popup = false;
+                            if let Some(existing_conv) = existing_dm {
+                                // Apri la conversazione esistente
+                                let _ = state.ui_tx.send(UiEvent::Opened(existing_conv.id));
+                                dm_username.clear();
+                                *show_create_dm_popup = false;
+                            } else {
+                                // Crea nuovo stub locale
+                                let stub_id = uuid::Uuid::new_v4();
+                                let _ = state.ui_tx.send(UiEvent::DmStubCreated(stub_id, username));
+                                let _ = state.ui_tx.send(UiEvent::Opened(stub_id));
+                                dm_username.clear();
+                                *show_create_dm_popup = false;
+                            }
                         }
                     });
                 });
@@ -298,89 +302,117 @@ pub fn show_delete_confirmation_popup(ctx: &egui::Context, state: &mut AppState)
     };
 
     let conversation = pending.conversation;
-    let mut open = true;
     let mut confirm = false;
     let mut cancel = false;
 
     let is_stub = state.is_dm_stub(conversation.id);
     let is_owner = state.user_id.map_or(false, |uid| uid == conversation.owner_id);
 
-    let (title, main_message, detail_message, confirm_label) = if is_stub {
+    let (icon, title, main_message, detail_message, confirm_label) = if is_stub {
         (
-            "Conferma eliminazione",
-            format!("Sei sicuro di voler eliminare la chat privata \"{}\"?", conversation.title),
+            egui_remixicon::icons::DELETE_BIN_FILL,
+            "Elimina chat locale",
+            format!("Eliminare la chat privata \"{}\"?", conversation.title),
             "Si tratta di uno stub locale: verrà semplicemente rimosso dalla tua lista.",
             "Elimina"
         )
     } else if conversation.kind == "group" {
         if is_owner {
             (
-                "Conferma eliminazione gruppo",
-                format!("Sei sicuro di voler eliminare il gruppo \"{}\"?", conversation.title),
+                egui_remixicon::icons::DELETE_BIN_FILL,
+                "Elimina gruppo",
+                format!("Eliminare il gruppo \"{}\"?", conversation.title),
                 "Attenzione: eliminando il gruppo, questo verrà rimosso per TUTTI i partecipanti. L'azione è irreversibile.",
                 "Elimina per tutti"
             )
         } else {
             (
-                "Conferma uscita dal gruppo",
-                format!("Sei sicuro di voler uscire dal gruppo \"{}\"?", conversation.title),
+                egui_remixicon::icons::LOGOUT_BOX_LINE,
+                "Esci dal gruppo",
+                format!("Uscire dal gruppo \"{}\"?", conversation.title),
                 "Uscirai dal gruppo e non potrai più vedere i messaggi. Potrai rientrare solo se verrai invitato nuovamente.",
                 "Esci dal gruppo"
             )
         }
     } else {
         (
-            "Conferma eliminazione",
-            format!("Sei sicuro di voler eliminare la chat privata \"{}\"?", conversation.title),
+            egui_remixicon::icons::DELETE_BIN_FILL,
+            "Elimina conversazione",
+            format!("Eliminare la chat privata \"{}\"?", conversation.title),
             "L'eliminazione rimuoverà definitivamente la conversazione. L'azione è irreversibile.",
             "Elimina"
         )
     };
 
-    egui::Window::new(title)
+    egui::Window::new("")
         .id(egui::Id::new("delete_confirmation_popup"))
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-        .open(&mut open)
+        .fixed_size([450.0, 240.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.set_width(400.0);
-            ui.vertical(|ui| {
-                ui.add_space(10.0);
-                ui.label(RichText::new(main_message).strong());
+            // Titolo centrato
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    RichText::new(format!("{} {}", icon, title))
+                        .size(22.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
                 ui.add_space(8.0);
+                ui.label(
+                    RichText::new(main_message)
+                        .size(14.0)
+                        .strong()
+                );
+                ui.add_space(6.0);
                 ui.label(
                     RichText::new(detail_message)
                         .size(12.0)
-                        .color(egui::Color32::from_rgb(210, 200, 200)),
+                        .color(ui.visuals().weak_text_color())
                 );
-                ui.add_space(20.0);
-
-                ui.horizontal(|ui| {
-                    ui.add_space(50.0);
-                    if ui.button("Annulla").clicked() {
-                        cancel = true;
-                    }
-
-                    let confirm_button = egui::Button::new(
-                        RichText::new(confirm_label).color(egui::Color32::WHITE),
-                    )
-                        .fill(egui::Color32::from_rgb(200, 100, 40));
-
-                    ui.add_space(80.0);
-
-                    if ui.add(confirm_button).clicked() {
-                        confirm = true;
-                    }
-                });
-
-                ui.add_space(10.0);
             });
+
+            ui.add_space(30.0);
+
+            // Bottoni ai lati
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(20.0, 0.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let cancel_button = egui::Button::new(
+                            RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                                .size(14.0)
+                        )
+                            .fill(ui.visuals().widgets.inactive.bg_fill)
+                            .min_size(egui::vec2(140.0, 36.0));
+
+                        if ui.add(cancel_button).clicked() {
+                            cancel = true;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let confirm_button = egui::Button::new(
+                                RichText::new(format!("{} {}", icon, confirm_label))
+                                    .size(14.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                                .fill(egui::Color32::from_rgb(200, 100, 40))
+                                .min_size(egui::vec2(160.0, 36.0));
+
+                            if ui.add(confirm_button).clicked() {
+                                confirm = true;
+                            }
+                        });
+                    });
+                });
         });
 
     if confirm {
         state.execute_pending_deletion();
-    } else if cancel || !open {
+    } else if cancel {
         state.cancel_delete_confirmation();
     }
 }
@@ -735,7 +767,7 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let create_button = egui::Button::new(
-                            RichText::new(format!("{} Crea Gruppo", egui_remixicon::icons::CHECK_LINE))
+                            RichText::new(format!("{} Crea Gruppo", egui_remixicon::icons::CHAT_NEW_LINE))
                                 .size(14.0)
                         )
                             .fill(if can_create {

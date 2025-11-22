@@ -185,6 +185,9 @@ pub struct AppState {
 
     // Message deletion confirmation
     pub pending_message_deletion: Option<Uuid>,
+
+    // Member kick confirmation - (conversation_id, user_id, username)
+    pub pending_member_kick: Option<(Uuid, Uuid, String)>,
 }
 impl AppState {
     pub fn new() -> Self {
@@ -291,6 +294,9 @@ impl AppState {
 
             // Message deletion confirmation
             pending_message_deletion: None,
+
+            // Member kick confirmation
+            pending_member_kick: None,
         }
     }
 
@@ -356,7 +362,7 @@ impl AppState {
                 } else {
                     // Owner che elimina il gruppo o eliminazione di DM
                     self.send_via_websocket(Outgoing::DeleteConversation { cid });
-                    
+
                     if conversation.kind == "group" {
                         let _ = self
                             .ui_tx

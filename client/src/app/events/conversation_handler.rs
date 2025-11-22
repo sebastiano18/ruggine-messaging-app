@@ -12,6 +12,7 @@ impl ConversationHandler {
         state: &mut AppState,
         conversations: Vec<ConversationDto>,
         user_sequence: u64,
+        members_by_conversation: Option<std::collections::HashMap<Uuid, Vec<ParticipantInfo>>>,
     ) {
         info!(
             "Processing initial state: {} conversations, user_seq: {}",
@@ -25,6 +26,14 @@ impl ConversationHandler {
         state.conversations = Some(conversations.clone());
 
         state.conversation_unread_counts.clear();
+
+        // Carica i membri dall'initial state
+        if let Some(members_map) = members_by_conversation {
+            for (conv_id, members) in members_map {
+                info!("Loading {} members for conversation {} from initial state", members.len(), conv_id);
+                state.members_list.insert(conv_id, members);
+            }
+        }
 
         // Inizializza le sequenze per TUTTE le conversazioni
         // Usa la sequenza dell'ultimo messaggio, non last_read_sequence!
@@ -94,9 +103,6 @@ impl ConversationHandler {
             format!("Sincronizzate {} conversazioni", conversations.len()),
         );
 
-        if state.cid.is_some() && state.messages.is_empty() {
-            state.request_conversations_refresh = true;
-        }
     }
 
     pub fn handle_last_message_update(
@@ -104,6 +110,21 @@ impl ConversationHandler {
         conversation_id: Uuid,
         message: MessageDto,
     ) {
+        // Verifica che la conversazione esista ancora
+        let conversation_exists = state
+            .conversations
+            .as_ref()
+            .map(|convs| convs.iter().any(|c| c.id == conversation_id))
+            .unwrap_or(false);
+
+        if !conversation_exists {
+            debug!(
+                "Ignoring message for deleted conversation {}",
+                conversation_id
+            );
+            return;
+        }
+
         if let Some(ref mut conversations) = state.conversations {
             if let Some(conv) = conversations.iter_mut().find(|c| c.id == conversation_id) {
                 conv.last_activity = std::cmp::max(conv.last_activity, message.created_at);
@@ -362,27 +383,57 @@ impl ConversationHandler {
                 state.conversation_sequences.insert(cid, max_seq);
                 state.conversation_sequences_confirmed.insert(cid, max_seq);
 
-                if let Err(e) = state.ui_to_net_tx.try_send(Outgoing::MarkRead {
-                    conversation_id: cid,
-                    sequence_num: max_seq,
-                }) {
-                    warn!("Failed to send mark_read: {}", e);
-                } else {
-                    info!(
-                        "✅ Sent mark_read for conversation {} up to sequence {}",
-                        cid, max_seq
-                    );
+                // Verifica che la conversazione esista ancora prima di fare mark_read
+                let conversation_exists = state
+                    .conversations
+                    .as_ref()
+                    .map(|convs| convs.iter().any(|c| c.id == cid))
+                    .unwrap_or(false);
 
-                    if let Some(conversations) = &mut state.conversations {
-                        if let Some(conv) = conversations.iter_mut().find(|c| c.id == cid) {
-                            let old_last_read = conv.last_read_sequence;
-                            conv.last_read_sequence = max_seq as i64;
-                            debug!(
-                                "Updated local last_read_sequence from {} to {}",
-                                old_last_read, max_seq
+                if conversation_exists {
+                    // Ottieni last_read_sequence della conversazione
+                    let last_read_seq = state
+                        .conversations
+                        .as_ref()
+                        .and_then(|convs| convs.iter().find(|c| c.id == cid))
+                        .map(|conv| conv.last_read_sequence)
+                        .unwrap_or(0);
+
+                    // ✅ Invia mark_read SOLO se ci sono nuovi messaggi non letti
+                    if max_seq as i64 > last_read_seq {
+                        if let Err(e) = state.ui_to_net_tx.try_send(Outgoing::MarkRead {
+                            conversation_id: cid,
+                            sequence_num: max_seq,
+                        }) {
+                            warn!("Failed to send mark_read: {}", e);
+                        } else {
+                            info!(
+                                "✅ Sent mark_read for conversation {} up to sequence {} (was at {})",
+                                cid, max_seq, last_read_seq
                             );
+
+                            if let Some(conversations) = &mut state.conversations {
+                                if let Some(conv) = conversations.iter_mut().find(|c| c.id == cid) {
+                                    let old_last_read = conv.last_read_sequence;
+                                    conv.last_read_sequence = max_seq as i64;
+                                    debug!(
+                                        "Updated local last_read_sequence from {} to {}",
+                                        old_last_read, max_seq
+                                    );
+                                }
+                            }
                         }
+                    } else {
+                        debug!(
+                            "Skipping mark_read for conversation {} - already at sequence {} (max_seq: {})",
+                            cid, last_read_seq, max_seq
+                        );
                     }
+                } else {
+                    debug!(
+                        "Skipping mark_read for conversation {} - conversation no longer exists",
+                        cid
+                    );
                 }
             }
 
@@ -421,7 +472,6 @@ impl ConversationHandler {
             state.remove_dm_stub(cid);
         }
 
-        state.request_conversations_refresh = true;
     }
 
     pub fn handle_conversation_created(state: &mut AppState, cid: Uuid) {
@@ -429,7 +479,6 @@ impl ConversationHandler {
         state.cid = Some(cid);
         state.page = Page::Chat;
         state.messages.clear();
-        state.request_conversations_refresh = true;
     }
 
     pub fn handle_dm_stub_created(state: &mut AppState, stub_id: Uuid, target_username: String) {
@@ -638,6 +687,26 @@ impl ConversationHandler {
 
     pub fn handle_conversation_list_updated(state: &mut AppState) {
         debug!("Conversation list update requested");
-        state.request_conversations_refresh = true;
+        //state.request_conversations_refresh = true;
+    }
+
+    pub fn handle_closed(state: &mut AppState, _cid: Uuid) {
+        state.show_members_popup = false;
+        state.show_invite_popup = false;
+    }
+
+    pub fn handle_members_loaded(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        members: Vec<ParticipantInfo>,
+    ) {
+        info!(
+            "Loaded {} members for conversation {}",
+            members.len(),
+            conversation_id
+        );
+
+        state.members_list.insert(conversation_id, members);
+        state.is_loading_members = false;
     }
 }

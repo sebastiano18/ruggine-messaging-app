@@ -94,7 +94,7 @@ async fn handle_delete_message(
         .get("mid")
         .and_then(|v| v.as_str())
         .ok_or_else(|| crate::error::AppError::BadRequest("Missing message_id (mid)".into()))?;
-    
+
     let message_id = Uuid::parse_str(message_id_str)
         .map_err(|_| crate::error::AppError::BadRequest("Invalid message_id format".into()))?;
 
@@ -103,7 +103,7 @@ async fn handle_delete_message(
     // 2. Call the service to delete the message. This also performs authorization.
     // The service returns the conversation_id on success.
     let conversation_id = MessageService::delete_message(&state.pool, message_id, user_id).await?;
-    
+
     info!("Message {} in conversation {} deleted successfully from DB", message_id, conversation_id);
 
     // 3. Get all participants of the conversation to notify them.
@@ -234,15 +234,17 @@ pub fn spawn_reader(
                                         "type": "initial_state",
                                         "conversations": initial_state.conversations,
                                         "user_sequence": initial_state.user_sequence,
+                                        "members_by_conversation": initial_state.members_by_conversation,
                                         "timestamp": chrono::Utc::now().timestamp()
                                     });
 
                                     if let Ok(txt) = serde_json::to_string(&msg) {
                                         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                                         info!(
-                                            "Sent initial state to user {} with {} conversations",
+                                            "Sent initial state to user {} with {} conversations and {} groups with members",
                                             username,
-                                            initial_state.conversations.len()
+                                            initial_state.conversations.len(),
+                                            initial_state.members_by_conversation.len()
                                         );
                                     }
 
@@ -707,9 +709,9 @@ pub fn spawn_reader(
                             let username_res = sqlx::query_scalar::<_, String>(
                                 "SELECT username FROM users WHERE id = ?"
                             )
-                            .bind(user_id.to_string())
-                            .fetch_one(&state.pool)
-                            .await;
+                                .bind(user_id.to_string())
+                                .fetch_one(&state.pool)
+                                .await;
 
                             // Esegui leave_group: l'autorizzazione viene validata nel service
                             let leave_res = crate::services::conversation_service::ConversationService::leave_group(
@@ -745,7 +747,7 @@ pub fn spawn_reader(
                                     .into_iter()
                                     .filter(|&pid| pid != user_id)
                                     .collect();
-                                
+
                                 if !remaining_participants.is_empty() {
                                     info!(
                                         "Broadcasting user_left_group to {} remaining participants",
@@ -787,8 +789,8 @@ pub fn spawn_reader(
 
                                     // Invia anche member_list_updated con la lista aggiornata
                                     let members_data = match crate::services::conversation_service::ConversationService::get_members(
-                                        &state.pool, 
-                                        conversation_id, 
+                                        &state.pool,
+                                        conversation_id,
                                         remaining_participants[0] // Usa il primo partecipante rimanente
                                     ).await {
                                         Ok(data) => data,
@@ -824,7 +826,7 @@ pub fn spawn_reader(
                                             tracing::error!("Failed to send member_list_updated event to {}: {}", participant_id, e);
                                         }
                                     }
-                                    
+
                                     info!("Sent member_list_updated event to {} participants", remaining_participants.len());
                                 } else {
                                     info!("No remaining participants to notify (group now empty)");
@@ -840,7 +842,7 @@ pub fn spawn_reader(
                             if let Ok(txt) = serde_json::to_string(&ack) {
                                 let _ = out_tx.send(OutboundMsg::Text(txt)).await;
                             }
-                            
+
                             continue;
                         }
 
@@ -966,6 +968,7 @@ struct InitialState {
     conversations: Vec<Value>,
     user_sequence: u64,
     pending_events: Vec<Value>,
+    members_by_conversation: std::collections::HashMap<String, Vec<Value>>,
 }
 
 async fn get_initial_state(
@@ -1122,10 +1125,63 @@ async fn get_initial_state(
         user_id_str
     );
 
+    // Carica i membri per tutti i gruppi dell'utente
+    let mut members_by_conversation = std::collections::HashMap::new();
+
+    // Query per ottenere i membri di tutti i gruppi dell'utente
+    let members_query = r#"
+        SELECT
+            p.conversation_id,
+            p.user_id,
+            u.username,
+            p.role
+        FROM participants p
+        INNER JOIN users u ON p.user_id = u.id
+        WHERE p.conversation_id IN (
+            SELECT DISTINCT c.id
+            FROM conversations c
+            INNER JOIN participants p2 ON c.id = p2.conversation_id
+            WHERE c.kind = 'group' AND p2.user_id = ?
+        )
+        ORDER BY p.conversation_id
+    "#;
+
+    let member_rows = sqlx::query(members_query)
+        .bind(&user_id_str)
+        .fetch_all(pool)
+        .await?;
+
+    let total_members = member_rows.len();
+
+    for row in member_rows {
+        let conv_id: String = row.try_get("conversation_id").unwrap_or_default();
+        let member_user_id: String = row.try_get("user_id").unwrap_or_default();
+        let username: String = row.try_get("username").unwrap_or_default();
+        let role: String = row.try_get("role").unwrap_or_default();
+
+        let member = json!({
+            "user_id": member_user_id,
+            "username": username,
+            "role": role
+        });
+
+        members_by_conversation
+            .entry(conv_id)
+            .or_insert_with(Vec::new)
+            .push(member);
+    }
+
+    info!(
+        "Loaded members for {} groups (total {} members)",
+        members_by_conversation.len(),
+        total_members
+    );
+
     Ok(InitialState {
         conversations,
         user_sequence: user_sequence as u64,
         pending_events: Vec::new(),
+        members_by_conversation,
     })
 }
 

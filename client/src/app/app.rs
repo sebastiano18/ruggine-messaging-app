@@ -54,30 +54,368 @@ impl eframe::App for App {
             self.show_toasts(ctx);
         }
 
-        // Pop-up dettagli account  centrale
+
+        // Pop-up dettagli account centrale
+        if self.state.token.is_some() && !matches!(self.state.page, Page::Auth) {
+            self.show_toasts(ctx);
+        }
+
+
+        // Pop-up dettagli account centrale
         if self.state.show_account_modal {
             let mut open = self.state.show_account_modal;
-            egui::Window::new(
-                egui::RichText::new(format!(
-                    "{} Impostazioni account",
-                    egui_remixicon::icons::SETTINGS_4_FILL
-                ))
-                .color(egui::Color32::WHITE),
-            )
-            .collapsible(false)
-            .resizable(true)
-            .auto_sized()
-            .min_width(300.0)
-            .max_width(400.0)
-            .open(&mut open)
-            .anchor(egui::Align2::CENTER_CENTER, [-150.0, 0.0])
-            .show(ctx, |ui| {
-                self.header_manager
-                    .show_account_popup_content(ui, &mut self.state);
-            });
+            let mut should_close = false;
+
+            egui::Window::new("")
+                .id(egui::Id::new("account_modal_popup"))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size([500.0, 500.0])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    // Bottone X in alto a destra
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                        let close_button = egui::Button::new(
+                            egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                                .size(20.0)
+                        )
+                            .frame(false);
+
+                        if ui.add(close_button).on_hover_text("Chiudi").clicked() {
+                            should_close = true;
+                        }
+                    });
+
+                    // Titolo centrato
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(5.0);
+                        ui.label(
+                            egui::RichText::new(format!("{} Impostazioni Account", egui_remixicon::icons::SETTINGS_4_FILL))
+                                .size(26.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(200, 100, 40))
+                        );
+                    });
+
+                    ui.add_space(20.0);
+
+                    // Frame con padding uniforme per il contenuto
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(40.0, 0.0))
+                        .show(ui, |ui| {
+                            // === INFORMAZIONI UTENTE ===
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(egui_remixicon::icons::USER_FILL)
+                                        .size(32.0)
+                                        .color(egui::Color32::from_rgb(200, 100, 40))
+                                );
+                                ui.add_space(16.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Username")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&self.state.username)
+                                            .size(18.0)
+                                            .strong()
+                                    );
+                                });
+                            });
+
+                            ui.add_space(20.0);
+
+                            // === STATISTICHE ===
+                            if let Some(ref conversations) = self.state.conversations {
+                                let groups = conversations.iter().filter(|c| c.kind == "group").count();
+                                let dms = conversations.iter().filter(|c| c.kind == "dm").count();
+
+                                ui.horizontal(|ui| {
+                                    // Gruppi
+                                    ui.label(
+                                        egui::RichText::new(egui_remixicon::icons::TEAM_FILL)
+                                            .size(28.0)
+                                            .color(egui::Color32::from_rgb(200, 100, 40))
+                                    );
+                                    ui.add_space(12.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Gruppi")
+                                                .size(12.0)
+                                                .color(ui.visuals().weak_text_color())
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(groups.to_string())
+                                                .size(20.0)
+                                                .strong()
+                                        );
+                                    });
+
+                                    ui.add_space(40.0);
+
+                                    // Chat private
+                                    ui.label(
+                                        egui::RichText::new(egui_remixicon::icons::CHAT_1_FILL)
+                                            .size(28.0)
+                                            .color(egui::Color32::from_rgb(200, 100, 40))
+                                    );
+                                    ui.add_space(12.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Chat Private")
+                                                .size(12.0)
+                                                .color(ui.visuals().weak_text_color())
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(dms.to_string())
+                                                .size(20.0)
+                                                .strong()
+                                        );
+                                    });
+                                });
+                            }
+
+                            ui.add_space(20.0);
+
+                            // === CONFIGURAZIONE SERVER ===
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(egui_remixicon::icons::GLOBAL_FILL)
+                                        .size(28.0)
+                                        .color(egui::Color32::from_rgb(200, 100, 40))
+                                );
+                                ui.add_space(16.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Server")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&self.state.base)
+                                            .size(14.0)
+                                            .font(egui::FontId::monospace(14.0))
+                                    );
+                                });
+                            });
+
+                            ui.add_space(20.0);
+
+                            // === STATO WEBSOCKET ===
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(egui_remixicon::icons::WIFI_FILL)
+                                        .size(28.0)
+                                        .color(egui::Color32::from_rgb(200, 100, 40))
+                                );
+                                ui.add_space(16.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("WebSocket")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                    ui.horizontal(|ui| {
+                                        match self.state.ws_status {
+                                            crate::models::WsStatus::Connected => {
+                                                ui.label(
+                                                    egui::RichText::new(egui_remixicon::icons::CHECKBOX_CIRCLE_FILL)
+                                                        .size(18.0)
+                                                        .color(egui::Color32::GREEN)
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("Connesso")
+                                                        .size(14.0)
+                                                );
+                                            },
+                                            crate::models::WsStatus::Connecting => {
+                                                ui.label(
+                                                    egui::RichText::new(egui_remixicon::icons::REFRESH_FILL)
+                                                        .size(18.0)
+                                                        .color(egui::Color32::YELLOW)
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("Connessione...")
+                                                        .size(14.0)
+                                                );
+                                            },
+                                            crate::models::WsStatus::Disconnected => {
+                                                ui.label(
+                                                    egui::RichText::new(egui_remixicon::icons::CLOSE_CIRCLE_FILL)
+                                                        .size(18.0)
+                                                        .color(egui::Color32::RED)
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("Disconnesso")
+                                                        .size(14.0)
+                                                );
+                                                ui.add_space(8.0);
+                                                if ui.small_button(egui_remixicon::icons::REFRESH_LINE)
+                                                    .on_hover_text("Riconnetti")
+                                                    .clicked()
+                                                {
+                                                    self.state.request_ws_reconnect = true;
+                                                }
+                                            },
+                                        }
+                                    });
+                                });
+                            });
+                        });
+
+                    ui.add_space(45.0);
+
+
+                    // === BOTTONI AZIONE ===
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(40.0, 0.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Logout a sinistra
+                                let logout_btn = egui::Button::new(
+                                    egui::RichText::new(format!("{} Logout", egui_remixicon::icons::LOGOUT_BOX_R_FILL))
+                                        .size(14.0)
+                                        .color(egui::Color32::WHITE)
+                                )
+                                    .fill(egui::Color32::from_rgb(200, 100, 40))
+                                    .min_size(egui::vec2(180.0, 40.0));
+
+                                if ui.add(logout_btn).clicked() {
+                                    if let Some(token) = &self.state.token {
+                                        let base = self.state.base.clone();
+                                        let token = token.clone();
+                                        let tx = self.state.ui_tx.clone();
+                                        self.state.rt.spawn(async move {
+                                            if let Err(e) = crate::api::auth::logout(&base, &token).await {
+                                                let _ = tx.send(crate::models::UiEvent::Info(format!("logout note: {e}")));
+                                            }
+                                            let _ = tx.send(crate::models::UiEvent::LoggedOut);
+                                        });
+                                    }
+                                }
+
+                                // Elimina account a destra
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let delete_btn = egui::Button::new(
+                                        egui::RichText::new(format!("{} Elimina Account", egui_remixicon::icons::DELETE_BIN_FILL))
+                                            .size(14.0)
+                                            .color(egui::Color32::WHITE)
+                                    )
+                                        .fill(egui::Color32::from_rgb(180, 50, 50))
+                                        .min_size(egui::vec2(180.0, 40.0));
+
+                                    if ui.add(delete_btn).clicked() {
+                                        let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountStart);
+                                    }
+                                });
+                            });
+                        });
+                });
+
+            if should_close {
+                open = false;
+            }
+
             self.state.show_account_modal = open;
         }
-        
+
+        // Pop-up conferma eliminazione account
+        if self.state.confirm_delete_account {
+            egui::Window::new("")
+                .id(egui::Id::new("delete_account_confirmation_popup"))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size([480.0, 260.0])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    // Titolo centrato
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(
+                            egui::RichText::new(format!("{} Elimina Account", egui_remixicon::icons::ALERT_FILL))
+                                .size(24.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(220, 60, 60))
+                        );
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new("Sei sicuro di voler eliminare il tuo account?")
+                                .size(15.0)
+                                .strong()
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Questa azione è irreversibile e comporterà:")
+                                .size(12.0)
+                                .color(ui.visuals().weak_text_color())
+                        );
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Lista conseguenze
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(60.0, 0.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} Perdita di tutti i tuoi messaggi e conversazioni", egui_remixicon::icons::CHAT_DELETE_LINE))
+                                    .size(12.0)
+                                    .color(ui.visuals().weak_text_color())
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("{} Rimozione da tutti i gruppi", egui_remixicon::icons::TEAM_LINE))
+                                    .size(12.0)
+                                    .color(ui.visuals().weak_text_color())
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("{} Eliminazione permanente dei tuoi dati", egui_remixicon::icons::DELETE_BIN_LINE))
+                                    .size(12.0)
+                                    .color(ui.visuals().weak_text_color())
+                            );
+                        });
+
+                    ui.add_space(24.0);
+
+                    // Bottoni ai lati
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(30.0, 0.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let cancel_button = egui::Button::new(
+                                    egui::RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                                        .size(14.0)
+                                )
+                                    .fill(ui.visuals().widgets.inactive.bg_fill)
+                                    .min_size(egui::vec2(160.0, 40.0));
+
+                                if ui.add(cancel_button).clicked() {
+                                    let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountCancel);
+                                }
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let confirm_button = egui::Button::new(
+                                        egui::RichText::new(format!("{} Elimina Definitivamente", egui_remixicon::icons::DELETE_BIN_FILL))
+                                            .size(14.0)
+                                            .color(egui::Color32::WHITE)
+                                    )
+                                        .fill(egui::Color32::from_rgb(220, 20, 20))
+                                        .min_size(egui::vec2(200.0, 40.0));
+
+                                    if ui.add(confirm_button).clicked() {
+                                        let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountConfirm);
+                                    }
+                                });
+                            });
+                        });
+                });
+        }
 
         self.periodic_cleanup();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -515,21 +853,21 @@ impl App {
     }
 
     fn show_toasts(&mut self, ctx: &egui::Context) {
-    const TOP_MARGIN: f32 = 100.0;
-    const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
-    const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
+        const TOP_MARGIN: f32 = 100.0;
+        const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
+        const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
         const RIGHT_PADDING: f32 = 48.0;
 
         const ICON_WIDTH: f32 = 24.0;
         const CLOSE_WIDTH: f32 = 22.0;
         const H_PADDING: f32 = 28.0;
         const MIN_WIDTH: f32 = 220.0;
-        const MAX_ABS_WIDTH: f32 = 640.0;      
-        const MIN_MAX_WIDTH: f32 = 300.0;      
-        const SCREEN_RATIO: f32 = 0.55;        
+        const MAX_ABS_WIDTH: f32 = 640.0;
+        const MIN_MAX_WIDTH: f32 = 300.0;
+        const SCREEN_RATIO: f32 = 0.55;
         const MULTILINE_MIN_TEXT: f32 = 80.0;
         const MULTILINE_SECOND_MIN: f32 = 60.0;
-        const BASE_ALPHA: f32 = 0.4;
+        const BASE_ALPHA: f32 = 0.92; // Aumentato per migliore visibilità
         const FADE_START: f32 = 9.5;
         const FADE_END: f32 = 10.0;
 
@@ -542,16 +880,62 @@ impl App {
         let mut to_remove: HashSet<uuid::Uuid> = HashSet::new();
         let mut y_offset = 0.0;
 
-    for toast in &self.state.toasts {
-            let (bg, icon) = match toast.kind {
-                crate::state::ToastKind::Info => (
-                    egui::Color32::from_rgb(40, 120, 40),
-                    egui_remixicon::icons::INFORMATION_LINE,
-                ),
-                crate::state::ToastKind::Error => (
-                    egui::Color32::from_rgb(160, 40, 40),
-                    egui_remixicon::icons::ERROR_WARNING_LINE,
-                ),
+        // Determina se siamo in dark mode
+        let is_dark = ctx.style().visuals.dark_mode;
+
+        for toast in &self.state.toasts {
+            // Colori adattivi per dark/light mode
+            let (bg, text_color, icon_color, icon) = match toast.kind {
+                crate::state::ToastKind::Info => {
+                    let bg = if is_dark {
+                        egui::Color32::from_rgb(28, 100, 28)      // Verde scuro per dark
+                    } else {
+                        egui::Color32::from_rgb(225, 245, 225)    // Verde chiaro per light
+                    };
+                    let text_color = if is_dark {
+                        egui::Color32::from_rgb(240, 255, 240)    // Bianco-verde per dark
+                    } else {
+                        egui::Color32::from_rgb(20, 80, 20)       // Verde scuro per light
+                    };
+                    let icon_color = if is_dark {
+                        egui::Color32::from_rgb(120, 220, 120)    // Verde brillante per dark
+                    } else {
+                        egui::Color32::from_rgb(30, 130, 30)      // Verde medio per light
+                    };
+                    (bg, text_color, icon_color, egui_remixicon::icons::INFORMATION_LINE)
+                }
+                crate::state::ToastKind::Error => {
+                    let bg = if is_dark {
+                        egui::Color32::from_rgb(120, 35, 35)      // Rosso scuro bilanciato con il verde
+                    } else {
+                        egui::Color32::from_rgb(200, 80, 80)      // Rosso medio, meno aggressivo
+                    };
+                    let text_color = if is_dark {
+                        egui::Color32::from_rgb(255, 240, 240)    // Bianco-rosa per dark
+                    } else {
+                        egui::Color32::from_rgb(255, 255, 255)    // Bianco per light
+                    };
+                    let icon_color = if is_dark {
+                        egui::Color32::from_rgb(255, 120, 120)    // Rosso brillante per dark
+                    } else {
+                        egui::Color32::from_rgb(255, 230, 230)    // Rosa chiaro per light
+                    };
+                    (bg, text_color, icon_color, egui_remixicon::icons::ERROR_WARNING_LINE)
+                }
+            };
+
+            // Colore per il close button
+            let close_color = if is_dark {
+                egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
+            } else {
+                egui::Color32::from_rgba_premultiplied(80, 80, 80, 180)
+            };
+
+            // Colore del bordo adattivo
+            let stroke_color = if is_dark {
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)
+            } else {
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 40)
             };
 
             let font_id = egui::TextStyle::Body.resolve(&ctx.style());
@@ -561,7 +945,7 @@ impl App {
                 f.layout(
                     toast.message.clone(),
                     font_id.clone(),
-                    egui::Color32::WHITE,
+                    text_color,
                     f32::INFINITY, // no wrapping
                 )
             });
@@ -576,7 +960,7 @@ impl App {
             } else {
                 let first_text_width = (max_width - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_MIN_TEXT);
                 let galley_initial = ctx.fonts(|f| {
-                    f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, first_text_width)
+                    f.layout(toast.message.clone(), font_id.clone(), text_color, first_text_width)
                 });
 
                 let text_width_est = galley_initial.size().x;
@@ -584,7 +968,7 @@ impl App {
                 let final_text_width = (tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_SECOND_MIN);
                 let galley_final = if (final_text_width - first_text_width).abs() > 1.0 {
                     ctx.fonts(|f| {
-                        f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, final_text_width)
+                        f.layout(toast.message.clone(), font_id.clone(), text_color, final_text_width)
                     })
                 } else {
                     galley_initial
@@ -620,39 +1004,56 @@ impl App {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(frame_bg)
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 60)))
+                        .stroke(egui::Stroke::new(1.0, stroke_color))
                         .rounding(egui::Rounding::same(8.0))
                         .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                         .show(ui, |ui| {
                             ui.set_width(toast_width);
                             ui.set_min_height(toast_height);
 
-                            ui.horizontal_top(|ui| {
-                                ui.label(egui::RichText::new(icon).size(18.0).color(egui::Color32::WHITE));
-                                ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
 
-                                ui.vertical(|ui| {
-                                    ui.set_width(final_text_width);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&toast.message)
-                                                .size(13.0)
-                                                .color(egui::Color32::WHITE),
-                                        ).wrap(true)
-                                    );
-                                });
+                                // Icona - centrata verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ICON_WIDTH, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.label(egui::RichText::new(icon).size(18.0).color(icon_color));
+                                    },
+                                );
 
-                                ui.add_space(4.0);
+                                // Testo - centrato verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(final_text_width, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&toast.message)
+                                                    .size(13.0)
+                                                    .color(text_color),
+                                            ).wrap(true)
+                                        );
+                                    },
+                                );
 
-                                let close_btn = egui::Button::new(
-                                    egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
-                                        .size(14.0)
-                                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 200)),
-                                ).frame(false);
+                                // Pulsante X - centrato verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(CLOSE_WIDTH, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        let close_btn = egui::Button::new(
+                                            egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                                                .size(14.0)
+                                                .color(close_color),
+                                        ).frame(false);
 
-                                if ui.add(close_btn).on_hover_text("Chiudi").clicked() {
-                                    to_remove.insert(toast.id);
-                                }
+                                        if ui.add(close_btn).clicked() {
+                                            to_remove.insert(toast.id);
+                                        }
+                                    },
+                                );
                             });
                         });
                 });
@@ -662,6 +1063,11 @@ impl App {
 
         if !to_remove.is_empty() {
             self.state.toasts.retain(|t| !to_remove.contains(&t.id));
+        }
+
+        // ✅ IMPORTANTE: Richiedi repaint continuo se ci sono toast attivi o in animazione
+        if !self.state.toasts.is_empty() {
+            ctx.request_repaint();
         }
     }
 }

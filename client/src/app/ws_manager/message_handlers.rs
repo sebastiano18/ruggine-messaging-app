@@ -1,4 +1,4 @@
-use crate::models::{ConversationDto, GapInfo, MessageDto, UiEvent, UserEventData};
+use crate::models::{ConversationDto, GapInfo, MessageDto, ParticipantInfo, UiEvent, UserEventData};
 use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -238,7 +238,7 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
     })
 }
 
-// Resto delle funzioni esistenti rimangono invariate...
+
 fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
 
     let conversations: Vec<ConversationDto> = value
@@ -258,11 +258,10 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         .unwrap_or("")
                         .to_string();
 
-                    // ⭐ AGGIUNGI: Leggi last_read_sequence dal JSON
                     let last_read_sequence = conv
                         .get("last_read_sequence")
                         .and_then(|s| s.as_i64())
-                        .unwrap_or(0);  // Default 0 se manca
+                        .unwrap_or(0);
 
                     let last_message_time = conv
                         .get("last_message")
@@ -301,15 +300,49 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
         .and_then(|s| s.as_u64())
         .unwrap_or(0);
 
+    // Parsing dei membri per conversazione
+    let members_by_conversation: Option<std::collections::HashMap<Uuid, Vec<ParticipantInfo>>> = value
+        .get("members_by_conversation")
+        .and_then(|m| m.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(conv_id_str, members_value)| {
+                    // Parse conversation_id
+                    let conv_id = Uuid::parse_str(conv_id_str).ok()?;
+
+                    // Parse array di membri
+                    let members = members_value
+                        .as_array()?
+                        .iter()
+                        .filter_map(|member| {
+                            let user_id = parse_uuid_field(member, "user_id")?;
+                            let username = member.get("username")?.as_str()?.to_string();
+                            let role = member.get("role")?.as_str()?.to_string();
+
+                            Some(ParticipantInfo {
+                                user_id,
+                                username,
+                                role,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+
+                    Some((conv_id, members))
+                })
+                .collect()
+        });
+
     info!(
-        "Received initial state with {} conversations, user_seq: {}",
+        "Received initial state with {} conversations, user_seq: {}, members_map: {}",
         conversations.len(),
-        user_sequence
+        user_sequence,
+        if members_by_conversation.is_some() { "present" } else { "absent" }
     );
 
     let _ = tx.send(UiEvent::InitialStateReceived {
         conversations,
         user_sequence,
+        members_by_conversation,
     });
 
     // Processa l'ultimo messaggio per ogni conversazione
@@ -324,7 +357,7 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
     }
 }
 
-// Resto delle funzioni helper esistenti...
+
 fn process_last_message(
     tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
     conversation_id: Uuid,
