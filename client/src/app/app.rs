@@ -853,21 +853,21 @@ impl App {
     }
 
     fn show_toasts(&mut self, ctx: &egui::Context) {
-    const TOP_MARGIN: f32 = 100.0;
-    const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
-    const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
+        const TOP_MARGIN: f32 = 100.0;
+        const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
+        const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
         const RIGHT_PADDING: f32 = 48.0;
 
         const ICON_WIDTH: f32 = 24.0;
         const CLOSE_WIDTH: f32 = 22.0;
         const H_PADDING: f32 = 28.0;
         const MIN_WIDTH: f32 = 220.0;
-        const MAX_ABS_WIDTH: f32 = 640.0;      
-        const MIN_MAX_WIDTH: f32 = 300.0;      
-        const SCREEN_RATIO: f32 = 0.55;        
+        const MAX_ABS_WIDTH: f32 = 640.0;
+        const MIN_MAX_WIDTH: f32 = 300.0;
+        const SCREEN_RATIO: f32 = 0.55;
         const MULTILINE_MIN_TEXT: f32 = 80.0;
         const MULTILINE_SECOND_MIN: f32 = 60.0;
-        const BASE_ALPHA: f32 = 0.4;
+        const BASE_ALPHA: f32 = 0.92; // Aumentato per migliore visibilità
         const FADE_START: f32 = 9.5;
         const FADE_END: f32 = 10.0;
 
@@ -880,16 +880,62 @@ impl App {
         let mut to_remove: HashSet<uuid::Uuid> = HashSet::new();
         let mut y_offset = 0.0;
 
-    for toast in &self.state.toasts {
-            let (bg, icon) = match toast.kind {
-                crate::state::ToastKind::Info => (
-                    egui::Color32::from_rgb(40, 120, 40),
-                    egui_remixicon::icons::INFORMATION_LINE,
-                ),
-                crate::state::ToastKind::Error => (
-                    egui::Color32::from_rgb(160, 40, 40),
-                    egui_remixicon::icons::ERROR_WARNING_LINE,
-                ),
+        // Determina se siamo in dark mode
+        let is_dark = ctx.style().visuals.dark_mode;
+
+        for toast in &self.state.toasts {
+            // Colori adattivi per dark/light mode
+            let (bg, text_color, icon_color, icon) = match toast.kind {
+                crate::state::ToastKind::Info => {
+                    let bg = if is_dark {
+                        egui::Color32::from_rgb(28, 100, 28)      // Verde scuro per dark
+                    } else {
+                        egui::Color32::from_rgb(225, 245, 225)    // Verde chiaro per light
+                    };
+                    let text_color = if is_dark {
+                        egui::Color32::from_rgb(240, 255, 240)    // Bianco-verde per dark
+                    } else {
+                        egui::Color32::from_rgb(20, 80, 20)       // Verde scuro per light
+                    };
+                    let icon_color = if is_dark {
+                        egui::Color32::from_rgb(120, 220, 120)    // Verde brillante per dark
+                    } else {
+                        egui::Color32::from_rgb(30, 130, 30)      // Verde medio per light
+                    };
+                    (bg, text_color, icon_color, egui_remixicon::icons::INFORMATION_LINE)
+                }
+                crate::state::ToastKind::Error => {
+                    let bg = if is_dark {
+                        egui::Color32::from_rgb(120, 35, 35)      // Rosso scuro bilanciato con il verde
+                    } else {
+                        egui::Color32::from_rgb(200, 80, 80)      // Rosso medio, meno aggressivo
+                    };
+                    let text_color = if is_dark {
+                        egui::Color32::from_rgb(255, 240, 240)    // Bianco-rosa per dark
+                    } else {
+                        egui::Color32::from_rgb(255, 255, 255)    // Bianco per light
+                    };
+                    let icon_color = if is_dark {
+                        egui::Color32::from_rgb(255, 120, 120)    // Rosso brillante per dark
+                    } else {
+                        egui::Color32::from_rgb(255, 230, 230)    // Rosa chiaro per light
+                    };
+                    (bg, text_color, icon_color, egui_remixicon::icons::ERROR_WARNING_LINE)
+                }
+            };
+
+            // Colore per il close button
+            let close_color = if is_dark {
+                egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
+            } else {
+                egui::Color32::from_rgba_premultiplied(80, 80, 80, 180)
+            };
+
+            // Colore del bordo adattivo
+            let stroke_color = if is_dark {
+                egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)
+            } else {
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 40)
             };
 
             let font_id = egui::TextStyle::Body.resolve(&ctx.style());
@@ -899,7 +945,7 @@ impl App {
                 f.layout(
                     toast.message.clone(),
                     font_id.clone(),
-                    egui::Color32::WHITE,
+                    text_color,
                     f32::INFINITY, // no wrapping
                 )
             });
@@ -914,7 +960,7 @@ impl App {
             } else {
                 let first_text_width = (max_width - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_MIN_TEXT);
                 let galley_initial = ctx.fonts(|f| {
-                    f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, first_text_width)
+                    f.layout(toast.message.clone(), font_id.clone(), text_color, first_text_width)
                 });
 
                 let text_width_est = galley_initial.size().x;
@@ -922,7 +968,7 @@ impl App {
                 let final_text_width = (tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_SECOND_MIN);
                 let galley_final = if (final_text_width - first_text_width).abs() > 1.0 {
                     ctx.fonts(|f| {
-                        f.layout(toast.message.clone(), font_id.clone(), egui::Color32::WHITE, final_text_width)
+                        f.layout(toast.message.clone(), font_id.clone(), text_color, final_text_width)
                     })
                 } else {
                     galley_initial
@@ -958,39 +1004,56 @@ impl App {
                 .show(ctx, |ui| {
                     egui::Frame::none()
                         .fill(frame_bg)
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 60)))
+                        .stroke(egui::Stroke::new(1.0, stroke_color))
                         .rounding(egui::Rounding::same(8.0))
                         .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                         .show(ui, |ui| {
                             ui.set_width(toast_width);
                             ui.set_min_height(toast_height);
 
-                            ui.horizontal_top(|ui| {
-                                ui.label(egui::RichText::new(icon).size(18.0).color(egui::Color32::WHITE));
-                                ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
 
-                                ui.vertical(|ui| {
-                                    ui.set_width(final_text_width);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&toast.message)
-                                                .size(13.0)
-                                                .color(egui::Color32::WHITE),
-                                        ).wrap(true)
-                                    );
-                                });
+                                // Icona - centrata verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ICON_WIDTH, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.label(egui::RichText::new(icon).size(18.0).color(icon_color));
+                                    },
+                                );
 
-                                ui.add_space(4.0);
+                                // Testo - centrato verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(final_text_width, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&toast.message)
+                                                    .size(13.0)
+                                                    .color(text_color),
+                                            ).wrap(true)
+                                        );
+                                    },
+                                );
 
-                                let close_btn = egui::Button::new(
-                                    egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
-                                        .size(14.0)
-                                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 200)),
-                                ).frame(false);
+                                // Pulsante X - centrato verticalmente
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(CLOSE_WIDTH, toast_height),
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        let close_btn = egui::Button::new(
+                                            egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
+                                                .size(14.0)
+                                                .color(close_color),
+                                        ).frame(false);
 
-                                if ui.add(close_btn).on_hover_text("Chiudi").clicked() {
-                                    to_remove.insert(toast.id);
-                                }
+                                        if ui.add(close_btn).clicked() {
+                                            to_remove.insert(toast.id);
+                                        }
+                                    },
+                                );
                             });
                         });
                 });
@@ -1000,6 +1063,11 @@ impl App {
 
         if !to_remove.is_empty() {
             self.state.toasts.retain(|t| !to_remove.contains(&t.id));
+        }
+
+        // ✅ IMPORTANTE: Richiedi repaint continuo se ci sono toast attivi o in animazione
+        if !self.state.toasts.is_empty() {
+            ctx.request_repaint();
         }
     }
 }

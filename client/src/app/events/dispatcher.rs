@@ -86,11 +86,13 @@ impl EventDispatcher {
             UiEvent::InitialStateReceived {
                 conversations,
                 user_sequence,
+                members_by_conversation,
             } => {
                 ConversationHandler::handle_initial_state_received(
                     state,
                     conversations,
                     user_sequence,
+                    members_by_conversation,
                 );
             }
 
@@ -235,12 +237,7 @@ impl EventDispatcher {
             }
 
             UiEvent::MembersLoaded(conversation_id, members) => {
-                info!("MembersLoaded event: {} members loaded for conversation {:?}", members.len(), conversation_id);
-                for member in &members {
-                    info!("  - {} ({})", member.username, member.role);
-                }
-                state.members_list.insert(conversation_id, members);
-                state.is_loading_members = false;
+                ConversationHandler::handle_members_loaded(state, conversation_id, members);
             }
 
             UiEvent::TriggerConversationFetch(cid, reason) => {

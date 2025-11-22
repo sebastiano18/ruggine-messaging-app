@@ -202,22 +202,45 @@ impl UserNotificationHandler {
             }
         }
 
-        if let Some(conv_id) = conversation_id {
-            if let Some(current_cid) = state.cid {
-                if current_cid == conv_id {
-                    let seq = state
-                        .conversation_sequences_confirmed
-                        .get(&conv_id)
-                        .copied()
-                        .or_else(|| state.conversation_sequences.get(&conv_id).copied());
+        // ✅ Invia mark_read SOLO per eventi relativi ai messaggi
+        let should_mark_read = matches!(
+            event_type.as_str(),
+            "new_message" | "message_deleted" | "message_edited"
+        );
 
-                    if let Some(seq) = seq {
-                        let outgoing = Outgoing::MarkRead {
-                            conversation_id: conv_id,
-                            sequence_num: seq,
-                        };
-                        let _ = state.ui_to_net_tx.try_send(outgoing);
-                        debug!("Auto mark_read for conversation {} up to seq {}", conv_id, seq);
+        if should_mark_read {
+            if let Some(conv_id) = conversation_id {
+                // ✅ Verifica che la conversazione esista ancora
+                let conversation_exists = state
+                    .conversations
+                    .as_ref()
+                    .map(|convs| convs.iter().any(|c| c.id == conv_id))
+                    .unwrap_or(false);
+
+                if !conversation_exists {
+                    debug!(
+                        "Skipping mark_read for conversation {} - conversation no longer exists",
+                        conv_id
+                    );
+                    return;
+                }
+
+                if let Some(current_cid) = state.cid {
+                    if current_cid == conv_id {
+                        let seq = state
+                            .conversation_sequences_confirmed
+                            .get(&conv_id)
+                            .copied()
+                            .or_else(|| state.conversation_sequences.get(&conv_id).copied());
+
+                        if let Some(seq) = seq {
+                            let outgoing = Outgoing::MarkRead {
+                                conversation_id: conv_id,
+                                sequence_num: seq,
+                            };
+                            let _ = state.ui_to_net_tx.try_send(outgoing);
+                            debug!("Auto mark_read for conversation {} up to seq {}", conv_id, seq);
+                        }
                     }
                 }
             }

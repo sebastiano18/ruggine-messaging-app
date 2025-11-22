@@ -88,6 +88,12 @@ pub struct ConversationDto {
     pub last_msg_seq: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConversationWithMembers {
+    pub conversation: ConversationDto,
+    pub members: Vec<ParticipantInfo>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct User {
     pub id: Uuid,
@@ -99,7 +105,6 @@ pub struct ParticipantInfo {
     pub user_id: Uuid,
     pub username: String,
     pub role: String,
-    pub joined_at: i64,
 }
 
 // IMPORTANTE: MessageResponse ora include sequence
@@ -280,6 +285,7 @@ pub enum UiEvent {
     InitialStateReceived {
         conversations: Vec<ConversationDto>,
         user_sequence: u64,
+        members_by_conversation: Option<std::collections::HashMap<Uuid, Vec<ParticipantInfo>>>,
     },
     LastMessageUpdate {
         conversation_id: Uuid,
