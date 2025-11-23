@@ -48,28 +48,48 @@ impl MessageProcessor {
                             Err(e) => {
                                 error!("Failed to send WebSocket message: {}", e);
 
-                                // Se è un messaggio chat, notifica il fallimento IMMEDIATAMENTE
-                                if let Outgoing::ChatMessage { client_msg_id: Some(msg_id), .. } = &outgoing {
-                                    // Trova il messaggio pending per ottenere il suo UUID
-                                    if let Some(pending) = state.pending_confirmations.get(msg_id) {
-                                        let _ = state.ui_tx.send(UiEvent::MessageSendFailed(pending.id));
-                                        info!(
-                                            "Sent MessageSendFailed event for client_msg_id: {} (UUID: {})",
-                                            msg_id, pending.id
-                                        );
-                                    } else {
-                                        warn!(
-                                            "Cannot send MessageSendFailed: pending message not found for client_msg_id: {}",
-                                            msg_id
-                                        );
-                                        warn!("This might indicate a race condition or the message was already confirmed/failed");
+                                // Determina il tipo di errore in base al tipo di operazione
+                                let error_type = match &outgoing {
+                                    Outgoing::ChatMessage { client_msg_id, .. } => {
+                                        // Se è un messaggio chat, notifica il fallimento IMMEDIATAMENTE
+                                        if let Some(msg_id) = client_msg_id {
+                                            // Trova il messaggio pending per ottenere il suo UUID
+                                            if let Some(pending) = state.pending_confirmations.get(msg_id) {
+                                                let _ = state.ui_tx.send(UiEvent::MessageSendFailed(pending.id));
+                                                info!(
+                                                    "Sent MessageSendFailed event for client_msg_id: {} (UUID: {})",
+                                                    msg_id, pending.id
+                                                );
+                                            } else {
+                                                warn!(
+                                                    "Cannot send MessageSendFailed: pending message not found for client_msg_id: {}",
+                                                    msg_id
+                                                );
+                                                warn!("This might indicate a race condition or the message was already confirmed/failed");
+                                            }
+                                        }
+                                        crate::models::ErrorType::MessageSend
                                     }
-                                }
+                                    Outgoing::DeleteMessage { .. } => {
+                                        crate::models::ErrorType::MessageDelete
+                                    }
+                                    Outgoing::DeleteConversation { .. } => {
+                                        crate::models::ErrorType::ConversationDelete
+                                    }
+                                    Outgoing::LeaveGroup { .. } => {
+                                        crate::models::ErrorType::GroupLeave
+                                    }
+                                    Outgoing::CreateGroup { .. } | Outgoing::CreateGroupWithParticipants { .. } => {
+                                        crate::models::ErrorType::GroupCreate
+                                    }
+                                    Outgoing::InviteUser { .. } => {
+                                        crate::models::ErrorType::Invite
+                                    }
+                                    // Per tutte le altre operazioni (Ping, Typing, ecc.) usa Connection
+                                    _ => crate::models::ErrorType::Connection
+                                };
 
-                                let _ = state
-                                    .ui_tx
-                                    .send(UiEvent::Error("Errore di connessione".into()));
-                                break;
+                                let _ = state.ui_tx.send(UiEvent::Error(error_type));
                             }
                         }
                     }

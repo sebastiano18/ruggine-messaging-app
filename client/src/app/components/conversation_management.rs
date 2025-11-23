@@ -675,9 +675,10 @@ fn create_group_with_participants(s: &mut AppState) {
         s.cid = None;
         s.page = Page::Conversations;
 
-        let _ = s
-            .ui_tx
-            .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
+        error!("Failed to send group creation message: {}", e);
+        let _ = s.ui_tx.send(UiEvent::Error(
+            crate::models::ErrorType::GroupCreate
+        ));
         return;
     }
 
@@ -832,15 +833,18 @@ fn join_by_token_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, rt
                                 let _ = tx.send(UiEvent::Info("Ti sei unito al gruppo!".into()));
                             }
                             Err(e) => {
-                                let _ = tx.send(UiEvent::Error(format!(
-                                    "Unito al gruppo ma errore nel refresh: {}",
-                                    e
-                                )));
+                                error!("Failed to refresh conversations after join: {}", e);
+                                let _ = tx.send(UiEvent::Error(
+                                    crate::models::ErrorType::DataRecovery
+                                ));
                             }
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!("Join fallito: {}", e)));
+                        error!("Failed to join group by token: {}", e);
+                        let _ = tx.send(UiEvent::Error(
+                            crate::models::ErrorType::Invite
+                        ));
                     }
                 }
             });
@@ -887,9 +891,9 @@ fn generate_invite_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, 
                 match Uuid::parse_str(s.invite_conversation_id.trim()) {
                     Ok(u) => u,
                     Err(_) => {
-                        let _ = s
-                            .ui_tx
-                            .send(UiEvent::Error("UUID conversazione non valido".into()));
+                        let _ = s.ui_tx.send(UiEvent::Error(
+                            crate::models::ErrorType::Generic("UUID conversazione non valido".to_string())
+                        ));
                         return;
                     }
                 }
@@ -905,7 +909,10 @@ fn generate_invite_subsection(ui: &mut egui::Ui, s: &mut AppState, token: &str, 
                         let _ = tx.send(UiEvent::InviteCreated(invite_token));
                     }
                     Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!("Creazione invito fallita: {}", e)));
+                        error!("Failed to create invite: {}", e);
+                        let _ = tx.send(UiEvent::Error(
+                            crate::models::ErrorType::Invite
+                        ));
                     }
                 }
             });

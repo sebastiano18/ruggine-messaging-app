@@ -57,8 +57,9 @@ impl ConnectionManager {
                     if should_logout {
                         tracing::error!("Too many connection failures, forcing logout");
                         let _ = state.ui_tx.send(UiEvent::Error(
-                            "Impossibile connettersi al server. Effettua nuovamente il login."
-                                .into(),
+                            crate::models::ErrorType::Auth(
+                                "Impossibile connettersi al server. Effettua nuovamente il login.".to_string()
+                            )
                         ));
                         let _ = state.ui_tx.send(UiEvent::LoggedOut);
 

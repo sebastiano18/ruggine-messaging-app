@@ -2,7 +2,7 @@ use crate::app::events::helpers;
 use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
 use crate::state::core::AppState;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 pub struct ConversationHandler;
@@ -623,10 +623,10 @@ impl ConversationHandler {
                         ));
                     }
                     Err(e) => {
-                        let _ = tx.send(UiEvent::Error(format!(
-                            "Failed to fetch conversation: {}",
-                            e
-                        )));
+                        error!("Failed to fetch conversation {}: {}", cid, e);
+                        let _ = tx.send(UiEvent::Error(
+                            crate::models::ErrorType::DataRecovery
+                        ));
                     }
                 }
             });

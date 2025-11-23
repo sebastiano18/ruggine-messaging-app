@@ -95,13 +95,22 @@ impl AuthHandler {
                     let _ = tx.send(UiEvent::LoggedOut);
                 }
                 Err(e) => {
-                    if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
-                        if req_err.status() == Some(StatusCode::UNAUTHORIZED) {
-                            let _ = tx.send(UiEvent::LoggedOut);
-                            return;
+                    let error_msg = if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
+                        match req_err.status() {
+                            Some(StatusCode::UNAUTHORIZED) => {
+                                let _ = tx.send(UiEvent::LoggedOut);
+                                return;
+                            }
+                            Some(StatusCode::FORBIDDEN) => {
+                                "Non hai i permessi per eliminare questo account.".to_string()
+                            }
+                            _ => format!("Eliminazione fallita: {}", req_err)
                         }
-                    }
-                    let _ = tx.send(UiEvent::Error(format!("Eliminazione account fallita: {e}")));
+                    } else {
+                        format!("Eliminazione account fallita: {}", e)
+                    };
+
+                    let _ = tx.send(UiEvent::Error(ErrorType::Auth(error_msg)));
                 }
             }
         });
