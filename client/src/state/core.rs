@@ -7,7 +7,6 @@ use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-
 #[derive(Debug, Default)]
 pub struct SequenceStats {
     pub total_events_received: u64,
@@ -156,9 +155,9 @@ pub struct AppState {
     pub show_account_modal: bool,
 
     // UI Messages - separati per pagina
-    pub toasts: Vec<Toast>,                 // Toast notifications
-    pub auth_message: Option<String>,      // Messaggi solo per pagina auth
-    pub auth_message_is_error: bool,       // true = errore (rosso), false = info (verde)
+    pub toasts: Vec<Toast>,           // Toast notifications
+    pub auth_message: Option<String>, // Messaggi solo per pagina auth
+    pub auth_message_is_error: bool,  // true = errore (rosso), false = info (verde)
 
     // Reorder Buffers for messages and events
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
@@ -312,7 +311,6 @@ impl AppState {
         }
     }
 
-
     pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
         self.pending_deletion = Some(PendingDeletion {
             conversation: conversation.clone(),
@@ -351,7 +349,9 @@ impl AppState {
         } else {
             if self.ws_status == WsStatus::Connected {
                 // Determina se l'utente è owner o partecipante
-                let is_owner = self.user_id.map_or(false, |uid| uid == conversation.owner_id);
+                let is_owner = self
+                    .user_id
+                    .map_or(false, |uid| uid == conversation.owner_id);
 
                 if conversation.kind == "group" && !is_owner {
                     // Partecipante che vuole uscire dal gruppo
@@ -364,9 +364,7 @@ impl AppState {
                     self.send_via_websocket(Outgoing::DeleteConversation { cid });
 
                     if conversation.kind == "group" {
-                        let _ = self
-                            .ui_tx
-                            .send(UiEvent::Info("Gruppo eliminato".into()));
+                        let _ = self.ui_tx.send(UiEvent::Info("Gruppo eliminato".into()));
                     } else {
                         let _ = self
                             .ui_tx
@@ -374,9 +372,8 @@ impl AppState {
                     }
                 }
             } else {
-                let _ = self
-                    .ui_tx
-                    .send(UiEvent::Error("Errore di connessione".into()));
+                // Connessione non attiva
+                let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
             }
         }
     }
@@ -384,10 +381,24 @@ impl AppState {
     // === WebSocket helpers ===
 
     pub fn send_via_websocket(&self, outgoing: Outgoing) {
+        let error_type = match &outgoing {
+            Outgoing::ChatMessage { .. } => ErrorType::MessageSend,
+            Outgoing::DeleteConversation { .. } => ErrorType::ConversationDelete,
+            Outgoing::InviteUser { .. } => ErrorType::Invite,
+            Outgoing::LeaveGroup { .. } => ErrorType::GroupLeave,
+            Outgoing::DeleteMessage { .. } => ErrorType::MessageDelete,
+            Outgoing::CreateGroup { .. } | Outgoing::CreateGroupWithParticipants { .. } => {
+                ErrorType::GroupCreate
+            }
+            Outgoing::RequestUserResume { .. } | Outgoing::RequestMessagesResume { .. } => {
+                ErrorType::DataRecovery
+            }
+            _ => return, // Silenzioso per Ping, Typing, etc.
+        };
+
         if let Err(_) = self.ui_to_net_tx.try_send(outgoing) {
-            let _ = self
-                .ui_tx
-                .send(UiEvent::Error("Impossibile inviare messaggio".to_string()));
+            warn!("Failed to send message to WebSocket channel");
+            let _ = self.ui_tx.send(UiEvent::Error(error_type));
         }
     }
 
@@ -413,7 +424,11 @@ impl AppState {
     }
 
     pub fn send_invite_users(&self, cid: Uuid, usernames: Vec<String>) {
-        info!("Sending invite for {} users to conversation {}", usernames.len(), cid);
+        info!(
+            "Sending invite for {} users to conversation {}",
+            usernames.len(),
+            cid
+        );
         self.send_via_websocket(Outgoing::InviteUser { cid, usernames });
     }
 
@@ -431,7 +446,7 @@ impl AppState {
         }
 
         for client_id in expired {
-            if let Some(_msg) = self.pending_confirmations.remove(&client_id) {
+            if let Some(msg) = self.pending_confirmations.remove(&client_id) { // ← Cambia _msg in msg
                 warn!("Message confirmation timeout for {}", client_id);
 
                 // Marca il messaggio come fallito nell'UI
@@ -442,10 +457,8 @@ impl AppState {
                     }
                 }
 
-                // Notifica l'utente
-                let _ = self.ui_tx.send(UiEvent::Error(
-                    "Il messaggio potrebbe non essere stato inviato".into(),
-                ));
+                // Invia evento MessageSendFailed per gestione completa
+                let _ = self.ui_tx.send(UiEvent::MessageSendFailed(msg.id));
             }
         }
     }
@@ -632,13 +645,17 @@ impl AppState {
         let tx = self.ui_tx.clone();
 
         self.rt.spawn(async move {
-            match crate::api::conversation::get_conversation_members(&base, &token, conversation_id).await {
+            match crate::api::conversation::get_conversation_members(&base, &token, conversation_id)
+                .await
+            {
                 Ok(members) => {
                     let _ = tx.send(UiEvent::MembersLoaded(conversation_id, members));
                 }
                 Err(e) => {
                     error!("Failed to load members: {}", e);
-                    let _ = tx.send(UiEvent::Error(format!("Errore caricamento membri: {}", e)));
+                    let _ = tx.send(UiEvent::Error(ErrorType::Generic(
+                        format!("Errore caricamento membri: {}", e)
+                    )));
                 }
             }
         });
@@ -651,7 +668,9 @@ impl AppState {
         let token = token.clone();
 
         self.rt.spawn(async move {
-            match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id).await {
+            match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id)
+                .await
+            {
                 Ok(_) => {
                     info!("Member kicked successfully - will receive update via WebSocket");
                     // Non serve ricaricare manualmente, arriverà l'evento member_list_updated via WebSocket
@@ -666,10 +685,13 @@ impl AppState {
     pub fn delete_message(&mut self, message_id: Uuid) {
         if self.ws_status == WsStatus::Connected {
             self.send_via_websocket(Outgoing::DeleteMessage { mid: message_id });
-            info!("Sent delete request for message {} via WebSocket", message_id);
+            info!(
+                "Sent delete request for message {} via WebSocket",
+                message_id
+            );
         } else {
             error!("Cannot delete message, WebSocket is not connected.");
-            let _ = self.ui_tx.send(UiEvent::Error("Errore di connessione".into()));
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
         }
     }
 
@@ -783,7 +805,7 @@ impl AppState {
             client_temp_id: Some(stub_id.to_string()),
         };
 
-        if let Err(e) = self.ui_to_net_tx.try_send(outgoing) {
+        if let Err(_e) = self.ui_to_net_tx.try_send(outgoing) {
             // Cleanup in caso di errore
             if let Some(ref mut convs) = self.conversations {
                 convs.retain(|c| c.id != stub_id);
@@ -794,9 +816,9 @@ impl AppState {
             self.cid = None;
             self.page = Page::Conversations;
 
-            let _ = self
-                .ui_tx
-                .send(UiEvent::Error(format!("Impossibile creare gruppo: {}", e)));
+            // Notifica l'utente dell'errore
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::GroupCreate));
+
             return;
         }
 
@@ -806,14 +828,17 @@ impl AppState {
 
     pub fn prune_expired_toasts(&mut self, lifetime: Duration) {
         let now = Instant::now();
-        self.toasts.retain(|t| now.duration_since(t.created) < lifetime);
+        self.toasts
+            .retain(|t| now.duration_since(t.created) < lifetime);
     }
-
 }
 
 // === Toast models ===
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToastKind { Info, Error }
+pub enum ToastKind {
+    Info,
+    Error,
+}
 
 #[derive(Debug, Clone)]
 pub struct Toast {

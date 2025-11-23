@@ -1,5 +1,5 @@
 use crate::api;
-use crate::models::{LoginState, UiEvent};
+use crate::models::{ErrorType, LoginState, UiEvent};
 use crate::state::AppState;
 use eframe::egui::{self, TextEdit, RichText};
 use egui::Id;
@@ -459,14 +459,14 @@ fn start_login(s: &mut AppState) {
             Err(e) => {
                 tracing::error!("Login failed: {}", e);
 
-                // Determina il messaggio di errore basato sul tipo
-                let error_msg = if e.to_string().contains("401") || e.to_string().contains("Unauthorized") {
-                    format!("{} Nome utente o password errati", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
+                // Determina il tipo di errore
+                let error_type = if e.to_string().contains("401") || e.to_string().contains("Unauthorized") {
+                    ErrorType::Auth(format!("{} Nome utente o password errati", egui_remixicon::icons::CLOSE_CIRCLE_LINE))
                 } else {
-                    format!("{} Errore di connessione al server", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
+                    ErrorType::Auth(format!("{} Errore di connessione al server", egui_remixicon::icons::CLOSE_CIRCLE_LINE))
                 };
 
-                let _ = tx.send(UiEvent::Error(error_msg));
+                let _ = tx.send(UiEvent::Error(error_type));
                 let _ = tx.send(UiEvent::LoggedOut);
             }
         }
@@ -512,16 +512,16 @@ fn start_registration(s: &mut AppState) {
             Err(e) => {
                 tracing::error!("Registration failed: {}", e);
 
-                // Determina il messaggio di errore basato sul tipo
-                let error_msg = if e.to_string().contains("409") || e.to_string().contains("Conflict") {
-                    format!("{} Nome utente già registrato, scegline un altro", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
+                // Determina il tipo di errore
+                let error_type = if e.to_string().contains("409") || e.to_string().contains("Conflict") {
+                    ErrorType::Auth(format!("{} Nome utente già registrato, scegline un altro", egui_remixicon::icons::CLOSE_CIRCLE_LINE))
                 } else if e.to_string().contains("400") || e.to_string().contains("Bad Request") {
-                    format!("{} Nome utente o password non validi", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
+                    ErrorType::Auth(format!("{} Nome utente o password non validi", egui_remixicon::icons::CLOSE_CIRCLE_LINE))
                 } else {
-                    format!("{} Errore durante la registrazione, riprova", egui_remixicon::icons::CLOSE_CIRCLE_LINE)
+                    ErrorType::Auth(format!("{} Errore durante la registrazione, riprova", egui_remixicon::icons::CLOSE_CIRCLE_LINE))
                 };
 
-                let _ = tx.send(UiEvent::Error(error_msg));
+                let _ = tx.send(UiEvent::Error(error_type));
                 let _ = tx.send(UiEvent::LoggedOut);
             }
         }

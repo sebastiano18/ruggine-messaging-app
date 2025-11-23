@@ -203,7 +203,7 @@ pub enum Outgoing {
 pub enum UiEvent {
     // Auth events
     Info(String),
-    Error(String),
+    Error(ErrorType),
     LoginStarted,
     RegisterStarted,
     Logged(String, Uuid, u64),
@@ -321,6 +321,19 @@ pub struct UserEventData {
     pub event_data: serde_json::Value,
     pub conversation_id: Option<Uuid>,
     pub created_at: i64,
+}
+#[derive(Debug, Clone)]
+pub enum ErrorType {
+    Connection,              // Silent - solo indicatore di stato
+    MessageSend,
+    MessageDelete,
+    ConversationDelete,
+    GroupLeave,
+    GroupCreate,
+    Invite,
+    Auth(String),
+    DataRecovery,
+    Generic(String),
 }
 
 // === IMPLEMENTAZIONI PER MessageDto ===

@@ -3,6 +3,7 @@ use crate::state::AppState;
 use eframe::egui;
 use egui::{Align, Align2, Frame, Layout, RichText, TextEdit};
 use chrono::{DateTime, Local};
+use tracing::error;
 use crate::app::sidebar_components::conversation_popups;
 
 pub struct ConversationsSidebar {
@@ -358,7 +359,8 @@ impl ConversationsSidebar {
                     let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
                 }
                 Err(e) => {
-                    let _ = tx.send(UiEvent::Error(format!("Errore nel caricamento: {e}")));
+                    error!("Failed to load conversations: {}", e);
+                    let _ = tx.send(UiEvent::Error(crate::models::ErrorType::DataRecovery));
                     let _ = tx.send(UiEvent::ConversationsLoaded(vec![]));
                 }
             }

@@ -764,7 +764,39 @@ fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
 
     error!("Server error: {} (code: {})", error_msg, error_code);
 
-    let _ = tx.send(UiEvent::Error(format!("Errore server: {}", error_msg)));
+    // Mappa gli errori del server ai tipi appropriati
+    let error_type = match error_code {
+        "auth_failed" | "invalid_token" | "token_expired" => {
+            crate::models::ErrorType::Auth(error_msg.to_string())
+        }
+        "message_send_failed" => {
+            crate::models::ErrorType::MessageSend
+        }
+        "message_delete_failed" => {
+            crate::models::ErrorType::MessageDelete
+        }
+        "conversation_delete_failed" => {
+            crate::models::ErrorType::ConversationDelete
+        }
+        "group_leave_failed" => {
+            crate::models::ErrorType::GroupLeave
+        }
+        "group_create_failed" => {
+            crate::models::ErrorType::GroupCreate
+        }
+        "invite_failed" => {
+            crate::models::ErrorType::Invite
+        }
+        "connection_error" | "websocket_error" => {
+            crate::models::ErrorType::Connection
+        }
+        _ => {
+            // Errore generico con il messaggio del server
+            crate::models::ErrorType::Generic(format!("Errore server: {}", error_msg))
+        }
+    };
+
+    let _ = tx.send(UiEvent::Error(error_type));
 }
 
 fn handle_message_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

@@ -841,6 +841,16 @@ pub fn show_invite_popup(
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(30.0, 0.0))
                 .show(ui, |ui| {
+                    // Recupera i membri già presenti nel gruppo
+                    let existing_members: std::collections::HashSet<String> = state.members_list
+                        .get(&cid)
+                        .map(|members| {
+                            members.iter()
+                                .map(|m| m.username.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                     // Calcola se mostrare il bottone aggiungi
                     let search_text = state.invite_popup.search_query.trim().to_string();
                     let dm_conversations: Vec<_> = state.conversations
@@ -855,7 +865,8 @@ pub fn show_invite_popup(
 
                     let show_add_button = !search_text.is_empty()
                         && !found_in_contacts
-                        && !state.invite_popup.selected_users.contains(&search_text);
+                        && !state.invite_popup.selected_users.contains(&search_text)
+                        && !existing_members.contains(&search_text); // Non mostrare se già membro
 
                     // Barra di ricerca con bottone aggiungi
                     ui.horizontal(|ui| {
@@ -927,14 +938,20 @@ pub fn show_invite_popup(
                             .collect();
 
                         let search_lower = state.invite_popup.search_query.trim().to_lowercase();
+
+                        // Filtra i DM escludendo i membri già presenti nel gruppo
                         let filtered_dms: Vec<_> = dm_conversations
                             .iter()
                             .filter(|c| {
-                                if search_lower.is_empty() {
+                                let username = &c.title;
+                                let matches_search = if search_lower.is_empty() {
                                     true
                                 } else {
-                                    c.title.to_lowercase().starts_with(&search_lower)
-                                }
+                                    username.to_lowercase().starts_with(&search_lower)
+                                };
+
+                                // Mostra solo se matcha la ricerca E non è già membro del gruppo
+                                matches_search && !existing_members.contains(username)
                             })
                             .collect();
 
@@ -978,7 +995,18 @@ pub fn show_invite_popup(
                                                             .color(egui::Color32::GRAY)
                                                     );
                                                 });
+                                            } else if !existing_members.is_empty() && dm_conversations.len() <= existing_members.len() {
+                                                // Tutti i contatti sono già membri
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(fixed_height / 2.0 - 10.0);
+                                                    ui.label(
+                                                        RichText::new("Tutti i contatti sono già membri del gruppo")
+                                                            .italics()
+                                                            .color(egui::Color32::GRAY)
+                                                    );
+                                                });
                                             } else {
+                                                // Nessun risultato per la ricerca
                                                 ui.vertical_centered(|ui| {
                                                     ui.add_space(fixed_height / 2.0 - 10.0);
                                                     ui.label(
@@ -996,7 +1024,6 @@ pub fn show_invite_popup(
                                                 let is_selected = state.invite_popup.selected_users.contains(username);
 
                                                 ui.horizontal(|ui| {
-                                                    // 🔧 FIX: Crea una variabile mutabile che vive abbastanza
                                                     let mut selected = is_selected;
                                                     if ui.checkbox(&mut selected, "").changed() {
                                                         if selected {

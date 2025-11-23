@@ -440,6 +440,59 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
 
             // Menu contestuale al click destro sulla bolla
             bubble.response.context_menu(|ui| {
+                // Se il messaggio ha fallito l'invio (is_confirmed == Some(false))
+                let is_failed = message.is_confirmed == Some(false);
+
+                if is_failed {
+                    // Opzione "Riprova invio" per messaggi falliti
+                    if ui.button(
+                        RichText::new(format!("{} Riprova invio", egui_remixicon::icons::REFRESH_LINE))
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(255, 180, 100))
+                    ).clicked() {
+                        // Recupera il contenuto del messaggio e il cid
+                        let content = message.content.clone();
+                        let cid = message.conversation_id;
+
+                        // Genera nuovo client_msg_id per il reinvio
+                        let new_client_msg_id = Uuid::new_v4().to_string();
+
+                        // Crea nuovo messaggio ottimistico
+                        if let Some(user_id) = s.user_id {
+                            let retry_msg = MessageDto::optimistic_message(
+                                user_id,
+                                s.username.clone(),
+                                cid,
+                                content.clone(),
+                                new_client_msg_id.clone(),
+                            );
+
+                            // Salva nei pending per tracking conferma
+                            s.pending_confirmations.insert(new_client_msg_id.clone(), retry_msg.clone());
+
+                            // Rimuovi il messaggio fallito dalla UI
+                            s.messages.retain(|m| m.id != message.id);
+                            if let Some(msgs) = s.conversation_messages.get_mut(&cid) {
+                                msgs.retain(|m| m.id != message.id);
+                            }
+
+                            // Aggiungi il nuovo messaggio
+                            s.messages.push(retry_msg.clone());
+                            if let Some(msgs) = s.conversation_messages.get_mut(&cid) {
+                                msgs.push(retry_msg);
+                            }
+
+                            // Invia via WebSocket
+                            s.send_chat_message_ws(content, Some(new_client_msg_id));
+                        }
+
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+                }
+
+                // Opzione "Elimina" sempre presente
                 if ui.button(
                     RichText::new(format!("{} Elimina", egui_remixicon::icons::DELETE_BIN_LINE))
                         .size(14.0)

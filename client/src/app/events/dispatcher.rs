@@ -226,9 +226,60 @@ impl EventDispatcher {
                 state.set_message_info(msg);
             }
 
-            UiEvent::Error(msg) => {
-                error!("Error: {}", msg);
-                state.set_message_error(msg);
+            UiEvent::Error(error_type) => {
+                // Log dell'errore tecnico
+                match &error_type {
+                    ErrorType::Connection => error!("Connection error"),
+                    ErrorType::MessageSend => error!("Message send error"),
+                    ErrorType::MessageDelete => error!("Message delete error"),
+                    ErrorType::ConversationDelete => error!("Conversation delete error"),
+                    ErrorType::GroupLeave => error!("Group leave error"),
+                    ErrorType::GroupCreate => error!("Group create error"),
+                    ErrorType::Invite => error!("Invite error"),
+                    ErrorType::Auth(details) => error!("Auth error: {}", details),
+                    ErrorType::DataRecovery => error!("Data recovery error"),
+                    ErrorType::Generic(msg) => error!("Generic error: {}", msg),
+                }
+
+                // Decidi se mostrare toast e quale messaggio
+                let user_message = match error_type {
+                    ErrorType::Connection => {
+                        // Mostra toast per problemi di connessione durante operazioni
+                        Some("Problema di connessione. Verifica la rete.".to_string())
+                    }
+                    ErrorType::MessageSend => {
+                        Some("Impossibile inviare il messaggio. Riprova.".to_string())
+                    }
+                    ErrorType::MessageDelete => {
+                        Some("Impossibile eliminare il messaggio. Riprova.".to_string())
+                    }
+                    ErrorType::ConversationDelete => {
+                        Some("Impossibile eliminare la conversazione. Riprova.".to_string())
+                    }
+                    ErrorType::GroupLeave => {
+                        Some("Impossibile uscire dal gruppo. Riprova.".to_string())
+                    }
+                    ErrorType::GroupCreate => {
+                        Some("Impossibile creare il gruppo. Riprova.".to_string())
+                    }
+                    ErrorType::Invite => {
+                        Some("Impossibile inviare l'invito. Riprova.".to_string())
+                    }
+                    ErrorType::Auth(details) => {
+                        Some(details.clone())
+                    }
+                    ErrorType::DataRecovery => {
+                        Some("Errore durante il recupero dati. Riprova.".to_string())
+                    }
+                    ErrorType::Generic(msg) => {
+                        Some(msg.clone())
+                    }
+                };
+
+                // Mostra toast solo se c'è un messaggio
+                if let Some(msg) = user_message {
+                    state.set_message_error(msg);
+                }
             }
 
             UiEvent::InviteCreated(token) => {
