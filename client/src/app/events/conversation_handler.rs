@@ -98,11 +98,6 @@ impl ConversationHandler {
             debug!("Removed DM stub {} (now real conversation)", stub_id);
         }
 
-        helpers::add_system_message(
-            state,
-            format!("Sincronizzate {} conversazioni", conversations.len()),
-        );
-
     }
 
     pub fn handle_last_message_update(
@@ -198,12 +193,6 @@ impl ConversationHandler {
                 }
             }
 
-            if has_more {
-                helpers::add_system_message(
-                    state,
-                    "Caricati messaggi recenti (altri disponibili)".into(),
-                );
-            }
         }
     }
 
@@ -303,10 +292,6 @@ impl ConversationHandler {
             state.messages = messages;
         }
 
-        helpers::add_system_message(
-            state,
-            format!("Conversazione '{}' confermata", conversation.title),
-        );
     }
 
     pub fn handle_older_messages_loaded(state: &mut AppState, new_messages: Vec<MessageDto>) {
@@ -491,15 +476,6 @@ impl ConversationHandler {
         state.conversation_messages.insert(stub_id, Vec::new());
         state.conv_title = target_username.clone();
 
-        let system_msg = MessageDto::system_message(format!(
-            "Chat con {} pronta. Invia il primo messaggio per iniziare!",
-            target_username
-        ));
-        state.messages.push(system_msg.clone());
-        state
-            .conversation_messages
-            .get_mut(&stub_id)
-            .map(|msgs| msgs.push(system_msg));
     }
 
     pub fn handle_conversations_loaded(state: &mut AppState, conversations: Vec<ConversationDto>) {
@@ -691,7 +667,7 @@ impl ConversationHandler {
     }
 
     pub fn handle_closed(state: &mut AppState, _cid: Uuid) {
-        state.show_members_popup = false;
+        state.show_group_info_popup= false;
         state.show_invite_popup = false;
     }
 

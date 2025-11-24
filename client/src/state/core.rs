@@ -177,7 +177,7 @@ pub struct AppState {
     pub invite_popup: InvitePopupState,
 
     // Members popup state
-    pub show_members_popup: bool,
+    pub show_group_info_popup: bool,
     pub members_list: HashMap<Uuid, Vec<ParticipantInfo>>,
     pub is_loading_members: bool,
 
@@ -296,7 +296,7 @@ impl AppState {
             // DM management
             dm_username: String::new(),
 
-            show_members_popup: false,
+            show_group_info_popup: false,
             members_list: HashMap::new(),
             is_loading_members: false,
 
@@ -966,15 +966,6 @@ impl AppState {
         self.cid = Some(stub_id);
         self.page = Page::Chat;
         self.conv_title = group_name.clone();
-
-        // Messaggio di sistema nello stub
-        let system_msg =
-            MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
-        self.conversation_messages
-            .entry(stub_id)
-            .or_insert_with(Vec::new)
-            .push(system_msg.clone());
-        self.messages = vec![system_msg];
 
         // Invia al server
         let outgoing = Outgoing::CreateGroupWithParticipants {

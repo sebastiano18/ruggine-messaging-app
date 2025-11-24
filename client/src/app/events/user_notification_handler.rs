@@ -544,11 +544,6 @@ impl UserNotificationHandler {
                 }
             }
 
-            helpers::add_system_message(
-                state,
-                format!("Nuova conversazione '{}' creata e sincronizzata", title),
-            );
-
             info!("Successfully processed conversation_created_complete for {}", id);
 
             super::utils::move_conversation_to_top(state, id);

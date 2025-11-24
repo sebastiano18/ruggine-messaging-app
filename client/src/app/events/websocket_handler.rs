@@ -116,10 +116,6 @@ impl WebSocketHandler {
                 }
 
                 state.conversations = Some(deduped_conversations);
-                crate::app::events::helpers::add_system_message(
-                    state,
-                    "Rimossi duplicati conversazioni".into(),
-                );
             }
         }
 
@@ -194,13 +190,6 @@ impl WebSocketHandler {
                 message_conversation_id
             );
 
-            crate::app::events::helpers::add_system_message(
-                state,
-                format!(
-                    "Nuovo messaggio da {} - caricando conversazione...",
-                    msg.author_username
-                ),
-            );
 
             let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
                 message_conversation_id,
