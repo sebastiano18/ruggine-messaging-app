@@ -861,6 +861,54 @@ pub fn spawn_reader(
                             }
                         }
 
+                        "check_user" => {
+                            last_heartbeat = Instant::now();
+
+                            let target_username = value
+                                .get("username")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let request_id = value
+                                .get("request_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            info!("User {} checking if user '{}' exists", user_id, target_username);
+
+                            // Query al database per verificare se l'utente esiste
+                            let user_result: Option<String> = sqlx::query_scalar(
+                                "SELECT id FROM users WHERE LOWER(username) = LOWER(?)"
+                            )
+                                .bind(target_username)
+                                .fetch_optional(&state.pool)
+                                .await
+                                .unwrap_or(None);
+
+                            let (exists, found_user_id) = match user_result {
+                                Some(uid) => (true, Some(uid)),
+                                None => (false, None),
+                            };
+
+                            // Costruisci risposta
+                            let response = json!({
+                                "type": "check_user_response",
+                                "username": target_username,
+                                "exists": exists,
+                                "user_id": found_user_id,
+                                "request_id": request_id
+                            });
+
+                            if let Ok(txt) = serde_json::to_string(&response) {
+                                let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                            }
+
+                            info!(
+                                "User check result: username='{}', exists={}",
+                                target_username, exists
+                            );
+                        }
+
                         _ => {
                             warn!(
                                 "Unknown message type '{}' from user {}: {:?}",
@@ -1129,6 +1177,7 @@ async fn get_initial_state(
     let mut members_by_conversation = std::collections::HashMap::new();
 
     // Query per ottenere i membri di tutti i gruppi dell'utente
+    // Ordinati: owner prima, poi alfabeticamente per username
     let members_query = r#"
         SELECT
             p.conversation_id,
@@ -1143,7 +1192,9 @@ async fn get_initial_state(
             INNER JOIN participants p2 ON c.id = p2.conversation_id
             WHERE c.kind = 'group' AND p2.user_id = ?
         )
-        ORDER BY p.conversation_id
+        ORDER BY p.conversation_id,
+                 CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
+                 LOWER(u.username) ASC
     "#;
 
     let member_rows = sqlx::query(members_query)

@@ -154,8 +154,6 @@ impl MessageHandler {
         if let Some(ref ws_ctrl) = state.ws_ctrl {
             if let Ok(json_str) = serde_json::to_string(&request) {
                 let _ = ws_ctrl.outgoing_tx.send(json_str);
-
-                crate::app::events::helpers::add_system_message(state, "Caricamento messaggi...".into());
             }
         } else {
             warn!("Cannot request messages: WebSocket not connected");

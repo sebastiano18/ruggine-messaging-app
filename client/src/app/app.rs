@@ -71,7 +71,7 @@ impl eframe::App for App {
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
-                .fixed_size([500.0, 500.0])
+                .fixed_size([500.0, 580.0])
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
@@ -265,9 +265,73 @@ impl eframe::App for App {
                                     });
                                 });
                             });
+
+                            ui.add_space(20.0);
+
+                            // === STATO SINCRONIZZAZIONE ===
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(egui_remixicon::icons::REFRESH_FILL)
+                                        .size(28.0)
+                                        .color(egui::Color32::from_rgb(200, 100, 40))
+                                );
+                                ui.add_space(16.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Sincronizzazione")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+
+                                    let health = SequenceHandler::get_sequence_health(&self.state);
+                                    let health_color = if health > 0.9 {
+                                        egui::Color32::GREEN
+                                    } else if health > 0.7 {
+                                        egui::Color32::YELLOW
+                                    } else {
+                                        egui::Color32::RED
+                                    };
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.0}%", health * 100.0))
+                                                .size(16.0)
+                                                .strong()
+                                                .color(health_color)
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("salute")
+                                                .size(12.0)
+                                                .color(ui.visuals().weak_text_color())
+                                        );
+                                    });
+
+                                    if self.state.user_sequence_confirmed > 0 {
+                                        ui.label(
+                                            egui::RichText::new(format!("Ultimo evento: #{}", self.state.user_sequence_confirmed))
+                                                .size(11.0)
+                                                .color(ui.visuals().weak_text_color())
+                                        );
+                                    }
+
+                                    // Mostra gap se presente
+                                    let user_gap = if self.state.user_sequence_received > self.state.user_sequence_confirmed {
+                                        self.state.user_sequence_received - self.state.user_sequence_confirmed
+                                    } else {
+                                        0
+                                    };
+                                    if user_gap > 0 {
+                                        ui.label(
+                                            egui::RichText::new(format!("⚠ Gap: {} eventi", user_gap))
+                                                .size(11.0)
+                                                .color(egui::Color32::YELLOW)
+                                        );
+                                    }
+                                });
+                            });
                         });
 
-                    ui.add_space(45.0);
+                    ui.add_space(25.0);
 
 
                     // === BOTTONI AZIONE ===
@@ -350,354 +414,75 @@ impl eframe::App for App {
                         );
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new("Questa azione è irreversibile e comporterà:")
-                                .size(12.0)
+                            egui::RichText::new("Questa azione è irreversibile. Tutti i tuoi dati verranno eliminati permanentemente.")
+                                .size(13.0)
                                 .color(ui.visuals().weak_text_color())
                         );
                     });
 
-                    ui.add_space(16.0);
+                    ui.add_space(30.0);
 
-                    // Lista conseguenze
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(60.0, 0.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} Perdita di tutti i tuoi messaggi e conversazioni", egui_remixicon::icons::CHAT_DELETE_LINE))
-                                    .size(12.0)
-                                    .color(ui.visuals().weak_text_color())
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(format!("{} Rimozione da tutti i gruppi", egui_remixicon::icons::TEAM_LINE))
-                                    .size(12.0)
-                                    .color(ui.visuals().weak_text_color())
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(format!("{} Eliminazione permanente dei tuoi dati", egui_remixicon::icons::DELETE_BIN_LINE))
-                                    .size(12.0)
-                                    .color(ui.visuals().weak_text_color())
-                            );
+                    // Bottoni centrati
+                    ui.vertical_centered(|ui| {
+                        ui.horizontal(|ui| {
+                            // Annulla
+                            let cancel_btn = egui::Button::new(
+                                egui::RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
+                                    .size(14.0)
+                            )
+                                .fill(ui.visuals().widgets.inactive.bg_fill)
+                                .min_size(egui::vec2(150.0, 40.0));
+
+                            if ui.add(cancel_btn).clicked() {
+                                let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountCancel);
+                            }
+
+                            ui.add_space(20.0);
+
+                            // Conferma eliminazione
+                            let confirm_btn = egui::Button::new(
+                                egui::RichText::new(format!("{} Elimina Account", egui_remixicon::icons::DELETE_BIN_FILL))
+                                    .size(14.0)
+                                    .color(egui::Color32::WHITE)
+                            )
+                                .fill(egui::Color32::from_rgb(200, 50, 50))
+                                .min_size(egui::vec2(180.0, 40.0));
+
+                            if ui.add(confirm_btn).clicked() {
+                                let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountConfirm);
+                            }
                         });
+                    });
 
-                    ui.add_space(24.0);
-
-                    // Bottoni ai lati
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(30.0, 0.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let cancel_button = egui::Button::new(
-                                    egui::RichText::new(format!("{} Annulla", egui_remixicon::icons::CLOSE_LINE))
-                                        .size(14.0)
-                                )
-                                    .fill(ui.visuals().widgets.inactive.bg_fill)
-                                    .min_size(egui::vec2(160.0, 40.0));
-
-                                if ui.add(cancel_button).clicked() {
-                                    let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountCancel);
-                                }
-
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let confirm_button = egui::Button::new(
-                                        egui::RichText::new(format!("{} Elimina Definitivamente", egui_remixicon::icons::DELETE_BIN_FILL))
-                                            .size(14.0)
-                                            .color(egui::Color32::WHITE)
-                                    )
-                                        .fill(egui::Color32::from_rgb(220, 20, 20))
-                                        .min_size(egui::vec2(200.0, 40.0));
-
-                                    if ui.add(confirm_button).clicked() {
-                                        let _ = self.state.ui_tx.send(crate::models::UiEvent::DeleteAccountConfirm);
-                                    }
-                                });
-                            });
-                        });
+                    ui.add_space(20.0);
                 });
         }
 
+        // Periodic cleanup
         self.periodic_cleanup();
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        tracing::info!("App shutting down");
-
-        if let Some(ctrl) = self.state.ws_ctrl.take() {
-            let _ = ctrl.shutdown.send(());
-        }
-
-        let debug_info = self.state.get_debug_info();
-        tracing::info!("Final app state: {:?}", debug_info);
-
-        let stats = self.ws_manager.get_connection_stats();
-        tracing::info!("Final connection stats: {:?}", stats);
-
-        tracing::info!(
-            "Final sequence stats - User seq: {}, Conv seqs: {}, Pings: {}, Pongs: {}, Gaps: {}",
-            self.state.user_sequence_confirmed,
-            self.state.conversation_sequences.len(),
-            self.state.sequence_stats.ping_count,
-            self.state.sequence_stats.pong_count,
-            self.state.sequence_stats.gaps_detected
-        );
+        // Request continuous repaints for smooth animations
+        ctx.request_repaint();
     }
 }
 
 impl App {
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
+        // Toggle debug panel with Ctrl+D
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::D)) {
-            if self.last_debug_toggle.elapsed() > std::time::Duration::from_millis(500) {
+            // Debounce to prevent rapid toggling
+            if self.last_debug_toggle.elapsed() > std::time::Duration::from_millis(200) {
                 self.show_debug_info = !self.show_debug_info;
                 self.last_debug_toggle = std::time::Instant::now();
                 tracing::info!("Debug panel toggled: {}", self.show_debug_info);
             }
         }
-
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
-            self.state.request_ws_reconnect = true;
-            tracing::info!("Manual WebSocket reconnection requested");
-        }
-
-        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
-            self.state.request_conversations_refresh = true;
-            tracing::info!("Manual conversations refresh requested");
-        }
-    }
-
-    fn show_debug_panel(&mut self, ctx: &egui::Context) {
-        egui::Window::new("🔧 Debug Info")
-            .default_size([450.0, 500.0])
-            .resizable(true)
-            .collapsible(true)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.strong("📌 Connection Status");
-                    ui.separator();
-
-                    let ws_status_text = match self.state.ws_status {
-                        WsStatus::Connected => "🟢 Connected",
-                        WsStatus::Connecting => "🟡 Connecting",
-                        WsStatus::Disconnected => "🔴 Disconnected",
-                    };
-                    ui.label(format!("WebSocket: {}", ws_status_text));
-                    ui.label(format!(
-                        "Authenticated: {}",
-                        if self.state.is_authenticated() {
-                            "✅"
-                        } else {
-                            "❌"
-                        }
-                    ));
-
-                    if let Some(uptime) = self.ws_manager.get_connection_stats().current_uptime() {
-                        ui.label(format!("Uptime: {:?}", uptime));
-                    }
-
-                    ui.add_space(10.0);
-
-                    // DUAL Sequence System
-                    ui.strong("🔄 Dual Sequence System");
-                    ui.separator();
-
-                    ui.label(egui::RichText::new("User Events:").strong());
-                    ui.label(format!(
-                        "  Confirmed: {}",
-                        self.state.user_sequence_confirmed
-                    ));
-                    ui.label(format!("  Received: {}", self.state.user_sequence_received));
-                    let user_gap =
-                        if self.state.user_sequence_received > self.state.user_sequence_confirmed {
-                            self.state.user_sequence_received - self.state.user_sequence_confirmed
-                        } else {
-                            0
-                        };
-                    if user_gap > 0 {
-                        ui.colored_label(
-                            egui::Color32::YELLOW,
-                            format!("  Gap: {} events", user_gap),
-                        );
-                    }
-
-                    ui.add_space(5.0);
-
-                    ui.label(egui::RichText::new("Active Conversation:").strong());
-                    if let Some(cid) = self.state.cid {
-                        ui.label(format!("  ID: {}", cid));
-                        let conv_seq = self
-                            .state
-                            .conversation_sequences
-                            .get(&cid)
-                            .copied()
-                            .unwrap_or(0);
-                        let conv_seq_conf = self
-                            .state
-                            .conversation_sequences_confirmed
-                            .get(&cid)
-                            .copied()
-                            .unwrap_or(0);
-                        ui.label(format!("  Confirmed: {}", conv_seq_conf));
-                        ui.label(format!("  Received: {}", conv_seq));
-
-                        let conv_gap = if conv_seq > conv_seq_conf {
-                            conv_seq - conv_seq_conf
-                        } else {
-                            0
-                        };
-                        if conv_gap > 0 {
-                            ui.colored_label(
-                                egui::Color32::YELLOW,
-                                format!("  Gap: {} messages", conv_gap),
-                            );
-                        }
-                    } else {
-                        ui.label("  None selected");
-                    }
-
-                    ui.label(format!(
-                        "Total tracked conversations: {}",
-                        self.state.conversation_sequences.len()
-                    ));
-
-                    ui.add_space(10.0);
-
-                    ui.strong("🔄 Recovery State");
-                    ui.separator();
-                    ui.label(format!(
-                        "Recovering user events: {}",
-                        self.state.is_recovering_user_events
-                    ));
-                    ui.label(format!(
-                        "Recovering conversations: {}",
-                        self.state.is_recovering_messages.len()
-                    ));
-                    ui.label(format!(
-                        "Pending resume requests: {}",
-                        self.state.pending_resume_requests
-                    ));
-
-                    ui.add_space(10.0);
-
-                    ui.strong("📡 Ping/Pong");
-                    ui.separator();
-
-                    ui.label(format!(
-                        "Sequence Health: {:.2}",
-                        SequenceHandler::get_sequence_health(&self.state)
-                    ));
-                    ui.label(format!(
-                        "Missed Pings: {}/{}",
-                        self.state.missed_pings, self.state.max_missed_pings
-                    ));
-
-                    let next_ping_secs = (self.state.ping_interval.as_secs() as f64
-                        - self.state.last_ping_time.elapsed().as_secs_f64())
-                    .max(0.0);
-                    ui.label(format!("Next Ping: {:.1}s", next_ping_secs));
-                    ui.label(format!(
-                        "Ping Timeout: {:.0}s",
-                        self.state.ping_timeout.as_secs_f64()
-                    ));
-
-                    ui.add_space(10.0);
-
-                    ui.strong("📊 Sequence Statistics");
-                    ui.separator();
-
-                    let stats = &self.state.sequence_stats;
-                    ui.label(format!(
-                        "Total events received: {}",
-                        stats.total_events_received
-                    ));
-                    ui.label(format!("Gaps detected: {}", stats.gaps_detected));
-                    ui.label(format!("Pings sent: {}", stats.ping_count));
-                    ui.label(format!("Pongs received: {}", stats.pong_count));
-
-                    ui.add_space(10.0);
-
-                    ui.strong("💬 Message Cache");
-                    ui.separator();
-
-                    ui.label(format!(
-                        "Conversations cached: {}",
-                        self.state.conversation_messages.len()
-                    ));
-                    let total_messages: usize = self
-                        .state
-                        .conversation_messages
-                        .values()
-                        .map(|v| v.len())
-                        .sum();
-                    ui.label(format!("Total messages cached: {}", total_messages));
-
-                    if let Some(cid) = self.state.cid {
-                        if let Some(messages) = self.state.conversation_messages.get(&cid) {
-                            ui.label(format!("Current conversation messages: {}", messages.len()));
-
-                            let sequenced =
-                                messages.iter().filter(|m| m.sequence_num.is_some()).count();
-                            ui.label(format!("  With sequence: {}", sequenced));
-                            ui.label(format!(
-                                "  Without sequence: {}",
-                                messages.len() - sequenced
-                            ));
-                        }
-                    }
-
-                    ui.add_space(10.0);
-
-                    ui.strong("🔄 Connection Stats");
-                    ui.separator();
-
-                    let conn_stats = self.ws_manager.get_connection_stats();
-
-                    if let Some(uptime) = conn_stats.current_uptime() {
-                        ui.label(format!("Current uptime: {:?}", uptime));
-                    }
-
-                    ui.add_space(10.0);
-
-                    ui.strong("🛠️ Actions");
-                    ui.separator();
-
-                    ui.horizontal(|ui| {
-                        if ui.button("🗑️ Clear Cache").clicked() {
-                            self.state.conversation_messages.clear();
-                            tracing::info!("Message cache cleared");
-                        }
-
-                        if ui.button("📊 Reset Seq Stats").clicked() {
-                            self.state.sequence_stats = Default::default();
-                            tracing::info!("Sequence statistics reset");
-                        }
-
-                        if ui.button("🔄 Reset WS Stats").clicked() {
-                            self.ws_manager.reset_stats();
-                        }
-                    });
-
-                    ui.add_space(5.0);
-                    ui.separator();
-                    if ui.button("⚠️ Reset ALL Sequences (Dangerous)").clicked() {
-                        self.state.user_sequence_confirmed = 0;
-                        self.state.user_sequence_received = 0;
-                        self.state.conversation_sequences.clear();
-                        self.state.conversation_sequences_confirmed.clear();
-                        self.state.sequence_stats = Default::default();
-                        tracing::warn!("Manual sequence reset performed - ALL sequences cleared");
-                    }
-                });
-            });
     }
 
     fn show_auth_layout(&mut self, ctx: &egui::Context) {
-        // Lascia che auth::panel gestisca tutto il fullscreen
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
-                components::auth::panel(ui, &mut self.state);
-            });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            components::auth::panel(ui, &mut self.state);
+        });
     }
 
     fn show_main_layout(&mut self, ctx: &egui::Context) {
@@ -725,129 +510,135 @@ impl App {
 
     fn show_welcome_screen(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            ui.add_space(100.0);
+            // Centra verticalmente
+            let available_height = ui.available_height();
+            ui.add_space(available_height / 3.0);
 
-            ui.label(egui::RichText::new("🦀").size(64.0));
-            ui.add_space(16.0);
-            ui.heading(egui::RichText::new("Benvenuto in Ruggine Chat").size(24.0));
-            ui.add_space(8.0);
-            ui.label("Seleziona una conversazione dalla barra laterale per iniziare a chattare");
-
-            ui.add_space(20.0);
-
-            match self.state.ws_status {
-                WsStatus::Connected => {
-                    ui.colored_label(egui::Color32::GREEN, "🟢 Sincronizzato");
-                    if self.state.user_sequence_confirmed > 0 {
-                        ui.label(format!(
-                            "Ultimo evento utente: #{}",
-                            self.state.user_sequence_confirmed
-                        ));
-                    }
-
-                    let health = SequenceHandler::get_sequence_health(&self.state);
-                    if health < 1.0 {
-                        let health_color = if health > 0.8 {
-                            egui::Color32::YELLOW
-                        } else {
-                            egui::Color32::RED
-                        };
-                        ui.colored_label(
-                            health_color,
-                            format!("Salute sincronizzazione: {:.1}%", health * 100.0),
-                        );
-                    }
-                }
-                WsStatus::Connecting => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.colored_label(egui::Color32::YELLOW, "🟡 Connessione in corso...");
-                    });
-                }
-                WsStatus::Disconnected => {
-                    ui.colored_label(
-                        egui::Color32::RED,
-                        "🔴 Disconnesso - riconnessione automatica...",
-                    );
-                    if self.state.user_sequence_confirmed > 0 {
-                        ui.colored_label(
-                            egui::Color32::GRAY,
-                            format!(
-                                "Ultima sequenza utente nota: #{}",
-                                self.state.user_sequence_confirmed
-                            ),
-                        );
-                    }
-                }
-            }
-
-            ui.add_space(20.0);
-
-            let has_conversations = self
-                .state
-                .conversations
-                .as_ref()
-                .map_or(false, |convs| !convs.is_empty());
-
-            if !has_conversations {
-                ui.label("Sembra che tu non abbia ancora conversazioni!");
-                ui.add_space(8.0);
-            } else {
-                if self.state.cid.is_none() {
-                    ui.label("Hai delle conversazioni disponibili!");
-                    ui.add_space(8.0);
-                    ui.label("Selezionane una dalla barra laterale per iniziare a chattare.");
-                }
-            }
-
-            if self.state.is_loading && !self.state.is_initial_load_complete {
-                ui.add_space(20.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Caricamento dati in corso...");
-                });
-            }
-
-            ui.add_space(30.0);
-            ui.separator();
-            ui.add_space(10.0);
+            // Icona chat grande
             ui.label(
-                egui::RichText::new("Shortcuts utili:")
-                    .size(12.0)
-                    .color(egui::Color32::GRAY),
+                egui::RichText::new(egui_remixicon::icons::CHAT_SMILE_FILL)
+                    .size(80.0)
             );
+
+            ui.add_space(24.0);
+
+            // Titolo
             ui.label(
-                egui::RichText::new("Ctrl+D: Debug Panel • Ctrl+R: Riconnetti • F5: Aggiorna")
-                    .size(10.0)
-                    .color(egui::Color32::GRAY),
+                egui::RichText::new("Benvenuto in Ruggine Chat")
+                    .size(28.0)
+                    .strong(),
+            );
+
+            ui.add_space(12.0);
+
+            // Sottotitolo
+            ui.label(
+                egui::RichText::new(
+                    "Seleziona una conversazione dalla barra laterale per iniziare a chattare",
+                )
+                    .size(14.0)
+                    .color(ui.visuals().weak_text_color()),
             );
         });
     }
 
-    fn periodic_cleanup(&mut self) {
-        static mut LAST_CLEANUP: Option<std::time::Instant> = None;
+    fn show_debug_panel(&mut self, ctx: &egui::Context) {
+        egui::Window::new("🔧 Debug Info")
+            .default_pos([10.0, 400.0])
+            .default_width(320.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("Connection");
+                    ui.horizontal(|ui| {
+                        ui.label("WebSocket:");
+                        match self.state.ws_status {
+                            WsStatus::Connected => ui.colored_label(egui::Color32::GREEN, "Connected"),
+                            WsStatus::Connecting => ui.colored_label(egui::Color32::YELLOW, "Connecting..."),
+                            WsStatus::Disconnected => ui.colored_label(egui::Color32::RED, "Disconnected"),
+                        };
+                    });
 
-        let should_cleanup = unsafe {
-            LAST_CLEANUP.map_or(true, |last| {
+                    ui.separator();
+                    ui.heading("Sequences");
+                    ui.label(format!("User confirmed: {}", self.state.user_sequence_confirmed));
+                    ui.label(format!("User received: {}", self.state.user_sequence_received));
+                    ui.label(format!("Conv sequences: {}", self.state.conversation_sequences.len()));
+                    ui.label(format!("Missed pings: {}/{}", self.state.missed_pings, self.state.max_missed_pings));
+
+                    ui.separator();
+                    ui.heading("Stats");
+                    ui.label(format!("Ping count: {}", self.state.sequence_stats.ping_count));
+                    ui.label(format!("Pong count: {}", self.state.sequence_stats.pong_count));
+                    ui.label(format!("Gaps detected: {}", self.state.sequence_stats.gaps_detected));
+                    ui.label(format!("Events recovered: {}", self.state.sequence_stats.events_recovered));
+
+                    ui.separator();
+                    ui.heading("Data");
+                    ui.label(format!("Conversations: {}", self.state.conversations.as_ref().map_or(0, |c| c.len())));
+                    ui.label(format!("Cached messages: {}", self.state.get_total_cached_messages()));
+                    ui.label(format!("DM stubs: {}", self.state.dm_stubs.len()));
+                    ui.label(format!("Group stubs: {}", self.state.group_stubs.len()));
+                    ui.label(format!("Pending confirmations: {}", self.state.pending_confirmations.len()));
+
+                    ui.separator();
+                    ui.heading("Recovery");
+                    ui.label(format!("Recovering user events: {}", self.state.is_recovering_user_events));
+                    ui.label(format!("Pending resume: {}", self.state.pending_resume_requests));
+
+                    ui.separator();
+                    if ui.button("Force Reconnect").clicked() {
+                        self.state.request_ws_reconnect = true;
+                    }
+                    if ui.button("Reset WS Stats").clicked() {
+                        self.ws_manager.reset_stats();
+                    }
+
+                    ui.separator();
+                    ui.heading("Health");
+                    let health = SequenceHandler::get_sequence_health(&self.state);
+                    let health_color = if health > 0.8 {
+                        egui::Color32::GREEN
+                    } else if health > 0.5 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::RED
+                    };
+                    ui.colored_label(health_color, format!("Sequence Health: {:.1}%", health * 100.0));
+                });
+            });
+    }
+
+    fn periodic_cleanup(&mut self) {
+        static mut LAST_GENERAL_CLEANUP: Option<std::time::Instant> = None;
+
+        // 1. Cleanup stub: SOLO se ci sono stub in attesa (check leggero)
+        if !self.state.dm_stubs.is_empty() || !self.state.group_stubs.is_empty() {
+            self.state.cleanup_expired_stubs();
+        }
+
+        // 2. Cleanup generale: ogni 5 minuti (300 secondi)
+        let should_general_cleanup = unsafe {
+            LAST_GENERAL_CLEANUP.map_or(true, |last| {
                 last.elapsed() > std::time::Duration::from_secs(300)
             })
         };
 
-        if should_cleanup {
+        if should_general_cleanup {
             self.state.cleanup_old_data();
-            self.state.cleanup_dm_stubs();
 
             unsafe {
-                LAST_CLEANUP = Some(std::time::Instant::now());
+                LAST_GENERAL_CLEANUP = Some(std::time::Instant::now());
             }
             tracing::debug!("Periodic cleanup completed");
 
             let stats = self.state.get_debug_info();
             tracing::debug!(
-                "Cleanup stats: {} conversations, {} messages, {} stubs",
+                "Cleanup stats: {} conversations, {} messages, {} dm_stubs, {} group_stubs",
                 stats.get("conversations").unwrap_or(&"0".to_string()),
                 stats.get("cached_messages").unwrap_or(&"0".to_string()),
-                stats.get("dm_stubs").unwrap_or(&"0".to_string())
+                stats.get("dm_stubs").unwrap_or(&"0".to_string()),
+                stats.get("group_stubs").unwrap_or(&"0".to_string())
             );
         }
     }
@@ -868,23 +659,19 @@ impl App {
         const MULTILINE_MIN_TEXT: f32 = 80.0;
         const MULTILINE_SECOND_MIN: f32 = 60.0;
         const BASE_ALPHA: f32 = 0.92; // Aumentato per migliore visibilità
-        const FADE_START: f32 = 9.5;
-        const FADE_END: f32 = 10.0;
 
-        let screen_rect = ctx.input(|i| i.screen_rect());
-        let max_width = (screen_rect.width() * SCREEN_RATIO)
-            .min(MAX_ABS_WIDTH)
-            .max(MIN_MAX_WIDTH);
+        const FADE_START: f32 = 4.0;
+        const FADE_END: f32 = 5.0;
 
-        use std::collections::HashSet;
-        let mut to_remove: HashSet<uuid::Uuid> = HashSet::new();
-        let mut y_offset = 0.0;
+        let screen_rect = ctx.screen_rect();
+        let max_width = (screen_rect.width() * SCREEN_RATIO).clamp(MIN_MAX_WIDTH, MAX_ABS_WIDTH);
 
-        // Determina se siamo in dark mode
         let is_dark = ctx.style().visuals.dark_mode;
 
+        let mut y_offset: f32 = 0.0;
+        let mut to_remove = std::collections::HashSet::new();
+
         for toast in &self.state.toasts {
-            // Colori adattivi per dark/light mode
             let (bg, text_color, icon_color, icon) = match toast.kind {
                 crate::state::ToastKind::Info => {
                     let bg = if is_dark {

@@ -1,6 +1,6 @@
 pub mod auth;
 pub mod chat;
-mod conversation_management;
+pub(crate) mod conversation_management;
 
 
 

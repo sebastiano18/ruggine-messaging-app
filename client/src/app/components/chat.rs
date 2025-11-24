@@ -300,16 +300,16 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Bottone info membri - visibile a tutti
                             let info_btn = egui::Button::new(
-                                RichText::new(egui_remixicon::icons::USER_LINE)
+                                RichText::new(egui_remixicon::icons::INFORMATION_LINE)
                                     .size(18.0)
                             )
                                 .frame(false);
 
                             if ui.add(info_btn)
-                                .on_hover_text("Mostra membri del gruppo")
+                                .on_hover_text("Informazioni Gruppo")
                                 .clicked()
                             {
-                                s.show_members_popup = true;
+                                s.show_group_info_popup = true;
                                 // I membri verranno caricati se necessario quando si apre la popup
                             }
 
@@ -361,8 +361,8 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     conversation_popups::show_invite_popup(ui.ctx(), s, cid);
 
     // Popup per visualizzare membri
-    if s.show_members_popup {
-        show_members_popup(ui, s, cid);
+    if s.show_group_info_popup {
+        show_group_info_popup(ui, s, cid);
     }
 }
 
@@ -802,7 +802,7 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
     }
 }
 
-fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
+fn show_group_info_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
 
     // Se la lista è vuota per questa conversazione e non stiamo già caricando, richiedi i membri
@@ -812,12 +812,21 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         }
     }
 
+    // Ottieni info del gruppo
+    let group_info = s.conversations
+        .as_ref()
+        .and_then(|convs| convs.iter().find(|c| c.id == cid))
+        .map(|conv| (conv.title.clone(), conv.created_at, conv.owner_id));
+
+    let (group_title, created_at, owner_id) = group_info
+        .unwrap_or(("Gruppo".to_string(), 0, Uuid::nil()));
+
     egui::Window::new("")
-        .id(egui::Id::new("members_popup"))
+        .id(egui::Id::new("group_info_popup"))
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .fixed_size([450.0, 550.0])
+        .fixed_size([450.0, 600.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
             // Bottone X in alto a destra
@@ -833,44 +842,97 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 }
             });
 
-            // Titolo centrato con nome del gruppo
+            // Titolo centrato
             ui.vertical_centered(|ui| {
                 ui.add_space(5.0);
-
-                let group_title = s.conversations
-                    .as_ref()
-                    .and_then(|convs| convs.iter().find(|c| c.id == cid))
-                    .map(|conv| conv.title.as_str())
-                    .unwrap_or("Gruppo");
-
                 ui.label(
-                    RichText::new(format!("{} Membri di {}", egui_remixicon::icons::TEAM_FILL, group_title))
+                    RichText::new(egui_remixicon::icons::TEAM_FILL)
+                        .size(40.0)
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(&group_title)
                         .size(24.0)
                         .strong()
                         .color(egui::Color32::from_rgb(200, 100, 40))
                 );
             });
 
-            ui.add_space(20.0);
-            ui.add_space(15.0);
+            ui.add_space(16.0);
+
+            // Info gruppo (data creazione)
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(20.0, 0.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(egui_remixicon::icons::CALENDAR_LINE)
+                                .size(16.0)
+                                .color(egui::Color32::from_rgb(200, 100, 40))
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Creato il:")
+                                .size(13.0)
+                                .color(ui.visuals().weak_text_color())
+                        );
+                        ui.add_space(4.0);
+
+                        // Formatta la data
+                        let date_str = if created_at > 0 {
+                            let datetime = chrono::DateTime::from_timestamp(created_at, 0)
+                                .map(|dt| dt.format("%d/%m/%Y alle %H:%M").to_string())
+                                .unwrap_or_else(|| "Data sconosciuta".to_string());
+                            datetime
+                        } else {
+                            "Data sconosciuta".to_string()
+                        };
+
+                        ui.label(
+                            RichText::new(date_str)
+                                .size(13.0)
+                        );
+                    });
+                });
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(12.0);
+
+            // Sezione membri
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    RichText::new(format!("{} Membri", egui_remixicon::icons::GROUP_LINE))
+                        .size(16.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+
+                // Conta membri
+                if let Some(members) = s.members_list.get(&cid) {
+                    ui.label(
+                        RichText::new(format!("({})", members.len()))
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color())
+                    );
+                }
+            });
+
+            ui.add_space(12.0);
 
             if s.is_loading_members {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(150.0);
+                    ui.add_space(80.0);
                     ui.spinner();
                     ui.add_space(8.0);
                     ui.label("Caricamento membri...");
                 });
             } else {
-                // Determina se l'utente è owner o partecipante
-                let owner_id = s.conversations
-                    .as_ref()
-                    .and_then(|convs| convs.iter().find(|c| c.id == cid))
-                    .map(|conv| conv.owner_id);
-
                 let current_user_id = s.user_id;
-                let is_owner = match (owner_id, current_user_id) {
-                    (Some(oid), Some(uid)) => oid == uid,
+                let is_owner = match (Some(owner_id), current_user_id) {
+                    (Some(oid), Some(uid)) if oid != Uuid::nil() => oid == uid,
                     _ => false,
                 };
 
@@ -879,7 +941,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                     s.members_list.get(&cid)
                         .map(|members| {
                             members.iter().any(|m| {
-                                m.user_id == uid && owner_id.map_or(true, |oid| oid != m.user_id)
+                                m.user_id == uid && owner_id != m.user_id
                             })
                         })
                         .unwrap_or(false)
@@ -891,13 +953,13 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                     .inner_margin(egui::Margin::symmetric(20.0, 0.0))
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
-                            .max_height(340.0)
+                            .max_height(280.0)
                             .show(ui, |ui| {
                                 let members = s.members_list.get(&cid);
 
                                 if members.is_none() || members.unwrap().is_empty() {
                                     ui.vertical_centered(|ui| {
-                                        ui.add_space(140.0);
+                                        ui.add_space(100.0);
                                         ui.label(
                                             RichText::new("Nessun membro trovato")
                                                 .italics()
@@ -915,7 +977,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                             ui.add_space(8.0);
                                             ui.label(RichText::new(&member.username).size(14.0));
 
-                                            if owner_id.map_or(false, |oid| oid == member.user_id) {
+                                            if owner_id == member.user_id {
                                                 ui.label(
                                                     RichText::new(egui_remixicon::icons::VIP_CROWN_FILL)
                                                         .size(16.0)
@@ -929,7 +991,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                                     .color(ui.visuals().weak_text_color())
                                             );
 
-                                            if is_owner && owner_id.map_or(true, |oid| oid != member.user_id) {
+                                            if is_owner && owner_id != member.user_id {
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     let kick_button = egui::Button::new(
                                                         RichText::new(format!("{} Espelli", egui_remixicon::icons::USER_UNFOLLOW_LINE))
@@ -955,7 +1017,6 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                     });
 
                 ui.add_space(20.0);
-                ui.add_space(15.0);
 
                 // Bottone azione in base al ruolo - centrato
                 ui.vertical_centered(|ui| {
@@ -973,7 +1034,6 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                             .on_hover_text("Elimina definitivamente questo gruppo")
                             .clicked()
                         {
-                            // Clona la conversazione prima per evitare problemi di borrow
                             if let Some(conv) = s.conversations.as_ref()
                                 .and_then(|convs| convs.iter().find(|c| c.id == cid))
                                 .cloned()
@@ -995,7 +1055,6 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                             .on_hover_text("Abbandona questo gruppo")
                             .clicked()
                         {
-                            // Clona la conversazione prima per evitare problemi di borrow
                             if let Some(conv) = s.conversations.as_ref()
                                 .and_then(|convs| convs.iter().find(|c| c.id == cid))
                                 .cloned()
@@ -1011,7 +1070,7 @@ fn show_members_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
         });
 
     if close_popup {
-        s.show_members_popup = false;
+        s.show_group_info_popup = false;
     }
 }
 // === Funzioni per i separatori di data ===

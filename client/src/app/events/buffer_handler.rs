@@ -103,4 +103,29 @@ impl BufferHandler {
                 .push(event);
         }
     }
+
+    /// Ottiene il prossimo messaggio bufferizzato con una specifica sequenza
+    /// Ritorna Some(msg) se il messaggio esiste, None altrimenti
+    pub fn get_next_buffered_message(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        expected_seq: u64,
+    ) -> Option<MessageDto> {
+        if let Some(buffer) = state.message_reorder_buffer.get_mut(&conversation_id) {
+            if let Some(msg) = buffer.remove(&expected_seq) {
+                debug!(
+                    "Retrieved buffered message seq {} for conversation {}",
+                    expected_seq, conversation_id
+                );
+
+                // Pulisci il buffer se vuoto
+                if buffer.is_empty() {
+                    state.message_reorder_buffer.remove(&conversation_id);
+                }
+
+                return Some(msg);
+            }
+        }
+        None
+    }
 }

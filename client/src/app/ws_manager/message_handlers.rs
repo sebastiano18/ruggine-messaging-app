@@ -1,6 +1,7 @@
 use crate::models::{ConversationDto, GapInfo, MessageDto, ParticipantInfo, UiEvent, UserEventData};
 use serde_json::Value;
 use std::collections::HashMap;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -62,12 +63,48 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "message_ack" => handle_message_ack(tx, &parsed_value),
         "warning" => handle_server_warning(tx, &parsed_value),
         "message_deleted" => handle_message_deleted(tx, &parsed_value),
+        "check_user_response" => handle_check_user_response(tx, &parsed_value),
         _ => {
             debug!("Unhandled message type: {}", msg_type);
         }
     }
 }
 
+fn handle_check_user_response(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    let username = value
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let exists = value
+        .get("exists")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let user_id = value
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    let request_id = value
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    info!(
+        "User check response: username='{}', exists={}, user_id={:?}, request_id={}",
+        username, exists, user_id, request_id
+    );
+
+    let _ = tx.send(UiEvent::UserCheckResult {
+        username,
+        exists,
+        user_id,
+        request_id,
+    });
+}
 
 fn handle_message_confirmation(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let client_msg_id = value
@@ -1025,4 +1062,5 @@ fn handle_new_message_event(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, va
         conversation_id,
         recovery: false, // È un evento real-time, non recovery
     });
+
 }

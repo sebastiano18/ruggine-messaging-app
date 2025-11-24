@@ -7,6 +7,12 @@ use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+/// Timeout per gli stub (gruppi e DM) - se non confermati entro questo tempo, vengono rimossi
+pub const STUB_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout per la verifica utente
+pub const USER_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Default)]
 pub struct SequenceStats {
     pub total_events_received: u64,
@@ -110,11 +116,11 @@ pub struct AppState {
     pub is_initial_load_complete: bool,
     pub is_loading: bool,
 
-    // DM stub tracking - conversation_id -> target_username
-    pub dm_stubs: HashMap<Uuid, String>,
+    // DM stub tracking - conversation_id -> (target_username, created_at)
+    pub dm_stubs: HashMap<Uuid, (String, Instant)>,
 
-    // Group stub tracking - conversation_id -> group_name
-    pub group_stubs: HashMap<Uuid, String>,
+    // Group stub tracking - conversation_id -> (group_name, created_at)
+    pub group_stubs: HashMap<Uuid, (String, Instant)>,
 
     // Message confirmation tracking
     pub pending_confirmations: HashMap<String, MessageDto>, // client_msg_id -> messaggio ottimistico
@@ -171,7 +177,7 @@ pub struct AppState {
     pub invite_popup: InvitePopupState,
 
     // Members popup state
-    pub show_members_popup: bool,
+    pub show_group_info_popup: bool,
     pub members_list: HashMap<Uuid, Vec<ParticipantInfo>>,
     pub is_loading_members: bool,
 
@@ -187,7 +193,13 @@ pub struct AppState {
 
     // Member kick confirmation - (conversation_id, user_id, username)
     pub pending_member_kick: Option<(Uuid, Uuid, String)>,
+
+    // NUOVO: User check state per validazione DM
+    pub pending_user_check: Option<String>,        // username in verifica
+    pub user_check_request_id: Option<String>,     // request_id per correlare
+    pub user_check_timestamp: Option<Instant>,     // per timeout
 }
+
 impl AppState {
     pub fn new() -> Self {
         let rt = Runtime::new().expect("tokio runtime");
@@ -284,7 +296,7 @@ impl AppState {
             // DM management
             dm_username: String::new(),
 
-            show_members_popup: false,
+            show_group_info_popup: false,
             members_list: HashMap::new(),
             is_loading_members: false,
 
@@ -296,6 +308,11 @@ impl AppState {
 
             // Member kick confirmation
             pending_member_kick: None,
+
+            // NUOVO: User check state
+            pending_user_check: None,
+            user_check_request_id: None,
+            user_check_timestamp: None,
         }
     }
 
@@ -307,9 +324,140 @@ impl AppState {
         // Cleanup periodico delle conferme
         if self.last_confirmation_cleanup.elapsed() > Duration::from_secs(5) {
             self.cleanup_pending_confirmations();
+            self.cleanup_pending_user_check(); // NUOVO: cleanup user check timeout
             self.last_confirmation_cleanup = Instant::now();
         }
     }
+
+    // ============================================
+    // NUOVE FUNZIONI PER VALIDAZIONE UTENTE
+    // ============================================
+
+    /// Richiede la creazione di un DM - prima verifica che l'utente esista
+    pub fn request_dm_creation(&mut self, target_username: String) {
+        // CHECK CONNESSIONE
+        if self.ws_status != WsStatus::Connected {
+            warn!("Cannot create DM: WebSocket not connected");
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
+            return;
+        }
+
+        // Pulisci username
+        let username = target_username.trim().to_string();
+        if username.is_empty() {
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic("Username non può essere vuoto".to_string())
+            ));
+            return;
+        }
+
+        // Non permettere DM con se stessi
+        if username.to_lowercase() == self.username.to_lowercase() {
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic("Non puoi chattare con te stesso".to_string())
+            ));
+            return;
+        }
+
+        // Controlla se esiste già una conversazione con questo utente
+        if let Some(ref convs) = self.conversations {
+            if convs.iter().any(|c| c.kind == "dm" && c.title.to_lowercase() == username.to_lowercase()) {
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    ErrorType::Generic("Esiste già una chat con questo utente".to_string())
+                ));
+                return;
+            }
+        }
+
+        // Controlla se c'è già un check in corso
+        if self.pending_user_check.is_some() {
+            warn!("User check already in progress");
+            return;
+        }
+
+        // Genera request_id per correlare richiesta/risposta
+        let request_id = Uuid::new_v4().to_string();
+
+        // Salva stato pending
+        self.pending_user_check = Some(username.clone());
+        self.user_check_request_id = Some(request_id.clone());
+        self.user_check_timestamp = Some(Instant::now());
+
+        info!("Checking if user exists: {}", username);
+
+        // Invia richiesta di verifica via WebSocket
+        self.send_via_websocket(Outgoing::CheckUser {
+            username,
+            request_id,
+        });
+    }
+
+    /// Callback quando riceviamo la risposta del check utente
+    pub fn handle_user_check_result(
+        &mut self,
+        username: String,
+        exists: bool,
+        user_id: Option<Uuid>,
+        request_id: String,
+    ) {
+        // Verifica che sia la risposta che aspettavamo
+        if self.user_check_request_id.as_ref() != Some(&request_id) {
+            warn!("Received stale user check response for request_id: {}", request_id);
+            return;
+        }
+
+        // Pulisci stato pending
+        self.pending_user_check = None;
+        self.user_check_request_id = None;
+        self.user_check_timestamp = None;
+
+        if exists {
+            info!("User '{}' exists (id: {:?}), creating DM stub", username, user_id);
+
+            // Utente esiste! Crea lo stub
+            if let Some(stub_id) = self.create_dm_stub(username.clone()) {
+                let _ = self.ui_tx.send(UiEvent::DmStubCreated(stub_id, username));
+            }
+        } else {
+            info!("User '{}' not found", username);
+
+            // Utente non esiste - mostra errore
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic(format!("Utente '{}' non trovato", username))
+            ));
+        }
+    }
+
+    /// Verifica se c'è un check utente in timeout e lo pulisce
+    pub fn cleanup_pending_user_check(&mut self) {
+        if let Some(timestamp) = self.user_check_timestamp {
+            if timestamp.elapsed() > USER_CHECK_TIMEOUT {
+                warn!(
+                    "User check timeout for username: {:?}",
+                    self.pending_user_check
+                );
+
+                // Mostra errore
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    ErrorType::Generic("Timeout verifica utente. Riprova.".to_string())
+                ));
+
+                // Pulisci stato
+                self.pending_user_check = None;
+                self.user_check_request_id = None;
+                self.user_check_timestamp = None;
+            }
+        }
+    }
+
+    /// Verifica se un check utente è in corso
+    pub fn is_checking_user(&self) -> bool {
+        self.pending_user_check.is_some()
+    }
+
+    // ============================================
+    // FINE NUOVE FUNZIONI
+    // ============================================
 
     pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
         self.pending_deletion = Some(PendingDeletion {
@@ -393,6 +541,7 @@ impl AppState {
             Outgoing::RequestUserResume { .. } | Outgoing::RequestMessagesResume { .. } => {
                 ErrorType::DataRecovery
             }
+            Outgoing::CheckUser { .. } => ErrorType::Connection, // NUOVO
             _ => return, // Silenzioso per Ping, Typing, etc.
         };
 
@@ -404,7 +553,8 @@ impl AppState {
 
     pub fn send_chat_message_ws(&self, content: String, client_msg_id: Option<String>) {
         if let Some(cid) = self.cid {
-            let target_username = self.dm_stubs.get(&cid).cloned();
+            // Estrai solo lo username dalla tupla (username, created_at)
+            let target_username = self.dm_stubs.get(&cid).map(|(username, _)| username.clone());
 
             if target_username.is_some() {
                 debug!(
@@ -446,118 +596,63 @@ impl AppState {
         }
 
         for client_id in expired {
-            if let Some(msg) = self.pending_confirmations.remove(&client_id) { // ← Cambia _msg in msg
+            if let Some(msg) = self.pending_confirmations.remove(&client_id) {
                 warn!("Message confirmation timeout for {}", client_id);
 
-                // Marca il messaggio come fallito nell'UI
-                for ui_msg in &mut self.messages {
-                    if ui_msg.client_msg_id == Some(client_id.clone()) {
-                        ui_msg.is_confirmed = Some(false);
+                // Marca come fallito il messaggio nella UI
+                let _ = self.ui_tx.send(UiEvent::MessageSendFailed(msg.id));
+
+                // Aggiorna il messaggio nella cache
+                if let Some(messages) = self.conversation_messages.get_mut(&msg.conversation_id) {
+                    for m in messages.iter_mut() {
+                        if m.id == msg.id {
+                            m.is_confirmed = Some(false);
+                            break;
+                        }
+                    }
+                }
+
+                // Aggiorna nella lista messaggi corrente
+                for m in self.messages.iter_mut() {
+                    if m.id == msg.id {
+                        m.is_confirmed = Some(false);
                         break;
                     }
                 }
 
-                // Invia evento MessageSendFailed per gestione completa
-                let _ = self.ui_tx.send(UiEvent::MessageSendFailed(msg.id));
+                info!("Marked message {} as failed after timeout", msg.id);
             }
         }
     }
 
-    // ===Ping System ===
-
-    pub fn get_total_cached_messages(&self) -> usize {
-        self.conversation_messages.values().map(|v| v.len()).sum()
+    pub fn add_dm_stub(&mut self, stub_id: Uuid, target_username: String) {
+        self.dm_stubs.insert(stub_id, (target_username.clone(), Instant::now()));
+        debug!("Added DM stub: {} -> {}", stub_id, target_username);
     }
 
-    pub fn get_debug_info(&self) -> HashMap<String, String> {
-        let mut info = HashMap::new();
-
-        info.insert("ws_status".to_string(), format!("{:?}", self.ws_status));
-        info.insert(
-            "user_seq_confirmed".to_string(),
-            self.user_sequence_confirmed.to_string(),
-        );
-        info.insert(
-            "user_seq_received".to_string(),
-            self.user_sequence_received.to_string(),
-        );
-        info.insert(
-            "active_conversation".to_string(),
-            self.cid.map_or("none".to_string(), |id| id.to_string()),
-        );
-        info.insert(
-            "pending_confirmations".to_string(),
-            self.pending_confirmations.len().to_string(),
-        );
-
-        if let Some(cid) = self.cid {
-            let conv_seq = self.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let conv_seq_confirmed = self
-                .conversation_sequences_confirmed
-                .get(&cid)
-                .copied()
-                .unwrap_or(0);
-            info.insert("conv_seq".to_string(), conv_seq.to_string());
-            info.insert(
-                "conv_seq_confirmed".to_string(),
-                conv_seq_confirmed.to_string(),
-            );
-        }
-
-        info.insert(
-            "sequence_health".to_string(),
-            format!("{:.2}", SequenceHandler::get_sequence_health(self)),
-        );
-        info.insert(
-            "ping_count".to_string(),
-            self.sequence_stats.ping_count.to_string(),
-        );
-        info.insert(
-            "pong_count".to_string(),
-            self.sequence_stats.pong_count.to_string(),
-        );
-        info.insert(
-            "missed_pings".to_string(),
-            format!("{}/{}", self.missed_pings, self.max_missed_pings),
-        );
-        info.insert(
-            "gaps_detected".to_string(),
-            self.sequence_stats.gaps_detected.to_string(),
-        );
-        info.insert(
-            "pending_resume".to_string(),
-            self.pending_resume_requests.to_string(),
-        );
-
-        info
-    }
-
-    pub fn is_authenticated(&self) -> bool {
-        self.token.is_some() && self.user_id.is_some()
-    }
-
-    pub fn add_dm_stub(&mut self, conversation_id: Uuid, target_username: String) {
-        debug!("Adding DM stub: {} -> {}", conversation_id, target_username);
-
-        if self.dm_stubs.contains_key(&conversation_id) {
-            warn!(
-                "DM stub already exists for conversation {}",
-                conversation_id
-            );
-            return;
-        }
-
-        self.dm_stubs.insert(conversation_id, target_username);
+    pub fn add_group_stub(&mut self, stub_id: Uuid, group_name: String) {
+        self.group_stubs.insert(stub_id, (group_name.clone(), Instant::now()));
+        debug!("Added group stub: {} -> {}", stub_id, group_name);
     }
 
     pub fn remove_dm_stub(&mut self, conversation_id: Uuid) {
-        if let Some(target) = self.dm_stubs.remove(&conversation_id) {
+        if let Some((target, _)) = self.dm_stubs.remove(&conversation_id) {
             debug!("Removed DM stub: {} -> {}", conversation_id, target);
+        }
+    }
+
+    pub fn remove_group_stub(&mut self, conversation_id: Uuid) {
+        if let Some((name, _)) = self.group_stubs.remove(&conversation_id) {
+            debug!("Removed group stub: {} -> {}", conversation_id, name);
         }
     }
 
     pub fn is_dm_stub(&self, conversation_id: Uuid) -> bool {
         self.dm_stubs.contains_key(&conversation_id)
+    }
+
+    pub fn is_group_stub(&self, conversation_id: Uuid) -> bool {
+        self.group_stubs.contains_key(&conversation_id)
     }
 
     pub fn cleanup_old_data(&self) {
@@ -570,19 +665,100 @@ impl AppState {
         }
     }
 
-    pub fn cleanup_dm_stubs(&mut self) {
-        let mut to_remove = Vec::new();
+    /// Pulisce gli stub scaduti (sia DM che gruppi) e quelli già confermati
+    pub fn cleanup_expired_stubs(&mut self) {
+        let now = Instant::now();
+
+        // === Cleanup group stubs scaduti ===
+        let expired_groups: Vec<Uuid> = self.group_stubs
+            .iter()
+            .filter(|(_, (_, created))| now.duration_since(*created) > STUB_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for stub_id in expired_groups {
+            if let Some((name, _)) = self.group_stubs.remove(&stub_id) {
+                warn!("Removing expired group stub: {} ({})", name, stub_id);
+
+                // Rimuovi dalla lista conversazioni
+                if let Some(ref mut convs) = self.conversations {
+                    convs.retain(|c| c.id != stub_id);
+                }
+
+                // Rimuovi messaggi cached
+                self.conversation_messages.remove(&stub_id);
+
+                // Se era la conversazione attiva, torna alla lista
+                if self.cid == Some(stub_id) {
+                    self.cid = None;
+                    self.page = Page::Conversations;
+                    self.messages.clear();
+                    self.conv_title.clear();
+                }
+
+                // Notifica l'utente
+                let _ = self.ui_tx.send(UiEvent::Error(ErrorType::GroupCreate));
+            }
+        }
+
+        // === Cleanup DM stubs scaduti ===
+        let expired_dms: Vec<Uuid> = self.dm_stubs
+            .iter()
+            .filter(|(_, (_, created))| now.duration_since(*created) > STUB_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for stub_id in expired_dms {
+            if let Some((username, _)) = self.dm_stubs.remove(&stub_id) {
+                warn!("Removing expired DM stub: {} ({})", username, stub_id);
+
+                // Rimuovi dalla lista conversazioni
+                if let Some(ref mut convs) = self.conversations {
+                    convs.retain(|c| c.id != stub_id);
+                }
+
+                // Rimuovi messaggi cached
+                self.conversation_messages.remove(&stub_id);
+
+                // Se era la conversazione attiva, torna alla lista
+                if self.cid == Some(stub_id) {
+                    self.cid = None;
+                    self.page = Page::Conversations;
+                    self.messages.clear();
+                    self.conv_title.clear();
+                }
+
+                // Notifica l'utente
+                let _ = self.ui_tx.send(UiEvent::Error(ErrorType::MessageSend));
+            }
+        }
+
+        // === Cleanup stub già confermati (conversazioni reali con stesso ID) ===
+        let mut confirmed_dm_stubs = Vec::new();
+        let mut confirmed_group_stubs = Vec::new();
 
         if let Some(ref conversations) = self.conversations {
             for (&stub_id, _) in &self.dm_stubs {
-                if conversations.iter().any(|c| c.id == stub_id) {
-                    to_remove.push(stub_id);
+                if conversations.iter().any(|c| c.id == stub_id && c.last_msg_seq > 0) {
+                    confirmed_dm_stubs.push(stub_id);
+                }
+            }
+            for (&stub_id, _) in &self.group_stubs {
+                if conversations.iter().any(|c| c.id == stub_id && c.last_msg_seq > 0) {
+                    confirmed_group_stubs.push(stub_id);
                 }
             }
         }
 
-        for id in to_remove {
-            self.dm_stubs.remove(&id);
+        for id in confirmed_dm_stubs {
+            if let Some((username, _)) = self.dm_stubs.remove(&id) {
+                debug!("Cleaned up confirmed DM stub: {} -> {}", id, username);
+            }
+        }
+        for id in confirmed_group_stubs {
+            if let Some((name, _)) = self.group_stubs.remove(&id) {
+                debug!("Cleaned up confirmed group stub: {} -> {}", id, name);
+            }
         }
     }
 
@@ -673,7 +849,6 @@ impl AppState {
             {
                 Ok(_) => {
                     info!("Member kicked successfully - will receive update via WebSocket");
-                    // Non serve ricaricare manualmente, arriverà l'evento member_list_updated via WebSocket
                 }
                 Err(e) => {
                     error!("Failed to kick member: {}", e);
@@ -697,7 +872,6 @@ impl AppState {
 
     // UI Message handling
     pub fn set_auth_message(&mut self, msg: String, is_error: bool) {
-        // Messaggi per la pagina di autenticazione
         self.auth_message = Some(msg);
         self.auth_message_is_error = is_error;
     }
@@ -707,10 +881,9 @@ impl AppState {
         self.auth_message_is_error = false;
     }
 
-    /// Instrada automaticamente il messaggio alla categoria giusta
     pub fn set_message_info(&mut self, msg: String) {
         if self.token.is_none() {
-            self.set_auth_message(msg, false); // Info = non errore
+            self.set_auth_message(msg, false);
         } else {
             self.push_toast(ToastKind::Info, msg);
         }
@@ -718,7 +891,7 @@ impl AppState {
 
     pub fn set_message_error(&mut self, msg: String) {
         if self.token.is_none() {
-            self.set_auth_message(msg, true); // Error = errore
+            self.set_auth_message(msg, true);
         } else {
             self.push_toast(ToastKind::Error, msg);
         }
@@ -726,7 +899,6 @@ impl AppState {
 
     // === Toast helpers ===
     pub fn push_toast(&mut self, kind: ToastKind, message: String) {
-        // Escludi explicitamente la pagina di autenticazione
         if matches!(self.page, Page::Auth) || self.token.is_none() {
             return;
         }
@@ -736,7 +908,6 @@ impl AppState {
             kind,
             created: Instant::now(),
         });
-        // Limita al massimo 5 toasts attivi per evitare overflow
         if self.toasts.len() > 5 {
             self.toasts.drain(0..self.toasts.len() - 5);
         }
@@ -747,6 +918,13 @@ impl AppState {
         use crate::models::{ConversationDto, MessageDto, Outgoing, Page};
         use uuid::Uuid;
 
+        // CHECK CONNESSIONE: Blocca subito se non connesso
+        if self.ws_status != WsStatus::Connected {
+            warn!("Cannot create group: WebSocket not connected");
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
+            return;
+        }
+
         let group_name = self.create_group_popup.group_name.trim().to_string();
         let participants: Vec<String> = self
             .create_group_popup
@@ -755,12 +933,12 @@ impl AppState {
             .cloned()
             .collect();
 
-        tracing::info!(
-        "Creating group '{}' with {} participants via WebSocket: {:?}",
-        group_name,
-        participants.len(),
-        participants
-    );
+        info!(
+            "Creating group '{}' with {} participants via WebSocket: {:?}",
+            group_name,
+            participants.len(),
+            participants
+        );
 
         // Crea stub per il gruppo
         let stub_id = Uuid::new_v4();
@@ -781,22 +959,13 @@ impl AppState {
             convs.insert(0, stub_conversation);
         }
 
-        // Traccia lo stub
-        self.group_stubs.insert(stub_id, group_name.clone());
+        // Traccia lo stub CON TIMESTAMP
+        self.group_stubs.insert(stub_id, (group_name.clone(), Instant::now()));
 
         // Apri il gruppo stub
         self.cid = Some(stub_id);
         self.page = Page::Chat;
         self.conv_title = group_name.clone();
-
-        // Messaggio di sistema nello stub
-        let system_msg =
-            MessageDto::system_message(format!("Creazione gruppo '{}' in corso...", group_name));
-        self.conversation_messages
-            .entry(stub_id)
-            .or_insert_with(Vec::new)
-            .push(system_msg.clone());
-        self.messages = vec![system_msg];
 
         // Invia al server
         let outgoing = Outgoing::CreateGroupWithParticipants {
@@ -822,14 +991,62 @@ impl AppState {
             return;
         }
 
-        tracing::info!("Created group stub {} and opened it", stub_id);
+        info!("Created group stub {} and opened it", stub_id);
         self.create_group_popup.reset();
+    }
+
+    /// Crea un DM stub per iniziare una nuova chat privata
+    pub fn create_dm_stub(&mut self, target_username: String) -> Option<Uuid> {
+        // CHECK CONNESSIONE: Blocca subito se non connesso
+        if self.ws_status != WsStatus::Connected {
+            warn!("Cannot create DM: WebSocket not connected");
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
+            return None;
+        }
+
+        let stub_id = Uuid::new_v4();
+
+        info!(
+            "Creating DM stub for {} with temp ID: {}",
+            target_username, stub_id
+        );
+
+        // Traccia lo stub CON TIMESTAMP
+        self.dm_stubs.insert(stub_id, (target_username.clone(), Instant::now()));
+
+        Some(stub_id)
     }
 
     pub fn prune_expired_toasts(&mut self, lifetime: Duration) {
         let now = Instant::now();
         self.toasts
             .retain(|t| now.duration_since(t.created) < lifetime);
+    }
+
+    // === Getter methods ===
+
+    pub fn get_total_cached_messages(&self) -> usize {
+        self.conversation_messages.values().map(|v| v.len()).sum()
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.token.is_some()
+    }
+
+    pub fn get_debug_info(&self) -> HashMap<String, String> {
+        let mut info = HashMap::new();
+        info.insert(
+            "conversations".to_string(),
+            self.conversations.as_ref().map_or(0, |c| c.len()).to_string(),
+        );
+        info.insert(
+            "cached_messages".to_string(),
+            self.get_total_cached_messages().to_string(),
+        );
+        info.insert("dm_stubs".to_string(), self.dm_stubs.len().to_string());
+        info.insert("group_stubs".to_string(), self.group_stubs.len().to_string());
+        info.insert("pending_user_check".to_string(), self.pending_user_check.is_some().to_string());
+        info
     }
 }
 
