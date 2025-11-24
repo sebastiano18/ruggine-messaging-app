@@ -238,7 +238,7 @@ impl ConversationHandler {
         }
 
         if let Some(stub_id) = stub_to_remove {
-            if let Some(target) = state.dm_stubs.remove(&stub_id) {
+            if let Some((target, _)) = state.dm_stubs.remove(&stub_id) {
                 info!(
                     "Removed DM stub {} (target: {}) after confirmation",
                     stub_id, target
@@ -506,7 +506,7 @@ impl ConversationHandler {
         info!("Loaded {} conversations", conversations.len());
 
         let mut stubs_to_remove = Vec::new();
-        for (stub_id, target_username) in &state.dm_stubs {
+        for (stub_id, (target_username, _)) in &state.dm_stubs {
             if conversations
                 .iter()
                 .any(|c| c.kind == "dm" && c.title == *target_username)

@@ -606,6 +606,13 @@ pub fn show_create_group_modal(ctx: &egui::Context, s: &mut AppState) {
 
 
 fn create_group_with_participants(s: &mut AppState) {
+    // CHECK CONNESSIONE: Blocca subito se non connesso
+    if s.ws_status != crate::models::WsStatus::Connected {
+        warn!("Cannot create group: WebSocket not connected");
+        let _ = s.ui_tx.send(UiEvent::Error(crate::models::ErrorType::Connection));
+        return;
+    }
+
     let group_name = s.create_group_popup.group_name.trim().to_string();
     let participants: Vec<String> = s
         .create_group_popup
@@ -641,7 +648,7 @@ fn create_group_with_participants(s: &mut AppState) {
     }
 
     // Traccia lo stub
-    s.group_stubs.insert(stub_id, group_name.clone());
+    s.group_stubs.insert(stub_id, (group_name.clone(), std::time::Instant::now()));
 
     // Apri il gruppo stub
     s.cid = Some(stub_id);
@@ -734,6 +741,13 @@ fn create_dm_subsection(ui: &mut egui::Ui, s: &mut AppState) {
                 let _ = s.ui_tx.send(UiEvent::Opened(existing_conv.id));
                 s.dm_username.clear();
             } else {
+                // CHECK CONNESSIONE: Blocca subito se non connesso
+                if s.ws_status != crate::models::WsStatus::Connected {
+                    warn!("Cannot create DM: WebSocket not connected");
+                    let _ = s.ui_tx.send(UiEvent::Error(crate::models::ErrorType::Connection));
+                    return;
+                }
+
                 // Crea uno stub locale per la DM
                 let stub_conversation_id = Uuid::new_v4();
 

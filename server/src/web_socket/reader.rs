@@ -1129,6 +1129,7 @@ async fn get_initial_state(
     let mut members_by_conversation = std::collections::HashMap::new();
 
     // Query per ottenere i membri di tutti i gruppi dell'utente
+    // Ordinati: owner prima, poi alfabeticamente per username
     let members_query = r#"
         SELECT
             p.conversation_id,
@@ -1143,7 +1144,9 @@ async fn get_initial_state(
             INNER JOIN participants p2 ON c.id = p2.conversation_id
             WHERE c.kind = 'group' AND p2.user_id = ?
         )
-        ORDER BY p.conversation_id
+        ORDER BY p.conversation_id,
+                 CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
+                 LOWER(u.username) ASC
     "#;
 
     let member_rows = sqlx::query(members_query)

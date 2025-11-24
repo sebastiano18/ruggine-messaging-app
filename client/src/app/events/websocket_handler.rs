@@ -132,7 +132,10 @@ impl WebSocketHandler {
                 message_conversation_id
             );
 
-            let target_username = state.dm_stubs.remove(&message_conversation_id).unwrap();
+            // MODIFICATO: Estrai solo lo username dalla tupla (String, Instant)
+            let target_username = state.dm_stubs.remove(&message_conversation_id)
+                .map(|(username, _)| username)
+                .unwrap();
 
             let conversation_title = if msg.author_id == state.user_id.unwrap_or(Uuid::nil()) {
                 target_username.clone()
@@ -209,11 +212,11 @@ impl WebSocketHandler {
 
         // AGGIORNA CACHE MESSAGGI
         if !Self::update_message_cache(state, &msg) {
-            debug!("Message {} already in cache, skipping", msg.id);
+            debug!("Message already exists in cache: {}", msg.id);
             return;
         }
 
-        // AGGIORNA UI SE CONVERSAZIONE CORRENTE
+        // AGGIORNA UI SE CONVERSAZIONE ATTIVA
         if Some(message_conversation_id) == state.cid {
             Self::update_ui_messages(state, msg.clone());
         } else {
@@ -231,7 +234,7 @@ impl WebSocketHandler {
                 *current_unread += 1;
 
                 debug!(
-                    "Incremented unread count for conversation {} to {} (new message from {})",
+                    "Incremented unread count for conversation {} to {} (from {})",
                     message_conversation_id,
                     *current_unread,
                     msg.author_username
@@ -239,21 +242,18 @@ impl WebSocketHandler {
             }
         }
 
-        // CONSEGNA MESSAGGI BUFFERIZZATI
-        let buffered_messages = BufferHandler::try_deliver_buffered_messages(state, message_conversation_id);
+        // SVUOTA BUFFER DI RIORDINO
+        if let Some(seq) = msg.sequence_num {
+            while let Some(buffered_msg) = BufferHandler::get_next_buffered_message(state, message_conversation_id, seq + 1) {
+                let buffered_seq = buffered_msg.sequence_num.unwrap_or(0);
 
-        if !buffered_messages.is_empty() {
-            info!(
-                "Delivering {} buffered messages for conversation {}",
-                buffered_messages.len(),
-                message_conversation_id
-            );
+                // Conferma sequenza per messaggio bufferizzato
+                SequenceHandler::update_conversation_sequence(state, message_conversation_id, buffered_seq);
 
-            for buffered_msg in buffered_messages {
-                // Update gestisce la conferma automaticamente
-                if let Some(seq) = buffered_msg.sequence_num {
-                    SequenceHandler::update_conversation_sequence(state, message_conversation_id, seq);
-                }
+                debug!(
+                    "Processing buffered message seq {} for conversation {}",
+                    buffered_seq, message_conversation_id
+                );
 
                 // Aggiungi alla cache
                 if !Self::update_message_cache(state, &buffered_msg) {

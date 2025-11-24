@@ -147,6 +147,7 @@ impl MessageProcessor {
                     json_obj["target_username"] = serde_json::Value::String(username.clone());
 
                     // Se è uno stub, usa l'ID dello stub stesso come client_temp_id
+                    // NOTA: dm_stubs ora contiene (String, Instant), quindi usiamo contains_key
                     if state.dm_stubs.contains_key(cid) {
                         // CRITICO: Usa l'UUID dello stub come client_temp_id
                         // Questo permetterà al client di identificare e rimuovere lo stub
@@ -164,7 +165,7 @@ impl MessageProcessor {
                         warn!("Conversation {} has target_username but is not a stub", cid);
                     }
                 }
-                // NUOVO: Gestione group con target_usernames
+                // Gestione group con target_usernames
                 else if let Some(ref usernames) = target_usernames {
                     // È un messaggio per creare un gruppo
                     json_obj["target_usernames"] = serde_json::json!(usernames);
