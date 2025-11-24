@@ -191,6 +191,14 @@ impl MessageProcessor {
                 json_obj
             }
 
+            Outgoing::CheckUser { username, request_id } => {
+                serde_json::json!({
+                    "type": "check_user",
+                    "username": username,
+                    "request_id": request_id
+                })
+            }
+
             Outgoing::InviteUser { cid, usernames, .. } => {
                 if usernames.is_empty() {
                     return Err("Empty usernames list".into());

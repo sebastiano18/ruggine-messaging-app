@@ -10,6 +10,9 @@ use uuid::Uuid;
 /// Timeout per gli stub (gruppi e DM) - se non confermati entro questo tempo, vengono rimossi
 pub const STUB_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout per la verifica utente
+pub const USER_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Default)]
 pub struct SequenceStats {
     pub total_events_received: u64,
@@ -190,7 +193,13 @@ pub struct AppState {
 
     // Member kick confirmation - (conversation_id, user_id, username)
     pub pending_member_kick: Option<(Uuid, Uuid, String)>,
+
+    // NUOVO: User check state per validazione DM
+    pub pending_user_check: Option<String>,        // username in verifica
+    pub user_check_request_id: Option<String>,     // request_id per correlare
+    pub user_check_timestamp: Option<Instant>,     // per timeout
 }
+
 impl AppState {
     pub fn new() -> Self {
         let rt = Runtime::new().expect("tokio runtime");
@@ -299,6 +308,11 @@ impl AppState {
 
             // Member kick confirmation
             pending_member_kick: None,
+
+            // NUOVO: User check state
+            pending_user_check: None,
+            user_check_request_id: None,
+            user_check_timestamp: None,
         }
     }
 
@@ -310,9 +324,140 @@ impl AppState {
         // Cleanup periodico delle conferme
         if self.last_confirmation_cleanup.elapsed() > Duration::from_secs(5) {
             self.cleanup_pending_confirmations();
+            self.cleanup_pending_user_check(); // NUOVO: cleanup user check timeout
             self.last_confirmation_cleanup = Instant::now();
         }
     }
+
+    // ============================================
+    // NUOVE FUNZIONI PER VALIDAZIONE UTENTE
+    // ============================================
+
+    /// Richiede la creazione di un DM - prima verifica che l'utente esista
+    pub fn request_dm_creation(&mut self, target_username: String) {
+        // CHECK CONNESSIONE
+        if self.ws_status != WsStatus::Connected {
+            warn!("Cannot create DM: WebSocket not connected");
+            let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Connection));
+            return;
+        }
+
+        // Pulisci username
+        let username = target_username.trim().to_string();
+        if username.is_empty() {
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic("Username non può essere vuoto".to_string())
+            ));
+            return;
+        }
+
+        // Non permettere DM con se stessi
+        if username.to_lowercase() == self.username.to_lowercase() {
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic("Non puoi chattare con te stesso".to_string())
+            ));
+            return;
+        }
+
+        // Controlla se esiste già una conversazione con questo utente
+        if let Some(ref convs) = self.conversations {
+            if convs.iter().any(|c| c.kind == "dm" && c.title.to_lowercase() == username.to_lowercase()) {
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    ErrorType::Generic("Esiste già una chat con questo utente".to_string())
+                ));
+                return;
+            }
+        }
+
+        // Controlla se c'è già un check in corso
+        if self.pending_user_check.is_some() {
+            warn!("User check already in progress");
+            return;
+        }
+
+        // Genera request_id per correlare richiesta/risposta
+        let request_id = Uuid::new_v4().to_string();
+
+        // Salva stato pending
+        self.pending_user_check = Some(username.clone());
+        self.user_check_request_id = Some(request_id.clone());
+        self.user_check_timestamp = Some(Instant::now());
+
+        info!("Checking if user exists: {}", username);
+
+        // Invia richiesta di verifica via WebSocket
+        self.send_via_websocket(Outgoing::CheckUser {
+            username,
+            request_id,
+        });
+    }
+
+    /// Callback quando riceviamo la risposta del check utente
+    pub fn handle_user_check_result(
+        &mut self,
+        username: String,
+        exists: bool,
+        user_id: Option<Uuid>,
+        request_id: String,
+    ) {
+        // Verifica che sia la risposta che aspettavamo
+        if self.user_check_request_id.as_ref() != Some(&request_id) {
+            warn!("Received stale user check response for request_id: {}", request_id);
+            return;
+        }
+
+        // Pulisci stato pending
+        self.pending_user_check = None;
+        self.user_check_request_id = None;
+        self.user_check_timestamp = None;
+
+        if exists {
+            info!("User '{}' exists (id: {:?}), creating DM stub", username, user_id);
+
+            // Utente esiste! Crea lo stub
+            if let Some(stub_id) = self.create_dm_stub(username.clone()) {
+                let _ = self.ui_tx.send(UiEvent::DmStubCreated(stub_id, username));
+            }
+        } else {
+            info!("User '{}' not found", username);
+
+            // Utente non esiste - mostra errore
+            let _ = self.ui_tx.send(UiEvent::Error(
+                ErrorType::Generic(format!("Utente '{}' non trovato", username))
+            ));
+        }
+    }
+
+    /// Verifica se c'è un check utente in timeout e lo pulisce
+    pub fn cleanup_pending_user_check(&mut self) {
+        if let Some(timestamp) = self.user_check_timestamp {
+            if timestamp.elapsed() > USER_CHECK_TIMEOUT {
+                warn!(
+                    "User check timeout for username: {:?}",
+                    self.pending_user_check
+                );
+
+                // Mostra errore
+                let _ = self.ui_tx.send(UiEvent::Error(
+                    ErrorType::Generic("Timeout verifica utente. Riprova.".to_string())
+                ));
+
+                // Pulisci stato
+                self.pending_user_check = None;
+                self.user_check_request_id = None;
+                self.user_check_timestamp = None;
+            }
+        }
+    }
+
+    /// Verifica se un check utente è in corso
+    pub fn is_checking_user(&self) -> bool {
+        self.pending_user_check.is_some()
+    }
+
+    // ============================================
+    // FINE NUOVE FUNZIONI
+    // ============================================
 
     pub fn request_delete_confirmation(&mut self, conversation: &ConversationDto) {
         self.pending_deletion = Some(PendingDeletion {
@@ -396,6 +541,7 @@ impl AppState {
             Outgoing::RequestUserResume { .. } | Outgoing::RequestMessagesResume { .. } => {
                 ErrorType::DataRecovery
             }
+            Outgoing::CheckUser { .. } => ErrorType::Connection, // NUOVO
             _ => return, // Silenzioso per Ping, Typing, etc.
         };
 
@@ -588,16 +734,11 @@ impl AppState {
         }
 
         // === Cleanup stub già confermati (conversazioni reali con stesso ID) ===
-        // Questo non dovrebbe succedere normalmente, ma per sicurezza
         let mut confirmed_dm_stubs = Vec::new();
         let mut confirmed_group_stubs = Vec::new();
 
         if let Some(ref conversations) = self.conversations {
-            // Un stub è "confermato" se esiste una conversazione reale con lo stesso ID
-            // ma questo non dovrebbe mai accadere perché il server genera nuovi ID
-            // Tuttavia, teniamo questa logica per pulizia
             for (&stub_id, _) in &self.dm_stubs {
-                // Se la conversazione esiste E non è più uno stub (ha messaggi dal server)
                 if conversations.iter().any(|c| c.id == stub_id && c.last_msg_seq > 0) {
                     confirmed_dm_stubs.push(stub_id);
                 }
@@ -913,6 +1054,7 @@ impl AppState {
         );
         info.insert("dm_stubs".to_string(), self.dm_stubs.len().to_string());
         info.insert("group_stubs".to_string(), self.group_stubs.len().to_string());
+        info.insert("pending_user_check".to_string(), self.pending_user_check.is_some().to_string());
         info
     }
 }

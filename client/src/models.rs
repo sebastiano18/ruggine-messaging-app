@@ -196,6 +196,11 @@ pub enum Outgoing {
     DeleteMessage {
         mid: Uuid,
     },
+    // NUOVO: Verifica esistenza utente
+    CheckUser {
+        username: String,
+        request_id: String,
+    },
 }
 
 // === EVENTI UI UNIFICATI ===
@@ -225,6 +230,13 @@ pub enum UiEvent {
     Closed(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
+    // NUOVO: Risultato verifica utente
+    UserCheckResult {
+        username: String,
+        exists: bool,
+        user_id: Option<Uuid>,
+        request_id: String,
+    },
     ConversationDeleted(Uuid),
 
     // Data loading events

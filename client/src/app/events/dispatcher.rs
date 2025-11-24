@@ -204,6 +204,15 @@ impl EventDispatcher {
                 MessageHandler::handle_message_deleted(state, message_id, conversation_id);
             }
 
+            UiEvent::UserCheckResult {
+                username,
+                exists,
+                user_id,
+                request_id,
+            } => {
+                state.handle_user_check_result(username, exists, user_id, request_id);
+            }
+
             UiEvent::UserNotification {
                 sequence,
                 event_type,
