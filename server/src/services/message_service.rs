@@ -3,7 +3,7 @@ use crate::models::Message;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
-use crate::web_socket::helpers::broadcast_to_conversation;
+use crate::web_socket::broadcast::broadcast_to_conversation;
 
 pub struct MessageService;
 
