@@ -5,6 +5,7 @@ use uuid::Uuid;
 use tracing::info;
 
 use chrono::{DateTime, Local, Datelike, NaiveDate};
+use crate::app::events::utils::move_conversation_to_top;
 use crate::app::sidebar_components::conversation_popups;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
@@ -625,6 +626,8 @@ fn send_message(s: &mut AppState, cid: Uuid) {
         info!("Message sent to DM stub {}, waiting for server confirmation", cid);
         // Lo stub verrà rimosso quando riceveremo conversation_confirmation dal server
     }
+
+    move_conversation_to_top(s, cid);
 }
 
 fn format_time(timestamp: i64) -> String {
@@ -804,14 +807,7 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
 
 fn show_group_info_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
-
-    // Se la lista è vuota per questa conversazione e non stiamo già caricando, richiedi i membri
-    if !s.members_list.contains_key(&cid) && !s.is_loading_members {
-        if let Some(token) = s.token.clone() {
-            s.load_conversation_members(cid, token);
-        }
-    }
-
+    
     // Ottieni info del gruppo
     let group_info = s.conversations
         .as_ref()

@@ -46,7 +46,7 @@ impl MessageRepo {
                     author_username,
                     content,
                     created_at,
-                    sequence_num, // Aggiunto
+                    sequence_num,
                 }
             })
             .collect())
@@ -98,11 +98,50 @@ impl MessageRepo {
         let result = sqlx::query(
             "DELETE FROM messages WHERE id = ? AND author_id = ?"
         )
-        .bind(message_id.to_string())
-        .bind(author_id.to_string())
-        .execute(pool)
-        .await?;
+            .bind(message_id.to_string())
+            .bind(author_id.to_string())
+            .execute(pool)
+            .await?;
 
         Ok(result.rows_affected())
+    }
+
+    /// Ottieni metadata di un messaggio (author_id, conversation_id)
+    pub async fn get_metadata(
+        pool: &SqlitePool,
+        message_id: Uuid,
+    ) -> Result<Option<(Uuid, Uuid)>> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT author_id, conversation_id FROM messages WHERE id = ?"
+        )
+            .bind(message_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(row.map(|(author_str, conv_str)| {
+            let author_id = Uuid::parse_str(&author_str)
+                .expect("DB must store valid UUIDs");
+            let conversation_id = Uuid::parse_str(&conv_str)
+                .expect("DB must store valid UUIDs");
+            (author_id, conversation_id)
+        }))
+    }
+
+    /// Ottieni la sequence_num di un messaggio
+    pub async fn get_sequence(
+        pool: &SqlitePool,
+        message_id: Uuid,
+    ) -> Result<Option<i64>> {
+        // fetch_optional restituisce Option<T>, dove T = Option<i64> dalla query
+        // Quindi otteniamo Option<Option<i64>>
+        let sequence_num: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT sequence_num FROM messages WHERE id = ?"
+        )
+            .bind(message_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+
+       
+        Ok(sequence_num.and_then(|x| x))
     }
 }

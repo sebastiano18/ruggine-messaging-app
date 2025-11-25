@@ -3,6 +3,7 @@ use crate::app::events::sequence_handler::SequenceHandler;
 use crate::models::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
+use futures::TryFutureExt;
 use tokio::{runtime::Runtime, sync::mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -913,9 +914,8 @@ impl AppState {
         }
     }
 
-    /// Helper per creare un gruppo con partecipanti
     pub fn create_group_with_participants(&mut self) {
-        use crate::models::{ConversationDto, MessageDto, Outgoing, Page};
+        use crate::models::{ConversationDto, MessageDto, Outgoing, Page, ParticipantInfo};
         use uuid::Uuid;
 
         // CHECK CONNESSIONE: Blocca subito se non connesso
@@ -934,11 +934,11 @@ impl AppState {
             .collect();
 
         info!(
-            "Creating group '{}' with {} participants via WebSocket: {:?}",
-            group_name,
-            participants.len(),
-            participants
-        );
+        "Creating group '{}' with {} participants via WebSocket: {:?}",
+        group_name,
+        participants.len(),
+        participants
+    );
 
         // Crea stub per il gruppo
         let stub_id = Uuid::new_v4();
@@ -962,6 +962,30 @@ impl AppState {
         // Traccia lo stub CON TIMESTAMP
         self.group_stubs.insert(stub_id, (group_name.clone(), Instant::now()));
 
+        // ✅ Aggiungi i membri selezionati alla members_list dello stub
+        let mut stub_members: Vec<ParticipantInfo> = Vec::new();
+
+        // Aggiungi l'utente corrente come owner
+        if let Some(user_id) = self.user_id {
+            stub_members.push(ParticipantInfo {
+                user_id,
+                username: self.username.clone(),
+                role: "owner".to_string(),
+            });
+        }
+
+        // Aggiungi i partecipanti selezionati
+        for username in &participants {
+            stub_members.push(ParticipantInfo {
+                user_id: Uuid::nil(), // Placeholder - verrà aggiornato dal server
+                username: username.clone(),
+                role: "member".to_string(),
+            });
+        }
+
+        self.members_list.insert(stub_id, stub_members);
+        info!("Added {} members to stub {} members_list", participants.len() + 1, stub_id);
+
         // Apri il gruppo stub
         self.cid = Some(stub_id);
         self.page = Page::Chat;
@@ -981,6 +1005,7 @@ impl AppState {
             }
             self.group_stubs.remove(&stub_id);
             self.conversation_messages.remove(&stub_id);
+            self.members_list.remove(&stub_id);
             self.messages.clear();
             self.cid = None;
             self.page = Page::Conversations;

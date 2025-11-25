@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::{
-    helpers::{cleanup_empty_channels},
+    broadcast::cleanup_empty_channels,
     reader::spawn_reader,
     recv_merge::spawn_receiver
 };
