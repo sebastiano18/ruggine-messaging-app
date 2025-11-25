@@ -62,24 +62,14 @@ pub async fn handle_create_group_with_participants(
     for username_value in participant_usernames {
         if let Some(username) = username_value.as_str() {
             // Cerca l'utente per username
-            match sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE username = ?")
-                .bind(username)
-                .fetch_optional(&state.pool)
-                .await?
-            {
-                Some(user_id_str) => {
-                    match Uuid::parse_str(&user_id_str) {
-                        Ok(user_id) => {
-                            if user_id != creator_id {
-                                all_participant_ids.push(user_id);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Invalid UUID for user {}: {}", username, e);
-                        }
+            use crate::services::user_service::UserService;
+            match UserService::get_user_id_by_username(&state.pool, username).await {
+                Ok(user_id) => {
+                    if user_id != creator_id {
+                        all_participant_ids.push(user_id);
                     }
                 }
-                None => {
+                Err(_) => {
                     warn!("User {} not found, skipping", username);
                 }
             }
@@ -127,47 +117,25 @@ pub async fn handle_create_group_with_participants(
 
     // 5. Crea eventi user_events con sequenze per TUTTI i partecipanti (incluso il creatore)
     for participant_id in &all_participant_ids {
-        // Genera sequenza per questo utente
-        let user_sequence = state.get_next_user_sequence(*participant_id).await?;
-
-        // Salva evento nella tabella user_events
-        sqlx::query(
-            "INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)"
-        )
-            .bind(participant_id.to_string())
-            .bind(user_sequence as i64)
-            .bind("new_conversation")
-            .bind(conversation.to_string())
-            .bind(group_id.to_string())
-            .bind(created_at)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| crate::error::AppError::from(e))?;
-
-        info!(
-            "Created user_event for participant {} with sequence {}",
-            participant_id, user_sequence
-        );
-
-        // Invia notifica in tempo reale se l'utente è connesso
-        let notification = json!({
-            "type": "user_notification",
-            "sequence": user_sequence,
-            "event_type": "new_conversation",
-            "event_data": {
-                "conversation": conversation.clone()
-            },
-            "conversation_id": group_id
-        });
-
-        if let Some(user_tx) = state.user_notification_channels.read().await.get(participant_id) {
-            match user_tx.send(notification) {
-                Ok(_) => info!("Sent user_notification to participant {}", participant_id),
-                Err(e) => warn!("Failed to send notification to participant {}: {}", participant_id, e),
+        // Usa send_sequenced_event_to_user che gestisce sequence, INSERT e notifica
+        match state.send_sequenced_event_to_user(
+            *participant_id,
+            "new_conversation",
+            conversation.clone(),
+            Some(group_id)
+        ).await {
+            Ok(user_sequence) => {
+                info!(
+                    "Created user_event for participant {} with sequence {}",
+                    participant_id, user_sequence
+                );
             }
-        } else {
-            info!("Participant {} not connected, will receive event on reconnect", participant_id);
+            Err(e) => {
+                warn!(
+                    "Failed to send user_event to participant {}: {}",
+                    participant_id, e
+                );
+            }
         }
     }
 
@@ -267,57 +235,22 @@ pub async fn handle_invite_user(
         info!("Processing invite for username: '{}'", target_username);
 
         // Trova l'utente da invitare
-        let target_user_row = match sqlx::query("SELECT id, username FROM users WHERE username = ?")
-            .bind(&target_username)
-            .fetch_optional(&state.pool)
-            .await
-        {
-            Ok(Some(row)) => row,
-            Ok(None) => {
+        use crate::services::user_service::UserService;
+        let target_user_id = match UserService::get_user_id_by_username(&state.pool, &target_username).await {
+            Ok(user_id) => user_id,
+            Err(_) => {
                 warn!("User '{}' not found, skipping", target_username);
                 skipped_count += 1;
                 continue;
             }
-            Err(e) => {
-                warn!("Database error looking up user '{}': {}, skipping", target_username, e);
-                skipped_count += 1;
-                continue;
-            }
         };
 
-        let target_user_id_str: String = match target_user_row.try_get("id") {
-            Ok(id) => id,
-            Err(e) => {
-                warn!("Error extracting user id for '{}': {}, skipping", target_username, e);
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let target_user_id = match Uuid::parse_str(&target_user_id_str) {
-            Ok(id) => id,
-            Err(e) => {
-                warn!("Invalid UUID for user '{}': {}, skipping", target_username, e);
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let target_username_actual: String = match target_user_row.try_get("username") {
-            Ok(name) => name,
-            Err(_) => target_username.clone(),
-        };
+        let target_username_actual = target_username.clone();
 
         // Verifica che l'utente non sia già membro
-        let is_member: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?"
-        )
-            .bind(conversation_id.to_string())
-            .bind(&target_user_id_str)
-            .fetch_one(&state.pool)
-            .await
-        {
-            Ok(count) => count,
+        use crate::repositories::conversation_repo::ConversationRepo;
+        let is_already_member = match ConversationRepo::is_participant(&state.pool, conversation_id, target_user_id).await {
+            Ok(is_member) => is_member,
             Err(e) => {
                 warn!("Error checking membership for '{}': {}, skipping", target_username_actual, e);
                 skipped_count += 1;
@@ -325,22 +258,14 @@ pub async fn handle_invite_user(
             }
         };
 
-        if is_member > 0 {
+        if is_already_member {
             info!("User '{}' is already a member, skipping", target_username_actual);
             skipped_count += 1;
             continue;
         }
 
         // Aggiungi l'utente al gruppo
-        match sqlx::query(
-            "INSERT INTO participants (conversation_id, user_id, role) VALUES (?, ?, ?)"
-        )
-            .bind(conversation_id.to_string())
-            .bind(&target_user_id_str)
-            .bind("member")
-            .execute(&state.pool)
-            .await
-        {
+        match ConversationRepo::add_member(&state.pool, conversation_id, target_user_id).await {
             Ok(_) => {
                 info!("User '{}' added to group {} by owner {}", target_username_actual, conversation_id, inviter_id);
             }
@@ -362,58 +287,32 @@ pub async fn handle_invite_user(
 
         let ts = Utc::now().timestamp();
 
-        // Salva evento nella tabella user_events per il nuovo membro
-        let _ = sqlx::query(
-            "INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)"
-        )
-            .bind(&target_user_id_str)
-            .bind(user_sequence as i64)
-            .bind("new_conversation")
-            .bind(json!({
-                "conversation": {
-                    "id": conversation_id,
-                    "kind": &kind,
-                    "title": &conv_title,
-                    "owner_id": owner_id,
-                    "created_at": conv_created_at,
-                    "last_read_sequence": 0,
-                    "last_activity": ts,
-                    "last_msg_seq": 0
-                }
-            }).to_string())
-            .bind(conversation_id.to_string())
-            .bind(ts)
-            .execute(&state.pool)
-            .await;
-
-        // Notifica il nuovo membro via user notification channel
-        let notification = json!({
-            "type": "user_notification",
-            "sequence": user_sequence,
-            "event_type": "new_conversation",
-            "event_data": {
-                "conversation": {
-                    "id": conversation_id,
-                    "kind": &kind,
-                    "title": &conv_title,
-                    "owner_id": owner_id,
-                    "created_at": conv_created_at,
-                    "last_read_sequence": 0,
-                    "last_activity": ts,
-                    "last_msg_seq": 0
-                }
-            },
-            "conversation_id": conversation_id
+        // Invia evento per notificare il nuovo membro
+        let event_data = json!({
+            "conversation": {
+                "id": conversation_id,
+                "kind": &kind,
+                "title": &conv_title,
+                "owner_id": owner_id,
+                "created_at": conv_created_at,
+                "last_read_sequence": 0,
+                "last_activity": ts,
+                "last_msg_seq": 0
+            }
         });
 
-        if let Some(user_tx) = state.user_notification_channels.read().await.get(&target_user_id) {
-            match user_tx.send(notification.clone()) {
-                Ok(_) => info!("Sent new_conversation notification to user {}", target_user_id),
-                Err(e) => warn!("Failed to send notification to user {}: {}", target_user_id, e),
+        match state.send_sequenced_event_to_user(
+            target_user_id,
+            "new_conversation",
+            event_data,
+            Some(conversation_id)
+        ).await {
+            Ok(user_sequence) => {
+                info!("Sent new_conversation event (seq={}) to user {}", user_sequence, target_user_id);
             }
-        } else {
-            info!("User {} has no notification channel (offline or not subscribed)", target_user_id);
+            Err(e) => {
+                warn!("Failed to send event to {}: {}", target_username_actual, e);
+            }
         }
 
         // Broadcast a tutti i membri del gruppo (incluso il nuovo)

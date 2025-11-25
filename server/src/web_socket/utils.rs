@@ -35,24 +35,6 @@ pub async fn verify_conversation_exists(state: &AppState, conversation_id: Uuid)
     Ok(count > 0)
 }
 
-/// Verifica se un utente è partecipante di una conversazione
-pub async fn verify_participant(
-    state: &AppState,
-    conversation_id: Uuid,
-    user_id: Uuid,
-) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
-    )
-        .bind(conversation_id.to_string())
-        .bind(user_id.to_string())
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::from)?;
-
-    Ok(count > 0)
-}
-
 /// Estrae l'ID della conversazione dal valore, gestendo anche client_temp_id
 pub async fn extract_conversation_id(state: &AppState, value: &Value) -> Result<Uuid> {
     // PRIORITÀ 1: Se c'è un client_temp_id esplicito, usa quello
@@ -128,35 +110,4 @@ pub async fn extract_conversation_id(state: &AppState, value: &Value) -> Result<
     }
 
     Err(AppError::BadRequest("Missing conversation ID".into()))
-}
-
-/// Recupera tutti i partecipanti di una conversazione
-pub async fn get_conversation_participants(
-    state: &AppState,
-    conversation_id: Uuid,
-) -> Result<Vec<Uuid>> {
-    let conversation_id_str = conversation_id.to_string();
-
-    let rows = sqlx::query("SELECT user_id FROM participants WHERE conversation_id = ?")
-        .bind(&conversation_id_str)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(AppError::from)?;
-
-    let participants: Vec<Uuid> = rows
-        .iter()
-        .filter_map(|row| {
-            row.try_get::<String, _>("user_id")
-                .ok()
-                .and_then(|s| Uuid::parse_str(&s).ok())
-        })
-        .collect();
-
-    debug!(
-        "Found {} participants for conversation {}",
-        participants.len(),
-        conversation_id
-    );
-
-    Ok(participants)
 }

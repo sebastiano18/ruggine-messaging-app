@@ -15,6 +15,7 @@ use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::{broadcast_to_conversation, send_conversation_created_events, send_message_confirmation};
 use crate::web_socket::utils::{verify_conversation_exists, NewConversationData};
 
+
 /// Router principale per gestire i messaggi in arrivo
 
 /// Handlers for conversation operations (create, delete)

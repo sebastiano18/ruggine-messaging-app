@@ -1,4 +1,4 @@
-use crate::{error::Result, repositories::message_repo::MessageRepo, state::AppState};
+use crate::{error::Result, repositories::message_repo::MessageRepo, repositories::conversation_repo::ConversationRepo, state::AppState};
 use crate::models::Message;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
@@ -132,38 +132,19 @@ impl MessageService {
         }
 
         // Verifica che la conversazione esista
-        let conversation_exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE id = ?")
-                .bind(conversation_id.to_string())
-                .fetch_one(pool)
-                .await?;
-
-        if conversation_exists == 0 {
+        if ConversationRepo::get_conversation_kind(pool, conversation_id).await?.is_none() {
             return Err(crate::error::AppError::NotFound);
         }
 
         // Verifica che l'utente sia autorizzato (partecipante della conversazione)
-        let is_participant: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM participants WHERE conversation_id = ? AND user_id = ?",
-        )
-            .bind(conversation_id.to_string())
-            .bind(author_id.to_string())
-            .fetch_one(pool)
-            .await?;
-
-        if is_participant == 0 {
+        if !ConversationRepo::is_participant(pool, conversation_id, author_id).await? {
             return Err(crate::error::AppError::Forbidden);
         }
 
         let msg_id = MessageRepo::insert(pool, conversation_id, author_id, trimmed_content).await?;
 
         // Ottieni la sequence del messaggio appena inserito
-        let sequence_num: Option<i64> = sqlx::query_scalar(
-            "SELECT sequence_num FROM messages WHERE id = ?"
-        )
-            .bind(msg_id.to_string())
-            .fetch_one(pool)
-            .await?;
+        let sequence_num = MessageRepo::get_sequence(pool, msg_id).await?;
 
         // Broadcast del messaggio con sequence
         let event = json!({
@@ -207,36 +188,19 @@ impl MessageService {
         requester_id: Uuid,
     ) -> Result<Uuid> {
         // 1. Find the message to get conversation_id and verify the author
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT author_id, conversation_id FROM messages WHERE id = ?",
-        )
-        .bind(message_id.to_string())
-        .fetch_optional(pool)
-        .await?;
-
-        let (author_id_str, conversation_id_str) = match row {
-            Some((author, conv)) => (author, conv),
-            None => return Err(crate::error::AppError::NotFound),
-        };
-
-        let author_id = Uuid::parse_str(&author_id_str)
-            .map_err(|_| crate::error::AppError::Internal("Invalid author_id in DB".into()))?;
-        
-        let conversation_id = Uuid::parse_str(&conversation_id_str)
-            .map_err(|_| crate::error::AppError::Internal("Invalid conversation_id in DB".into()))?;
+        let (author_id, conversation_id) = MessageRepo::get_metadata(pool, message_id)
+            .await?
+            .ok_or(crate::error::AppError::NotFound)?;
 
         // 2. Authorization check: only the author can delete the message
         if author_id != requester_id {
             return Err(crate::error::AppError::Forbidden);
         }
 
-        // 3. Delete the message
-        let result = sqlx::query("DELETE FROM messages WHERE id = ?")
-            .bind(message_id.to_string())
-            .execute(pool)
-            .await?;
+        // 3. Delete the message using repo
+        let rows_affected = MessageRepo::delete(pool, message_id, author_id).await?;
 
-        if result.rows_affected() == 0 {
+        if rows_affected == 0 {
             // This could happen in a race condition where the message was already deleted.
             // We can treat it as a success from the client's perspective.
             tracing::warn!("Attempted to delete message {} which was already deleted.", message_id);
@@ -253,20 +217,9 @@ impl MessageService {
         state: &AppState,
     ) -> Result<()> {
         // 1. Trova il messaggio per ottenere conversation_id e verificare l'autore
-        let message: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT id, author_id, conversation_id FROM messages WHERE id = ?",
-        )
-        .bind(message_id.to_string())
-        .fetch_optional(pool)
-        .await?;
-
-        let (message_id_str, author_id_str, conversation_id_str) = match message {
-            Some((id, author, conv)) => (id, author, conv),
-            None => return Err(crate::error::AppError::NotFound),
-        };
-
-        let db_author_id = Uuid::parse_str(&author_id_str).unwrap_or_default();
-        let conversation_id = Uuid::parse_str(&conversation_id_str).unwrap_or_default();
+        let (db_author_id, conversation_id) = MessageRepo::get_metadata(pool, message_id)
+            .await?
+            .ok_or(crate::error::AppError::NotFound)?;
 
         // 2. Verifica che l'utente che elimina sia l'autore del messaggio
         if db_author_id != author_id {

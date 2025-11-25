@@ -1,6 +1,5 @@
 use chrono::Utc;
 use serde_json::{Value, json};
-use sqlx::Row;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -10,11 +9,14 @@ use crate::{
     state::AppState,
     services::conversation_service::ConversationService,
     services::message_service::MessageService,
+    repositories::conversation_repo::ConversationRepo,
 };
+use crate::services::partecipant::ParticipantService;
 use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::{broadcast_to_conversation, send_message_confirmation};
 use crate::web_socket::handlers::conversation::handle_message_with_new_conversation;
-use crate::web_socket::utils::{extract_conversation_id, get_conversation_participants, verify_participant};
+use crate::web_socket::utils::extract_conversation_id;
+
 
 /// Router principale per gestire i messaggi in arrivo
 
@@ -67,7 +69,7 @@ pub async fn handle_chat_message(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let is_participant = verify_participant(state, conversation_id, user_id).await?;
+    let is_participant = ConversationRepo::is_participant(&state.pool, conversation_id, user_id).await?;
     if !is_participant {
         return Err(AppError::Forbidden);
     }
@@ -132,7 +134,7 @@ pub async fn handle_chat_message(
     )
         .await?;
 
-    let participants = get_conversation_participants(state, conversation_id).await?;
+    let participants = ConversationService::list_participant_ids(&state.pool, conversation_id).await?;
 
     info!(
         "Creating user events for {} participants in conversation {}",
@@ -235,18 +237,9 @@ pub async fn handle_mark_read(
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::BadRequest("Missing or invalid sequence_num".into()))?;
 
-    let user_id_str = user_id.to_string();
-    let conv_id_str = conversation_id.to_string();
-
     // 3. Valida che l'utente sia partecipante (security check)
-    let is_participant: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM participants WHERE conversation_id = ? AND user_id = ?)"
-    )
-        .bind(&conv_id_str)
-        .bind(&user_id_str)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(false);
+    use crate::repositories::conversation_repo::ConversationRepo;
+    let is_participant = ConversationRepo::is_participant(&state.pool, conversation_id, user_id).await?;
 
     if !is_participant {
         warn!(
@@ -257,18 +250,7 @@ pub async fn handle_mark_read(
     }
 
     // 4. Aggiorna last_read_sequence nel database
-    sqlx::query(
-        r#"
-        UPDATE participants
-        SET last_read_sequence = MAX(last_read_sequence, ?)
-        WHERE conversation_id = ? AND user_id = ?
-        "#
-    )
-        .bind(sequence_num)
-        .bind(&conv_id_str)
-        .bind(&user_id_str)
-        .execute(&state.pool)
-        .await?;
+    ParticipantService::mark_read(&state.pool, conversation_id, user_id, sequence_num).await?;
 
     info!(
         "User {} marked conversation {} as read up to sequence {}",

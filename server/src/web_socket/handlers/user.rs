@@ -1,6 +1,4 @@
-use chrono::Utc;
 use serde_json::{Value, json};
-use sqlx::Row;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -8,13 +6,9 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, Result},
     state::AppState,
-    services::conversation_service::ConversationService,
-    services::message_service::MessageService,
 };
 use crate::web_socket::actor::OutboundMsg;
 
-
-/// Router principale per gestire i messaggi in arrivo
 
 /// Handlers for user operations (check user, resume events)
 
