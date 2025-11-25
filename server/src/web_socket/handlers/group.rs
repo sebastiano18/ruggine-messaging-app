@@ -56,6 +56,15 @@ pub async fn handle_create_group_with_participants(
     let group_id = ConversationService::create_group(&state.pool, group_name, creator_id).await?;
     info!("Group created with ID: {}", group_id);
 
+    // 1b. Cache client_temp_id → real UUID mapping (CRITICO per conferma client)
+    if let Some(ref temp_id) = client_temp_id {
+        state
+            .conversation_confirmation_cache
+            .insert(group_id, temp_id.clone())
+            .await;
+        info!("Cached client_temp_id {} → group_id {}", temp_id, group_id);
+    }
+
     // 2. Raccogli tutti i participant IDs (creatore + invitati)
     let mut all_participant_ids = vec![creator_id];
 
@@ -89,55 +98,27 @@ pub async fn handle_create_group_with_participants(
         }
     }
 
-    // 4. Carica la conversazione completa per broadcast (usa get_conversation)
-    let conversation_opt = ConversationService::get_conversation(&state.pool, group_id, creator_id).await?;
+    // 4. Ottieni il timestamp di creazione
+    let created_at: i64 = sqlx::query_scalar(
+        "SELECT created_at FROM conversations WHERE id = ?"
+    )
+        .bind(group_id.to_string())
+        .fetch_one(&state.pool)
+        .await
+        .map_err(crate::error::AppError::from)?;
 
-    let (id, kind, title, owner_id, created_at, last_read_seq, last_activity, last_msg_seq) = match conversation_opt {
-        Some(data) => data,
-        None => {
-            return Err(crate::error::AppError::Internal("Failed to load created group".into()));
-        }
-    };
-
-    let mut conversation = json!({
-        "id": id,
-        "kind": kind,
-        "title": title,
-        "owner_id": owner_id,
-        "created_at": created_at,
-        "last_read_sequence": last_read_seq,
-        "last_activity": last_activity,
-        "last_msg_seq": last_msg_seq
-    });
-
-    // Aggiungi client_temp_id se presente
-    if let Some(ref temp_id) = client_temp_id {
-        conversation["client_temp_id"] = json!(temp_id);
-    }
-
-    // 5. Crea eventi user_events con sequenze per TUTTI i partecipanti (incluso il creatore)
-    for participant_id in &all_participant_ids {
-        // Usa send_sequenced_event_to_user che gestisce sequence, INSERT e notifica
-        match state.send_sequenced_event_to_user(
-            *participant_id,
-            "new_conversation",
-            conversation.clone(),
-            Some(group_id)
-        ).await {
-            Ok(user_sequence) => {
-                info!(
-                    "Created user_event for participant {} with sequence {}",
-                    participant_id, user_sequence
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to send user_event to participant {}: {}",
-                    participant_id, e
-                );
-            }
-        }
-    }
+    // 5. Invia eventi di creazione gruppo a tutti i partecipanti
+    use crate::web_socket::broadcast::send_conversation_created_group_complete;
+    send_conversation_created_group_complete(
+        state,
+        group_id,
+        client_temp_id,
+        creator_id,
+        group_name.to_string(),
+        created_at,
+        all_participant_ids.clone(),
+    )
+        .await?;
 
     info!(
         "Group '{}' created successfully with {} participants",
@@ -276,18 +257,9 @@ pub async fn handle_invite_user(
             }
         }
 
-        // Crea evento per notificare il nuovo membro
-        let user_sequence = match state.get_next_user_sequence(target_user_id).await {
-            Ok(seq) => seq,
-            Err(e) => {
-                warn!("Failed to get user sequence for '{}': {}", target_username_actual, e);
-                0 // Fallback, ma l'utente è stato aggiunto
-            }
-        };
-
         let ts = Utc::now().timestamp();
 
-        // Invia evento per notificare il nuovo membro
+        // Invia evento new_conversation per notificare il nuovo membro
         let event_data = json!({
             "conversation": {
                 "id": conversation_id,

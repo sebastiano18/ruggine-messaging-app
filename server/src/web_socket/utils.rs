@@ -1,10 +1,10 @@
 use uuid::Uuid;
 use serde_json::Value;
-use sqlx::Row;
 use tracing::debug;
 
 use crate::{
     error::{AppError, Result},
+    repositories::conversation_repo::ConversationRepo,
     state::AppState,
 };
 
@@ -26,13 +26,9 @@ pub struct NewConversationData {
 
 /// Verifica se una conversazione esiste nel database
 pub async fn verify_conversation_exists(state: &AppState, conversation_id: Uuid) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE id = ?")
-        .bind(conversation_id.to_string())
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::from)?;
-
-    Ok(count > 0)
+    Ok(ConversationRepo::get_conversation_kind(&state.pool, conversation_id)
+        .await?
+        .is_some())
 }
 
 /// Estrae l'ID della conversazione dal valore, gestendo anche client_temp_id

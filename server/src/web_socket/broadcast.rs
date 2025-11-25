@@ -12,47 +12,6 @@ use crate::{
 use super::utils::NewConversationData;
 use super::actor::OutboundMsg;
 
-/// Crea e salva un messaggio di sistema nel database
-/// Usa l'owner della conversazione come author_id (per rispettare il constraint FK)
-pub async fn create_system_message(
-    state: &AppState,
-    conversation_id: Uuid,
-    content: String,
-) -> Result<(Uuid, u64)> {
-    let message_id = Uuid::new_v4();
-    let timestamp = Utc::now().timestamp();
-
-    // Ottieni l'owner della conversazione per usarlo come author_id
-    let owner_id: String = sqlx::query_scalar(
-        "SELECT owner_id FROM conversations WHERE id = ?"
-    )
-        .bind(conversation_id.to_string())
-        .fetch_one(&state.pool)
-        .await?;
-
-    // Ottieni sequence number per il messaggio
-    let sequence = state.get_next_message_sequence(conversation_id).await?;
-
-    // Salva nel database usando l'owner come author_id
-    // Il client riconoscerà comunque come messaggio di sistema dal contenuto speciale
-    sqlx::query(
-        "INSERT INTO messages (id, conversation_id, author_id, content, created_at, sequence_num)
-         VALUES (?, ?, ?, ?, ?, ?)"
-    )
-        .bind(message_id.to_string())
-        .bind(conversation_id.to_string())
-        .bind(&owner_id)
-        .bind(&content)
-        .bind(timestamp)
-        .bind(sequence as i64)
-        .execute(&state.pool)
-        .await?;
-
-    info!("Created system message: {} in conversation {}", content, conversation_id);
-
-    Ok((message_id, sequence))
-}
-
 /// Broadcast di un messaggio a tutti i partecipanti di una conversazione
 pub async fn broadcast_to_conversation(
     state: &AppState,
@@ -65,9 +24,11 @@ pub async fn broadcast_to_conversation(
             info!("broadcast {} subs for {}", n, conversation_id);
             Ok(n)
         }
-        Err(e) => {
-            warn!("broadcast fail {}: {}", conversation_id, e);
-            Err(AppError::Internal(format!("broadcast error: {e}")))
+        Err(_e) => {
+            // Non è un errore critico: i messaggi sono già salvati nel DB e arrivano via user_events
+            // Ma logghiamo come warn per monitorare questi casi
+            warn!("broadcast {}: no active receivers (message delivered via user_events)", conversation_id);
+            Ok(0)
         }
     }
 }
@@ -114,232 +75,237 @@ pub async fn send_message_confirmation(
     }
 }
 
-/// Invia conferma di creazione conversazione (per duplicati)
-pub async fn send_conversation_confirmation(
+/// Helper privato: invia un singolo evento di conversazione a un utente
+async fn send_conversation_event(
     state: &AppState,
-    conversation_id: Uuid,
-    client_temp_id: String,
     user_id: Uuid,
+    event_type: &str,
+    event_payload: Value,
+    conversation_id: Uuid,
 ) -> Result<()> {
-    // Recupera i dettagli della conversazione dal database
-    let conv_row = sqlx::query("SELECT kind, owner_id, created_at, title FROM conversations WHERE id = ?")
-        .bind(conversation_id.to_string())
-        .fetch_one(&state.pool)
+    match state
+        .send_sequenced_event_to_user(user_id, event_type, event_payload, Some(conversation_id))
         .await
-        .map_err(AppError::from)?;
-
-    let kind: String = conv_row.try_get("kind").map_err(AppError::from)?;
-    let owner_id: String = conv_row.try_get("owner_id").map_err(AppError::from)?;
-    let created_at: i64 = conv_row.try_get("created_at").map_err(AppError::from)?;
-    let title: Option<String> = conv_row.try_get("title").ok();
-
-    // Per DM, il display_title è l'username dell'altro partecipante
-    let display_title = if kind == "dm" {
-        // Query per ottenere l'username dell'altro partecipante
-        let other_username: Option<String> = sqlx::query_scalar(
-            "SELECT u.username
-             FROM participants p
-             JOIN users u ON p.user_id = u.id
-             WHERE p.conversation_id = ? AND p.user_id != ?
-             LIMIT 1"
-        )
-            .bind(conversation_id.to_string())
-            .bind(user_id.to_string())
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten();
-
-        other_username.unwrap_or_else(|| "Unknown".to_string())
-    } else {
-        // Per i gruppi, usa il title della conversazione
-        title.unwrap_or_else(|| "Group".to_string())
-    };
-
-    // Recupera last_read_sequence del partecipante
-    let last_read_sequence: i64 = sqlx::query_scalar(
-        "SELECT last_read_sequence FROM participants WHERE conversation_id = ? AND user_id = ?"
-    )
-        .bind(conversation_id.to_string())
-        .bind(user_id.to_string())
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-
-    // Recupera solo i campi necessari dell'ultimo messaggio
-    let last_message_data = sqlx::query(
-        "SELECT id, author_id, author_username, content, created_at, sequence_num
-         FROM messages
-         WHERE conversation_id = ?
-         ORDER BY sequence_num DESC
-         LIMIT 1"
-    )
-        .bind(conversation_id.to_string())
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-
-    let last_msg_seq = last_message_data.as_ref()
-        .and_then(|row| row.try_get::<i64, _>("sequence_num").ok())
-        .unwrap_or(0);
-
-    let mut conversation_obj = json!({
-        "id": conversation_id,
-        "client_temp_id": client_temp_id,
-        "kind": kind,
-        "owner_id": owner_id,
-        "created_at": created_at,
-        "display_title": display_title,
-        "last_read_sequence": last_read_sequence,
-        "last_msg_seq": last_msg_seq,
-        "status": "already_exists"
-    });
-
-    // Aggiungi last_message se presente
-    if let Some(row) = last_message_data {
-        if let (Ok(id), Ok(author_id), Ok(author_username), Ok(content), Ok(created_at)) = (
-            row.try_get::<String, _>("id"),
-            row.try_get::<String, _>("author_id"),
-            row.try_get::<String, _>("author_username"),
-            row.try_get::<String, _>("content"),
-            row.try_get::<i64, _>("created_at"),
-        ) {
-            conversation_obj["last_message"] = json!({
-                "id": id,
-                "author_id": author_id,
-                "author_username": author_username,
-                "content": content,
-                "created_at": created_at,
-                "sequence_num": row.try_get::<Option<i64>, _>("sequence_num").ok().flatten(),
-            });
-        }
-    }
-
-    let confirmation = json!({
-        "type": "conversation_confirmation",
-        "conversation": conversation_obj
-    });
-
-    let user_tx = state.get_or_create_user_notification_channel(user_id).await;
-    match user_tx.send(confirmation) {
-        Ok(_) => {
-            info!(
-                "Sent conversation confirmation to user {} for conversation {}",
-                user_id, conversation_id
-            );
+    {
+        Ok(seq) => {
+            info!("Sent {} (seq={}) to user {}", event_type, seq, user_id);
             Ok(())
         }
         Err(e) => {
-            warn!("Failed to send conversation confirmation: {}", e);
-            Err(AppError::Internal(format!(
-                "Failed to send confirmation: {}",
-                e
-            )))
+            warn!("Failed to send {} to user {}: {}", event_type, user_id, e);
+            Err(e)
         }
     }
 }
 
-/// Invia eventi di creazione conversazione a tutti i partecipanti
+/// Invia eventi di creazione DM: conferma al creatore, notifica all'altro partecipante
 pub async fn send_conversation_created_events(
     state: &AppState,
     data: NewConversationData,
 ) -> Result<()> {
-    let participants = vec![
-        (
-            data.creator_id,
-            data.creator_username.clone(),
-            data.other_participant_username.clone(),
-        ),
-        (
-            data.other_participant_id,
-            data.other_participant_username.clone(),
-            data.creator_username.clone(),
-        ),
-    ];
-
-    for (participant_id, _participant_username, other_username) in participants {
-        let mut event = json!({
-            "type": "conversation_created_complete",
-            "conversation": {
-                "id": data.conversation_id,
-                "kind": "dm",
-                "title": null,
-                "display_title": other_username,
-                "owner_id": data.creator_id,
-                "created_at": data.created_at,
-                "message_count": if data.initial_message_id != Uuid::nil() { 1 } else { 0 },
-                "participants": [
-                    {
-                        "user_id": data.creator_id.to_string(),
-                        "username": data.creator_username.clone(),
-                        "role": "member"
-                    },
-                    {
-                        "user_id": data.other_participant_id.to_string(),
-                        "username": data.other_participant_username.clone(),
-                        "role": "member"
-                    }
-                ]
-            }
+    // Costruisci il messaggio iniziale se presente
+    let last_message = if data.initial_message_id != Uuid::nil() {
+        let mut last_msg = json!({
+            "id": data.initial_message_id,
+            "author_id": data.creator_id,
+            "author_username": data.creator_username.clone(),
+            "content": data.initial_message_content.clone(),
+            "created_at": data.created_at,
+            "sequence_num": data.initial_message_sequence
         });
 
-        // Aggiungi last_message se c'è un messaggio iniziale
-        if data.initial_message_id != Uuid::nil() {
-            let mut last_msg = json!({
-                "id": data.initial_message_id,
-                "author_id": data.creator_id,
-                "author_username": data.creator_username.clone(),
-                "content": data.initial_message_content.clone(),
-                "created_at": data.created_at,
-                "sequence_num": data.initial_message_sequence
-            });
-
-            if let Some(ref client_id) = data.client_msg_id {
-                last_msg["client_msg_id"] = json!(client_id);
-            }
-
-            event["conversation"]["last_message"] = last_msg;
+        if let Some(ref client_id) = data.client_msg_id {
+            last_msg["client_msg_id"] = json!(client_id);
         }
 
-        // Per il creatore, aggiungi client_temp_id e usa tipo diverso
-        let event_type = if participant_id == data.creator_id {
-            if let Some(ref temp_id) = data.client_temp_id {
-                event["conversation"]["client_temp_id"] = json!(temp_id);
-                event["type"] = json!("conversation_confirmation");
-                "conversation_confirmation"
-            } else {
-                "conversation_created_complete"
+        Some(last_msg)
+    } else {
+        None
+    };
+
+    // === Invia conferma al creatore ===
+    let mut creator_conversation = json!({
+        "id": data.conversation_id,
+        "kind": "dm",
+        "title": null,
+        "display_title": data.other_participant_username.clone(),
+        "owner_id": data.creator_id,
+        "created_at": data.created_at,
+        "message_count": if data.initial_message_id != Uuid::nil() { 1 } else { 0 },
+        "participants": [
+            {
+                "user_id": data.creator_id.to_string(),
+                "username": data.creator_username.clone(),
+                "role": "member"
+            },
+            {
+                "user_id": data.other_participant_id.to_string(),
+                "username": data.other_participant_username.clone(),
+                "role": "member"
             }
-        } else {
+        ]
+    });
+
+    if let Some(ref last_msg) = last_message {
+        creator_conversation["last_message"] = last_msg.clone();
+    }
+
+    // Aggiungi client_temp_id per il creatore
+    if let Some(ref temp_id) = data.client_temp_id {
+        creator_conversation["client_temp_id"] = json!(temp_id);
+    } else {
+        warn!("DM creator {} missing client_temp_id", data.creator_id);
+    }
+
+    let creator_event = json!({
+        "conversation": creator_conversation
+    });
+
+    send_conversation_event(
+        state,
+        data.creator_id,
+        "conversation_confirmation",
+        creator_event,
+        data.conversation_id,
+    )
+        .await?;
+
+    // === Notifica l'altro partecipante ===
+    let mut other_conversation = json!({
+        "id": data.conversation_id,
+        "kind": "dm",
+        "title": null,
+        "display_title": data.creator_username.clone(),
+        "owner_id": data.creator_id,
+        "created_at": data.created_at,
+        "message_count": if data.initial_message_id != Uuid::nil() { 1 } else { 0 },
+        "participants": [
+            {
+                "user_id": data.creator_id.to_string(),
+                "username": data.creator_username.clone(),
+                "role": "member"
+            },
+            {
+                "user_id": data.other_participant_id.to_string(),
+                "username": data.other_participant_username.clone(),
+                "role": "member"
+            }
+        ]
+    });
+
+    if let Some(ref last_msg) = last_message {
+        other_conversation["last_message"] = last_msg.clone();
+    }
+
+    let other_event = json!({
+        "conversation": other_conversation
+    });
+
+    send_conversation_event(
+        state,
+        data.other_participant_id,
+        "new_conversation",
+        other_event,
+        data.conversation_id,
+    )
+        .await?;
+
+    Ok(())
+}
+
+/// Invia eventi di creazione gruppo a tutti i partecipanti
+pub async fn send_conversation_created_group_complete(
+    state: &AppState,
+    conversation_id: Uuid,
+    client_temp_id: Option<String>,
+    creator_id: Uuid,
+    group_name: String,
+    created_at: i64,
+    participant_ids: Vec<Uuid>,
+) -> Result<()> {
+    info!(
+        "Sending group creation events for {} to {} participants",
+        conversation_id, participant_ids.len()
+    );
+
+    // Recupera la lista dei membri con dettagli (username, role)
+    let members_query = r#"
+        SELECT p.user_id, u.username, p.role
+        FROM participants p
+        INNER JOIN users u ON p.user_id = u.id
+        WHERE p.conversation_id = ?
+        ORDER BY CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
+                 LOWER(u.username) ASC
+    "#;
+
+    let member_rows = sqlx::query(members_query)
+        .bind(conversation_id.to_string())
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::from)?;
+
+    let mut members = Vec::new();
+    for row in member_rows {
+        let member_user_id: String = row.try_get("user_id").map_err(AppError::from)?;
+        let username: String = row.try_get("username").map_err(AppError::from)?;
+        let role: String = row.try_get("role").map_err(AppError::from)?;
+
+        members.push(json!({
+            "user_id": member_user_id,
+            "username": username,
+            "role": role
+        }));
+    }
+
+    // Invia eventi personalizzati per ogni partecipante
+    for participant_id in participant_ids {
+        let last_read_sequence: i64 = sqlx::query_scalar(
+            "SELECT last_read_sequence FROM participants WHERE conversation_id = ? AND user_id = ?"
+        )
+            .bind(conversation_id.to_string())
+            .bind(participant_id.to_string())
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+
+        let mut conversation_obj = json!({
+            "id": conversation_id,
+            "kind": "group",
+            "title": group_name,
+            "owner_id": creator_id,
+            "created_at": created_at,
+            "last_read_sequence": last_read_sequence,
+            "last_msg_seq": 0,
+            "message_count": 0,
+            "members": members.clone()
+        });
+
+        // Determina il tipo di evento: creatore vs altri membri
+        let event_type = if participant_id == creator_id {
+            // Creatore → conversation_created_complete (con temp_id se presente)
+            if let Some(ref temp_id) = client_temp_id {
+                conversation_obj["client_temp_id"] = json!(temp_id);
+            }
             "conversation_created_complete"
+        } else {
+            // Altri membri → new_conversation
+            "new_conversation"
         };
 
-        // Invia evento sequenziato
-        match state
-            .send_sequenced_event_to_user(
-                participant_id,
-                event_type,
-                event,
-                Some(data.conversation_id),
-            )
-            .await
-        {
-            Ok(seq) => {
-                info!(
-                    "Sent {} (seq={}) to user {}",
-                    event_type, seq, participant_id
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to send {} to user {}: {}",
-                    event_type, participant_id, e
-                );
-            }
-        }
+        let event = json!({
+            "conversation": conversation_obj
+        });
+
+        send_conversation_event(
+            state,
+            participant_id,
+            event_type,
+            event,
+            conversation_id,
+        )
+            .await?;
     }
 
     Ok(())
@@ -390,13 +356,15 @@ pub async fn handle_user_notification(
     user_id: Uuid,
     out_tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<Option<Uuid>> {
+    // Prima controlla event_type (per user_events), poi type (per altri messaggi)
     let notification_type = notification
-        .get("type")
+        .get("event_type")
         .and_then(|v| v.as_str())
+        .or_else(|| notification.get("type").and_then(|v| v.as_str()))
         .unwrap_or("unknown");
 
     match notification_type {
-        "conversation_created_complete" | "conversation_confirmation" => {
+        "conversation_created_complete" | "conversation_confirmation" | "new_conversation" => {
             let conversation_id = notification
                 .get("conversation")
                 .and_then(|c| c.get("id"))

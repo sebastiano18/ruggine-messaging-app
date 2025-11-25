@@ -312,10 +312,10 @@ impl AppState {
         sqlx::query(
             "INSERT OR IGNORE INTO user_sequences (user_id, current_sequence) VALUES (?, 0)",
         )
-        .bind(&user_id_str)
-        .execute(&self.pool)
-        .await
-        .map_err(AppError::from)?;
+            .bind(&user_id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::from)?;
 
         // UPDATE atomico + RETURNING per ottenere il nuovo valore
         let row = sqlx::query("UPDATE user_sequences SET current_sequence = current_sequence + 1 WHERE user_id = ? RETURNING current_sequence")
@@ -489,12 +489,12 @@ impl AppState {
              ORDER BY sequence_num ASC
              LIMIT ?",
         )
-        .bind(&user_id_str)
-        .bind(since_sequence as i64)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::from)?;
+            .bind(&user_id_str)
+            .bind(since_sequence as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::from)?;
 
         let mut events = Vec::new();
         for row in rows {
@@ -540,12 +540,12 @@ impl AppState {
              ORDER BY m.sequence_num ASC
              LIMIT ?",
         )
-        .bind(&conv_id_str)
-        .bind(since_sequence as i64)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::from)?;
+            .bind(&conv_id_str)
+            .bind(since_sequence as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::from)?;
 
         let mut messages = Vec::new();
         for row in rows {
@@ -627,8 +627,9 @@ impl AppState {
         for e in events {
             let mut event = e.event_data.clone();
 
-            // Se è un evento conversation_created_complete, aggiorna last_message e aggiungi client_temp_id
-            if e.event_type == "conversation_created_complete" {
+            // Se è un evento di conversazione (created_complete O confirmation), aggiorna e aggiungi client_temp_id
+            if e.event_type == "conversation_created_complete"
+                || e.event_type == "conversation_confirmation" {
                 if let Some(conv_data) = event.get("conversation").and_then(|c| c.as_object()) {
                     if let Some(conv_id_value) = conv_data.get("id") {
                         if let Some(conv_id_str) = conv_id_value.as_str() {
@@ -667,7 +668,8 @@ impl AppState {
                 }
             }
 
-            // Aggiungi i metadati standard
+            // CRITICAL FIX: Aggiungi "type" basato su "event_type" per compatibilità client
+            event["type"] = json!(&e.event_type);
             event["sequence"] = json!(e.sequence);
             event["event_type"] = json!(&e.event_type);
             event["created_at"] = json!(e.created_at);
@@ -778,12 +780,12 @@ impl AppState {
              SET last_ping_sequence = ?, last_ping_at = ?
              WHERE user_id = ?",
         )
-        .bind(client_sequence as i64)
-        .bind(now)
-        .bind(&user_id_str)
-        .execute(&self.pool)
-        .await
-        .map_err(AppError::from)?;
+            .bind(client_sequence as i64)
+            .bind(now)
+            .bind(&user_id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(AppError::from)?;
 
         // Marca eventi come delivered se il client è aggiornato
         if client_sequence >= self.get_current_user_sequence(user_id).await? {
@@ -792,11 +794,11 @@ impl AppState {
                  SET delivered = TRUE
                  WHERE user_id = ? AND sequence_num <= ? AND delivered = FALSE",
             )
-            .bind(&user_id_str)
-            .bind(client_sequence as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(AppError::from)?;
+                .bind(&user_id_str)
+                .bind(client_sequence as i64)
+                .execute(&self.pool)
+                .await
+                .map_err(AppError::from)?;
         }
 
         Ok(())

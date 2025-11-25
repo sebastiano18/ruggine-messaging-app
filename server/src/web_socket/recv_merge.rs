@@ -76,8 +76,8 @@ impl DynamicStreamManager {
                         }
                     }
                     Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(
-                        skipped,
-                    )) => {
+                            skipped,
+                        )) => {
                         warn!(
                             "Stream for conversation {} lagged, skipped {} messages",
                             conv_id, skipped
@@ -248,9 +248,11 @@ pub async fn spawn_receiver(
                 user_msg = user_channel_stream.next() => {
                     match user_msg {
                         Some(Ok(val)) => {
-                            if let Some(msg_type) = val.get("type").and_then(|t| t.as_str()) {
+                            // Prima controlla event_type (per user_events), poi type (per altri messaggi)
+                            if let Some(msg_type) = val.get("event_type").and_then(|t| t.as_str())
+                                .or_else(|| val.get("type").and_then(|t| t.as_str())) {
                                 match msg_type {
-                                    "conversation_confirmation" | "conversation_created_complete" => {
+                                    "conversation_confirmation" | "conversation_created_complete" | "new_conversation" => {
                                         // Usa handle_user_notification per gestire la notifica
                                         match handle_user_notification(&state, &val, user_id, &out_tx).await {
                                             Ok(Some(conv_id)) => {

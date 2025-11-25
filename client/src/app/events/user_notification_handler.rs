@@ -497,6 +497,69 @@ impl UserNotificationHandler {
                 info!("Removed DM stub {} after receiving complete conversation", id);
             }
 
+            // Gestione stub per gruppi: cerca client_temp_id per identificare lo stub da sostituire
+            let stub_to_replace = if kind_str == "group" {
+                conv_obj
+                    .get("client_temp_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .filter(|stub_id| state.group_stubs.contains_key(stub_id))
+            } else {
+                None
+            };
+
+            // Sostituisci stub gruppo se trovato
+            if let Some(stub_id) = stub_to_replace {
+                info!("🔄 Replacing group stub {} with real group {} (conversation_created_complete)", stub_id, id);
+
+                // Rimuovi stub dalla lista conversazioni
+                if let Some(ref mut convs) = state.conversations {
+                    convs.retain(|c| c.id != stub_id);
+                }
+
+                // Rimuovi stub dal tracking
+                state.group_stubs.remove(&stub_id);
+
+                // Sposta messaggi dallo stub al gruppo reale (escludi messaggi di sistema)
+                if let Some(stub_messages) = state.conversation_messages.remove(&stub_id) {
+                    let real_messages: Vec<_> = stub_messages
+                        .into_iter()
+                        .filter(|m| !m.is_system_message())
+                        .collect();
+
+                    if !real_messages.is_empty() {
+                        info!("📦 Moving {} messages from stub to real group", real_messages.len());
+                        state
+                            .conversation_messages
+                            .entry(id)
+                            .or_insert_with(Vec::new)
+                            .extend(real_messages);
+                    }
+                }
+
+                // Rimuovi altre entry dello stub
+                state.conversation_unread_counts.remove(&stub_id);
+                state.conversation_sequences.remove(&stub_id);
+                state.conversation_sequences_confirmed.remove(&stub_id);
+
+                // Aggiorna cid se stavi visualizzando lo stub
+                if state.cid == Some(stub_id) {
+                    state.cid = Some(id);
+                    state.conv_title = title.clone();
+
+                    // Aggiorna anche la vista corrente
+                    state.messages = state
+                        .conversation_messages
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    info!("👁️ Switched view from stub {} to real group {}", stub_id, id);
+                }
+
+                info!("✅ Group stub {} replaced with real group {}", stub_id, id);
+            }
+
             if let Some(ref mut conversations) = state.conversations {
                 conversations.retain(|c| c.id != id);
                 conversations.push(conversation.clone());
@@ -542,6 +605,26 @@ impl UserNotificationHandler {
                 if let Some(cached) = state.conversation_messages.get(&id) {
                     state.messages = cached.clone();
                 }
+            }
+
+            // Parse e carica i membri se presenti nel payload
+            if let Some(members_value) = conv_obj.get("members") {
+                if let Ok(members) = serde_json::from_value::<Vec<ParticipantInfo>>(members_value.clone()) {
+                    if !members.is_empty() {
+                        info!("📋 Received {} members for group '{}': {:?}",
+                            members.len(),
+                            title,
+                            members.iter().map(|m| &m.username).collect::<Vec<_>>()
+                        );
+
+                        // Invia evento per aggiornare la UI con i membri
+                        let _ = state.ui_tx.send(UiEvent::MembersLoaded(id, members));
+                    }
+                } else {
+                    warn!("Failed to parse members from conversation_created_complete event");
+                }
+            } else {
+                debug!("No members in conversation_created_complete payload for {}", id);
             }
 
             info!("Successfully processed conversation_created_complete for {}", id);
@@ -701,6 +784,26 @@ impl UserNotificationHandler {
                 super::utils::move_conversation_to_top(state, id);
 
                 info!("New conversation '{}' added to list", conversation.title);
+            }
+
+            // ✅ NUOVO: Parse e carica i membri se presenti nel payload
+            if let Some(members_value) = conv_obj.get("members") {
+                if let Ok(members) = serde_json::from_value::<Vec<ParticipantInfo>>(members_value.clone()) {
+                    if !members.is_empty() {
+                        info!("📋 Received {} members for conversation '{}': {:?}",
+                            members.len(),
+                            conversation.title,
+                            members.iter().map(|m| &m.username).collect::<Vec<_>>()
+                        );
+
+                        // Invia evento per aggiornare la UI con i membri
+                        let _ = state.ui_tx.send(UiEvent::MembersLoaded(id, members));
+                    }
+                } else {
+                    warn!("Failed to parse members from new_conversation event");
+                }
+            } else {
+                debug!("No members in new_conversation payload for {}", id);
             }
         } else {
             warn!("new_conversation event missing conversation object");
