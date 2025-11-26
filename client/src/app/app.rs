@@ -12,10 +12,6 @@ pub struct App {
     ws_manager: WebSocketManager,
     sidebar_manager: SidebarManager,
     header_manager: HeaderManager,
-
-    // Debug info visibility
-    show_debug_info: bool,
-    last_debug_toggle: std::time::Instant,
 }
 
 impl App {
@@ -25,8 +21,6 @@ impl App {
             ws_manager: WebSocketManager::new(),
             sidebar_manager: SidebarManager::new(),
             header_manager: HeaderManager::new(),
-            show_debug_info: cfg!(debug_assertions),
-            last_debug_toggle: std::time::Instant::now(),
         }
     }
 }
@@ -37,12 +31,8 @@ impl eframe::App for App {
         self.state.drain_events();
         // Prune expired toast notifications
         self.state.prune_expired_toasts(std::time::Duration::from_secs(5));
-        self.handle_global_shortcuts(ctx);
         self.header_manager.show_header(ctx, &mut self.state);
-
-        if self.show_debug_info {
-            self.show_debug_panel(ctx);
-        }
+        
 
         if self.state.token.is_none() {
             self.show_auth_layout(ctx);
@@ -467,18 +457,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
-        // Toggle debug panel with Ctrl+D
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::D)) {
-            // Debounce to prevent rapid toggling
-            if self.last_debug_toggle.elapsed() > std::time::Duration::from_millis(200) {
-                self.show_debug_info = !self.show_debug_info;
-                self.last_debug_toggle = std::time::Instant::now();
-                tracing::info!("Debug panel toggled: {}", self.show_debug_info);
-            }
-        }
-    }
-
+    
     fn show_auth_layout(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             components::auth::panel(ui, &mut self.state);
@@ -541,73 +520,7 @@ impl App {
             );
         });
     }
-
-    fn show_debug_panel(&mut self, ctx: &egui::Context) {
-        egui::Window::new("🔧 Debug Info")
-            .default_pos([10.0, 400.0])
-            .default_width(320.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("Connection");
-                    ui.horizontal(|ui| {
-                        ui.label("WebSocket:");
-                        match self.state.ws_status {
-                            WsStatus::Connected => ui.colored_label(egui::Color32::GREEN, "Connected"),
-                            WsStatus::Connecting => ui.colored_label(egui::Color32::YELLOW, "Connecting..."),
-                            WsStatus::Disconnected => ui.colored_label(egui::Color32::RED, "Disconnected"),
-                        };
-                    });
-
-                    ui.separator();
-                    ui.heading("Sequences");
-                    ui.label(format!("User confirmed: {}", self.state.user_sequence_confirmed));
-                    ui.label(format!("User received: {}", self.state.user_sequence_received));
-                    ui.label(format!("Conv sequences: {}", self.state.conversation_sequences.len()));
-                    ui.label(format!("Missed pings: {}/{}", self.state.missed_pings, self.state.max_missed_pings));
-
-                    ui.separator();
-                    ui.heading("Stats");
-                    ui.label(format!("Ping count: {}", self.state.sequence_stats.ping_count));
-                    ui.label(format!("Pong count: {}", self.state.sequence_stats.pong_count));
-                    ui.label(format!("Gaps detected: {}", self.state.sequence_stats.gaps_detected));
-                    ui.label(format!("Events recovered: {}", self.state.sequence_stats.events_recovered));
-
-                    ui.separator();
-                    ui.heading("Data");
-                    ui.label(format!("Conversations: {}", self.state.conversations.as_ref().map_or(0, |c| c.len())));
-                    ui.label(format!("Cached messages: {}", self.state.get_total_cached_messages()));
-                    ui.label(format!("DM stubs: {}", self.state.dm_stubs.len()));
-                    ui.label(format!("Group stubs: {}", self.state.group_stubs.len()));
-                    ui.label(format!("Pending confirmations: {}", self.state.pending_confirmations.len()));
-
-                    ui.separator();
-                    ui.heading("Recovery");
-                    ui.label(format!("Recovering user events: {}", self.state.is_recovering_user_events));
-                    ui.label(format!("Pending resume: {}", self.state.pending_resume_requests));
-
-                    ui.separator();
-                    if ui.button("Force Reconnect").clicked() {
-                        self.state.request_ws_reconnect = true;
-                    }
-                    if ui.button("Reset WS Stats").clicked() {
-                        self.ws_manager.reset_stats();
-                    }
-
-                    ui.separator();
-                    ui.heading("Health");
-                    let health = SequenceHandler::get_sequence_health(&self.state);
-                    let health_color = if health > 0.8 {
-                        egui::Color32::GREEN
-                    } else if health > 0.5 {
-                        egui::Color32::YELLOW
-                    } else {
-                        egui::Color32::RED
-                    };
-                    ui.colored_label(health_color, format!("Sequence Health: {:.1}%", health * 100.0));
-                });
-            });
-    }
+    
 
     fn periodic_cleanup(&mut self) {
         static mut LAST_GENERAL_CLEANUP: Option<std::time::Instant> = None;
@@ -645,216 +558,142 @@ impl App {
 
     fn show_toasts(&mut self, ctx: &egui::Context) {
         const TOP_MARGIN: f32 = 100.0;
-        const SLIDE_IN_DURATION: f32 = 0.7; // secondi per la slide-in (più fluido)
-        const SLIDE_IN_OFFSET: f32 = 40.0; // pixel di partenza sopra la posizione finale
+        const SLIDE_IN_DURATION: f32 = 0.7;
+        const SLIDE_IN_OFFSET: f32 = 40.0;
         const RIGHT_PADDING: f32 = 48.0;
-
-        const ICON_WIDTH: f32 = 24.0;
-        const CLOSE_WIDTH: f32 = 22.0;
-        const H_PADDING: f32 = 28.0;
-        const MIN_WIDTH: f32 = 220.0;
-        const MAX_ABS_WIDTH: f32 = 640.0;
-        const MIN_MAX_WIDTH: f32 = 300.0;
-        const SCREEN_RATIO: f32 = 0.55;
-        const MULTILINE_MIN_TEXT: f32 = 80.0;
-        const MULTILINE_SECOND_MIN: f32 = 60.0;
-        const BASE_ALPHA: f32 = 0.92; // Aumentato per migliore visibilità
-
-        const FADE_START: f32 = 4.0;
-        const FADE_END: f32 = 5.0;
+        const TOAST_SPACING: f32 = 8.0;
 
         let screen_rect = ctx.screen_rect();
-        let max_width = (screen_rect.width() * SCREEN_RATIO).clamp(MIN_MAX_WIDTH, MAX_ABS_WIDTH);
-
         let is_dark = ctx.style().visuals.dark_mode;
 
         let mut y_offset: f32 = 0.0;
         let mut to_remove = std::collections::HashSet::new();
 
-        for toast in &self.state.toasts {
-            let (bg, text_color, icon_color, icon) = match toast.kind {
+        // Itera in ordine inverso: i toast più recenti appaiono in cima
+        for toast in self.state.toasts.iter().rev() {
+            let (bg, text_color, icon, icon_color) = match toast.kind {
                 crate::state::ToastKind::Info => {
-                    let bg = if is_dark {
-                        egui::Color32::from_rgb(28, 100, 28)      // Verde scuro per dark
+                    if is_dark {
+                        (
+                            egui::Color32::from_rgb(28, 100, 28),
+                            egui::Color32::from_rgb(240, 255, 240),
+                            egui_remixicon::icons::INFORMATION_LINE,
+                            egui::Color32::from_rgb(120, 220, 120),
+                        )
                     } else {
-                        egui::Color32::from_rgb(225, 245, 225)    // Verde chiaro per light
-                    };
-                    let text_color = if is_dark {
-                        egui::Color32::from_rgb(240, 255, 240)    // Bianco-verde per dark
-                    } else {
-                        egui::Color32::from_rgb(20, 80, 20)       // Verde scuro per light
-                    };
-                    let icon_color = if is_dark {
-                        egui::Color32::from_rgb(120, 220, 120)    // Verde brillante per dark
-                    } else {
-                        egui::Color32::from_rgb(30, 130, 30)      // Verde medio per light
-                    };
-                    (bg, text_color, icon_color, egui_remixicon::icons::INFORMATION_LINE)
+                        (
+                            egui::Color32::from_rgb(225, 245, 225),
+                            egui::Color32::from_rgb(20, 80, 20),
+                            egui_remixicon::icons::INFORMATION_LINE,
+                            egui::Color32::from_rgb(30, 130, 30),
+                        )
+                    }
                 }
                 crate::state::ToastKind::Error => {
-                    let bg = if is_dark {
-                        egui::Color32::from_rgb(120, 35, 35)      // Rosso scuro bilanciato con il verde
+                    if is_dark {
+                        (
+                            egui::Color32::from_rgb(120, 35, 35),
+                            egui::Color32::from_rgb(255, 240, 240),
+                            egui_remixicon::icons::ERROR_WARNING_LINE,
+                            egui::Color32::from_rgb(255, 120, 120),
+                        )
                     } else {
-                        egui::Color32::from_rgb(200, 80, 80)      // Rosso medio, meno aggressivo
-                    };
-                    let text_color = if is_dark {
-                        egui::Color32::from_rgb(255, 240, 240)    // Bianco-rosa per dark
-                    } else {
-                        egui::Color32::from_rgb(255, 255, 255)    // Bianco per light
-                    };
-                    let icon_color = if is_dark {
-                        egui::Color32::from_rgb(255, 120, 120)    // Rosso brillante per dark
-                    } else {
-                        egui::Color32::from_rgb(255, 230, 230)    // Rosa chiaro per light
-                    };
-                    (bg, text_color, icon_color, egui_remixicon::icons::ERROR_WARNING_LINE)
+                        (
+                            egui::Color32::from_rgb(200, 80, 80),
+                            egui::Color32::from_rgb(255, 255, 255),
+                            egui_remixicon::icons::ERROR_WARNING_LINE,
+                            egui::Color32::from_rgb(255, 230, 230),
+                        )
+                    }
                 }
             };
 
-            // Colore per il close button
             let close_color = if is_dark {
                 egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
             } else {
                 egui::Color32::from_rgba_premultiplied(80, 80, 80, 180)
             };
 
-            // Colore del bordo adattivo
-            let stroke_color = if is_dark {
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)
-            } else {
-                egui::Color32::from_rgba_premultiplied(0, 0, 0, 40)
-            };
-
-            let font_id = egui::TextStyle::Body.resolve(&ctx.style());
-
-            // Tentativo single-line: larghezza infinita (nessun wrap)
-            let single_line_galley = ctx.fonts(|f| {
-                f.layout(
-                    toast.message.clone(),
-                    font_id.clone(),
-                    text_color,
-                    f32::INFINITY, // no wrapping
-                )
-            });
-
-            let raw_text_width = single_line_galley.size().x;
-            let desired_single_line_width = raw_text_width + ICON_WIDTH + CLOSE_WIDTH + H_PADDING;
-
-            let (galley, toast_width, final_text_width) = if desired_single_line_width <= max_width {
-                let tw = desired_single_line_width.clamp(MIN_WIDTH, max_width);
-                let inner = tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING;
-                (single_line_galley, tw, inner)
-            } else {
-                let first_text_width = (max_width - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_MIN_TEXT);
-                let galley_initial = ctx.fonts(|f| {
-                    f.layout(toast.message.clone(), font_id.clone(), text_color, first_text_width)
-                });
-
-                let text_width_est = galley_initial.size().x;
-                let tw = (text_width_est + ICON_WIDTH + CLOSE_WIDTH + H_PADDING).clamp(MIN_WIDTH, max_width);
-                let final_text_width = (tw - ICON_WIDTH - CLOSE_WIDTH - H_PADDING).max(MULTILINE_SECOND_MIN);
-                let galley_final = if (final_text_width - first_text_width).abs() > 1.0 {
-                    ctx.fonts(|f| {
-                        f.layout(toast.message.clone(), font_id.clone(), text_color, final_text_width)
-                    })
-                } else {
-                    galley_initial
-                };
-                (galley_final, tw, final_text_width)
-            };
-
-            let toast_height = galley.size().y + 12.0;
-
-            let pos_x = (screen_rect.max.x - toast_width - 12.0 - RIGHT_PADDING)
-                .clamp(8.0, screen_rect.max.x - toast_width - 8.0);
-
             let ttl = toast.created.elapsed().as_secs_f32();
-            let alpha = if ttl >= FADE_START {
-                let t = ((FADE_END - ttl) / (FADE_END - FADE_START)).clamp(0.0, 1.0);
-                t * BASE_ALPHA
-            } else {
-                BASE_ALPHA
-            };
-            let frame_bg = egui::Color32::from_rgba_premultiplied(bg.r(), bg.g(), bg.b(), (alpha * 255.0) as u8);
 
-            // Slide-in: calcola offset verticale animato con easing (ease-out cubic)
-            let mut slide_t = (ttl / SLIDE_IN_DURATION).clamp(0.0, 1.0);
-            // Ease-out cubic: y = 1 - (1-t)^3
-            slide_t = 1.0 - (1.0 - slide_t).powi(3);
+            // Animazione slide-in con easing
+            let slide_t = ((ttl / SLIDE_IN_DURATION).clamp(0.0, 1.0));
+            let slide_t = 1.0 - (1.0 - slide_t).powi(3); // ease-out cubic
             let slide_offset = SLIDE_IN_OFFSET * (1.0 - slide_t);
             let pos_y = TOP_MARGIN + y_offset - slide_offset;
 
             let area_id = egui::Id::new("toast").with(toast.id);
             let response = egui::Area::new(area_id)
                 .order(egui::Order::Foreground)
-                .fixed_pos(egui::pos2(pos_x, pos_y))
+                .fixed_pos(egui::pos2(screen_rect.max.x - 320.0 - RIGHT_PADDING, pos_y))
+                .movable(false)
+                .interactable(false)
                 .show(ctx, |ui| {
+                    // Frame semplice e solido
                     egui::Frame::none()
-                        .fill(frame_bg)
-                        .stroke(egui::Stroke::new(1.0, stroke_color))
-                        .rounding(egui::Rounding::same(8.0))
-                        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                        .fill(bg)
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_black_alpha(30)))
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                         .show(ui, |ui| {
-                            ui.set_width(toast_width);
-                            ui.set_min_height(toast_height);
+                            ui.set_width(296.0);
 
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.spacing_mut().item_spacing.x = 10.0;
 
-                                // Icona - centrata verticalmente
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(ICON_WIDTH, toast_height),
-                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                                    |ui| {
-                                        ui.label(egui::RichText::new(icon).size(18.0).color(icon_color));
-                                    },
+                                // Icona
+                                ui.label(
+                                    egui::RichText::new(icon)
+                                        .size(18.0)
+                                        .color(icon_color)
                                 );
 
-                                // Testo - centrato verticalmente
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(final_text_width, toast_height),
-                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(&toast.message)
-                                                    .size(13.0)
-                                                    .color(text_color),
-                                            ).wrap(true)
-                                        );
-                                    },
+                                // Testo - usa tutto lo spazio disponibile
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&toast.message)
+                                            .color(text_color)
+                                    )
+                                        .wrap(true)
                                 );
 
-                                // Pulsante X - centrato verticalmente
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(CLOSE_WIDTH, toast_height),
-                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                                    |ui| {
-                                        let close_btn = egui::Button::new(
+                                // Spazio flessibile per spingere la X a destra
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let close_response = ui.add(
+                                        egui::Button::new(
                                             egui::RichText::new(egui_remixicon::icons::CLOSE_LINE)
                                                 .size(14.0)
-                                                .color(close_color),
-                                        ).frame(false);
+                                                .color(close_color)
+                                        )
+                                            .frame(false)
+                                            .fill(egui::Color32::TRANSPARENT)
+                                    );
 
-                                        if ui.add(close_btn).clicked() {
-                                            to_remove.insert(toast.id);
-                                        }
-                                    },
-                                );
+                                    if close_response.clicked() {
+                                        to_remove.insert(toast.id);
+                                    }
+                                });
                             });
                         });
                 });
 
-            y_offset += response.response.rect.height() + 8.0;
+            y_offset += response.response.rect.height() + TOAST_SPACING;
         }
 
+        // Rimuovi toast chiusi
         if !to_remove.is_empty() {
             self.state.toasts.retain(|t| !to_remove.contains(&t.id));
         }
 
-        // ✅ IMPORTANTE: Richiedi repaint continuo se ci sono toast attivi o in animazione
+        // Repaint solo durante l'animazione
         if !self.state.toasts.is_empty() {
-            ctx.request_repaint();
+            let has_animating = self.state.toasts.iter().any(|t| {
+                t.created.elapsed().as_secs_f32() < SLIDE_IN_DURATION
+            });
+
+            if has_animating {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
         }
     }
 }
