@@ -527,3 +527,6 @@ fn start_registration(s: &mut AppState) {
         }
     });
 }
+pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+    panel(ui, state);
+}

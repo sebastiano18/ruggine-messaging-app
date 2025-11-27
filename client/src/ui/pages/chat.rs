@@ -6,7 +6,7 @@ use tracing::info;
 
 use chrono::{DateTime, Local, Datelike, NaiveDate};
 use crate::app::events::utils::move_conversation_to_top;
-use crate::app::sidebar_components::conversation_popups;
+use crate::ui::modals::conversation_popups;
 
 pub fn panel(ui: &mut egui::Ui, s: &mut AppState) {
     if s.token.is_none() {
@@ -1127,4 +1127,9 @@ fn format_date_label(timestamp: i64) -> String {
         1 => "Ieri".to_string(),
         _ => dt.format("%d/%m/%y").to_string(),
     }
+}
+
+
+pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+    panel(ui, state);
 }
