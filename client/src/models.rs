@@ -193,6 +193,10 @@ pub enum Outgoing {
     LeaveGroup {
         cid: Uuid,
     },
+    RemoveMember {
+        cid: Uuid,
+        user_id: Uuid,
+    },
     DeleteMessage {
         mid: Uuid,
     },
@@ -201,6 +205,8 @@ pub enum Outgoing {
         username: String,
         request_id: String,
     },
+    // Elimina l'account utente
+    DeleteUser,
 }
 
 // === EVENTI UI UNIFICATI ===
@@ -267,10 +273,7 @@ pub enum UiEvent {
     // Sistema unificato di fetch conversazione
     TriggerConversationFetch(Uuid, String),
     ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
-
-    // Conversation management events
-    ConversationListUpdated,
-
+    
     // Sistema di sequenze dual
     SendPing,
     PongReceived {
@@ -334,6 +337,7 @@ pub struct UserEventData {
     pub conversation_id: Option<Uuid>,
     pub created_at: i64,
 }
+
 #[derive(Debug, Clone)]
 pub enum ErrorType {
     Connection,              // Silent - solo indicatore di stato
@@ -343,6 +347,7 @@ pub enum ErrorType {
     GroupLeave,
     GroupCreate,
     Invite,
+    GroupRemoveMember,
     Auth(String),
     DataRecovery,
     Generic(String),
@@ -373,7 +378,8 @@ impl MessageDto {
         // Messaggi di sistema per eventi di gruppo (pattern matching)
         self.content.ends_with(" è stato aggiunto al gruppo") ||
             self.content.ends_with(" è stato espulso dal gruppo") ||
-            self.content.ends_with(" ha lasciato il gruppo")
+            self.content.ends_with(" ha lasciato il gruppo") ||
+            self.content.ends_with(" ha eliminato il proprio account")
     }
 
     pub fn fetch_notification(conversation_id: Uuid, message_count: usize, reason: &str) -> Self {

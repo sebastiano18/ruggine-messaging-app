@@ -445,7 +445,7 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
-        .fixed_size([500.0, 600.0])
+        .fixed_size([500.0, 520.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
@@ -532,38 +532,52 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
 
                                 // Enter per aggiungere
                                 if search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    if show_add_button {
-                                        state.create_group_popup.selected_participants.insert(search_text.clone());
+                                    if show_add_button && !state.is_checking_user() {
+                                        state.create_group_popup.pending_user_verification = Some(search_text.clone());
+                                        state.request_dm_creation(search_text.clone());
                                         state.create_group_popup.search_query.clear();
                                     }
                                 }
 
-                                // Bottone aggiungi
-                                let add_button = egui::Button::new(
-                                    RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
-                                        .size(12.0)
-                                )
-                                    .fill(if show_add_button {
-                                        egui::Color32::from_rgb(200, 100, 40)
-                                    } else {
-                                        egui::Color32::TRANSPARENT
-                                    })
-                                    .min_size(egui::vec2(70.0, 24.0));
+                                // Mostra spinner se stiamo verificando
+                                if state.is_checking_user() && state.create_group_popup.pending_user_verification.is_some() {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(
+                                            RichText::new("Verifica...")
+                                                .size(12.0)
+                                                .color(egui::Color32::from_rgb(200, 100, 40))
+                                        );
+                                    });
+                                } else {
+                                    // Bottone aggiungi
+                                    let add_button = egui::Button::new(
+                                        RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
+                                            .size(12.0)
+                                    )
+                                        .fill(if show_add_button {
+                                            egui::Color32::from_rgb(200, 100, 40)
+                                        } else {
+                                            egui::Color32::TRANSPARENT
+                                        })
+                                        .min_size(egui::vec2(70.0, 24.0));
 
-                                let button_response = ui.add_enabled(show_add_button, add_button);
+                                    let button_response = ui.add_enabled(show_add_button, add_button);
 
-                                if !show_add_button {
-                                    button_response.surrender_focus();
-                                }
+                                    if !show_add_button {
+                                        button_response.surrender_focus();
+                                    }
 
-                                if show_add_button && button_response.clicked() {
-                                    state.create_group_popup.selected_participants.insert(search_text.clone());
-                                    state.create_group_popup.search_query.clear();
+                                    if show_add_button && button_response.clicked() {
+                                        state.create_group_popup.pending_user_verification = Some(search_text.clone());
+                                        state.request_dm_creation(search_text.clone());
+                                        state.create_group_popup.search_query.clear();
+                                    }
                                 }
                             });
 
                             // Info sotto la barra di ricerca
-                            if show_add_button {
+                            if show_add_button && !state.is_checking_user() {
                                 ui.add_space(3.0);
                                 ui.label(
                                     RichText::new(format!("💡 '{}' non trovato nei contatti, clicca Aggiungi o premi Invio", search_text))
@@ -608,7 +622,7 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
                             .inner_margin(10.0)
                             .rounding(6.0)
                             .show(ui, |ui| {
-                                let fixed_height = 140.0;
+                                let fixed_height = 100.0;
 
                                 egui::ScrollArea::vertical()
                                     .max_height(fixed_height)
@@ -705,7 +719,7 @@ pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
                         .inner_margin(10.0)
                         .rounding(6.0)
                         .show(ui, |ui| {
-                            let fixed_height = 140.0;
+                            let fixed_height = 100.0;
 
                             egui::ScrollArea::vertical()
                                 .max_height(fixed_height)
@@ -828,7 +842,7 @@ pub fn show_invite_popup(
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
-        .fixed_size([500.0, 600.0])
+        .fixed_size([500.0, 520.0])
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
@@ -900,38 +914,52 @@ pub fn show_invite_popup(
 
                                 // Enter per aggiungere
                                 if search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    if show_add_button {
-                                        state.invite_popup.selected_users.insert(search_text.clone());
+                                    if show_add_button && !state.is_checking_user() {
+                                        state.invite_popup.pending_user_verification = Some(search_text.clone());
+                                        state.request_dm_creation(search_text.clone());
                                         state.invite_popup.search_query.clear();
                                     }
                                 }
 
-                                // Bottone aggiungi
-                                let add_button = egui::Button::new(
-                                    RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
-                                        .size(12.0)
-                                )
-                                    .fill(if show_add_button {
-                                        egui::Color32::from_rgb(200, 100, 40)
-                                    } else {
-                                        egui::Color32::TRANSPARENT
-                                    })
-                                    .min_size(egui::vec2(70.0, 24.0));
+                                // Mostra spinner se stiamo verificando
+                                if state.is_checking_user() && state.invite_popup.pending_user_verification.is_some() {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(
+                                            RichText::new("Verifica...")
+                                                .size(12.0)
+                                                .color(egui::Color32::from_rgb(200, 100, 40))
+                                        );
+                                    });
+                                } else {
+                                    // Bottone aggiungi
+                                    let add_button = egui::Button::new(
+                                        RichText::new(format!("{} Aggiungi", egui_remixicon::icons::ADD_LINE))
+                                            .size(12.0)
+                                    )
+                                        .fill(if show_add_button {
+                                            egui::Color32::from_rgb(200, 100, 40)
+                                        } else {
+                                            egui::Color32::TRANSPARENT
+                                        })
+                                        .min_size(egui::vec2(70.0, 24.0));
 
-                                let button_response = ui.add_enabled(show_add_button, add_button);
+                                    let button_response = ui.add_enabled(show_add_button, add_button);
 
-                                if !show_add_button {
-                                    button_response.surrender_focus();
-                                }
+                                    if !show_add_button {
+                                        button_response.surrender_focus();
+                                    }
 
-                                if show_add_button && button_response.clicked() {
-                                    state.invite_popup.selected_users.insert(search_text.clone());
-                                    state.invite_popup.search_query.clear();
+                                    if show_add_button && button_response.clicked() {
+                                        state.invite_popup.pending_user_verification = Some(search_text.clone());
+                                        state.request_dm_creation(search_text.clone());
+                                        state.invite_popup.search_query.clear();
+                                    }
                                 }
                             });
 
                             // Info sotto la barra di ricerca
-                            if show_add_button {
+                            if show_add_button && !state.is_checking_user() {
                                 ui.add_space(3.0);
                                 ui.label(
                                     RichText::new(format!("💡 '{}' non trovato nei contatti, clicca Aggiungi o premi Invio", search_text))
@@ -982,7 +1010,7 @@ pub fn show_invite_popup(
                             .inner_margin(10.0)
                             .rounding(6.0)
                             .show(ui, |ui| {
-                                let fixed_height = 140.0;
+                                let fixed_height = 100.0;
 
                                 egui::ScrollArea::vertical()
                                     .max_height(fixed_height)
@@ -1090,7 +1118,7 @@ pub fn show_invite_popup(
                         .inner_margin(10.0)
                         .rounding(6.0)
                         .show(ui, |ui| {
-                            let fixed_height = 120.0;
+                            let fixed_height = 90.0;
 
                             egui::ScrollArea::vertical()
                                 .max_height(fixed_height)

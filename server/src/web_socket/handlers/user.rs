@@ -6,11 +6,12 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, Result},
     state::AppState,
+    services::user_service::UserService,
 };
 use crate::web_socket::actor::OutboundMsg;
 
 
-/// Handlers for user operations (check user, resume events)
+/// Handlers for user operations (check user, resume events, delete user)
 
 pub async fn handle_check_user(
     state: &AppState,
@@ -130,4 +131,29 @@ pub async fn handle_user_events_resume_request(
             )))
         }
     }
+}
+
+pub async fn handle_delete_user(
+    state: &AppState,
+    user_id: Uuid,
+    out_tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<()> {
+    info!("User {} requested account deletion", user_id);
+
+    UserService::notify_participants_of_deleted_user(state, user_id).await?;
+    UserService::delete_user(&state.pool, user_id).await?;
+
+    info!("User {} deleted successfully", user_id);
+    
+    let confirm_msg = serde_json::json!({
+        "type": "account_deleted_confirm",
+        "message": "Account eliminato con successo"
+    });
+
+    if let Ok(txt) = serde_json::to_string(&confirm_msg) {
+        info!("Sending account_deleted_confirm to client");  // ← AGGIUNGI QUESTO LOG
+        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+    }
+
+    Ok(())  // ✅ NON deve esserci Close qui
 }

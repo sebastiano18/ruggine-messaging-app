@@ -661,10 +661,6 @@ impl ConversationHandler {
         // super::utils::move_conversation_to_top(state, conv.id);
     }
 
-    pub fn handle_conversation_list_updated(state: &mut AppState) {
-        debug!("Conversation list update requested");
-        //state.request_conversations_refresh = true;
-    }
 
     pub fn handle_closed(state: &mut AppState, _cid: Uuid) {
         state.show_group_info_popup= false;

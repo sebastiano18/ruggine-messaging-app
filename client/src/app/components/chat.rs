@@ -729,10 +729,9 @@ fn show_delete_message_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
 }
 
 fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
-    let mut should_kick = false;
-    let mut should_cancel = false;
-
     let username = s.pending_member_kick.as_ref().map(|(_, _, name)| name.clone());
+
+    let mut action = None;  // ← Una sola variabile per catturare l'azione
 
     egui::Window::new("")
         .id(egui::Id::new("kick_member_confirmation"))
@@ -742,7 +741,6 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
         .fixed_size([400.0, 200.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            // Titolo centrato
             ui.vertical_centered(|ui| {
                 ui.add_space(20.0);
                 ui.label(
@@ -763,7 +761,6 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
 
             ui.add_space(30.0);
 
-            // Bottoni ai lati
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(20.0, 0.0))
                 .show(ui, |ui| {
@@ -776,7 +773,7 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
                             .min_size(egui::vec2(140.0, 36.0));
 
                         if ui.add(cancel_button).clicked() {
-                            should_cancel = true;
+                            action = Some(false);  // ← Annulla
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -789,25 +786,40 @@ fn show_kick_member_confirmation(ui: &mut egui::Ui, s: &mut AppState) {
                                 .min_size(egui::vec2(140.0, 36.0));
 
                             if ui.add(kick_button).clicked() {
-                                should_kick = true;
+                                action = Some(true);  // ← Espelli
                             }
                         });
                     });
                 });
         });
 
-    if should_kick {
-        if let Some((cid, user_id, _)) = s.pending_member_kick.take() {
-            s.kick_member(cid, user_id);
+    // Esegui l'azione DOPO il closure
+    match action {
+        Some(true) => {
+            // Espelli
+            if let Some((cid, user_id, username)) = s.pending_member_kick.take() {
+                tracing::info!("🟢 Espellendo {} (cid={}, user_id={})", username, cid, user_id);
+
+                match s.ui_to_net_tx.try_send(crate::models::Outgoing::RemoveMember { cid, user_id }) {
+                    Ok(_) => tracing::info!("✅ RemoveMember inviato al canale"),
+                    Err(e) => tracing::error!("❌ Errore invio RemoveMember: {}", e),
+                }
+            }
         }
-    } else if should_cancel {
-        s.pending_member_kick = None;
+        Some(false) => {
+            // Annulla
+            tracing::info!("Espulsione annullata");
+            s.pending_member_kick = None;
+        }
+        None => {
+            // Nessun bottone cliccato
+        }
     }
 }
 
 fn show_group_info_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
     let mut close_popup = false;
-    
+
     // Ottieni info del gruppo
     let group_info = s.conversations
         .as_ref()

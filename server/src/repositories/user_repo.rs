@@ -38,40 +38,102 @@ impl UserRepo {
     }
 
     pub async fn delete_user_cascade(pool: &SqlitePool, user_id: Uuid) -> Result<()> {
-        let mut tx: Transaction<'_, Sqlite> = pool.begin().await.map_err(AppError::from)?;
+        tracing::info!("Starting cascade delete for user {}", user_id);
 
-        // 1) Pulisci eventi e sequenze utente (non hanno FK)
+        let mut tx = pool.begin().await
+            .map_err(|e| {
+                tracing::error!("Failed to begin transaction: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Transaction started successfully");
+
+        // 1) Pulisci eventi e sequenze utente
+        tracing::debug!("Deleting user_events for user {}", user_id);
         sqlx::query("DELETE FROM user_events WHERE user_id = ?")
             .bind(user_id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(AppError::from)?;
+            .map_err(|e| {
+                tracing::error!("Failed to delete user_events: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Deleted user_events successfully");
 
+        tracing::debug!("Deleting user_sequences for user {}", user_id);
         sqlx::query("DELETE FROM user_sequences WHERE user_id = ?")
             .bind(user_id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(AppError::from)?;
+            .map_err(|e| {
+                tracing::error!("Failed to delete user_sequences: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Deleted user_sequences successfully");
 
-        // 2) Pulisci message_sequences delle conversazioni che verranno eliminate
-        //    (quelle di cui l'utente è owner). Poiché message_sequences non ha FK, serve pulizia esplicita.
+        // 2) Pulisci message_sequences SOLO delle conversazioni che verranno eliminate
+        //    (DM + gruppi dove è owner)
+        tracing::debug!("Deleting message_sequences for conversations that will be deleted");
         sqlx::query(
             "DELETE FROM message_sequences
-             WHERE conversation_id IN (SELECT id FROM conversations WHERE owner_id = ?)"
+         WHERE conversation_id IN (
+             SELECT c.id FROM conversations c
+             JOIN participants p ON c.id = p.conversation_id
+             WHERE p.user_id = ? AND c.kind = 'dm'
+             
+             UNION
+             
+             SELECT id FROM conversations
+             WHERE owner_id = ? AND kind = 'group'
+         )"
         )
-        .bind(user_id.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(AppError::from)?;
+            .bind(user_id.to_string())
+            .bind(user_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to delete message_sequences: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Deleted message_sequences successfully");
 
-        // 3) Elimina l'utente: CASCADE su conversations/participants/messages/invites farà il resto
+        // 3) Elimina tutte le DM a cui partecipa (sono sempre a 2)
+        tracing::debug!("Deleting DM conversations");
+        sqlx::query(
+            "DELETE FROM conversations
+         WHERE kind = 'dm'
+         AND id IN (
+             SELECT conversation_id FROM participants WHERE user_id = ?
+         )"
+        )
+            .bind(user_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to delete DM conversations: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Deleted DM conversations successfully");
+
+        // 4) Elimina l'utente (CASCADE elimina: gruppi dove è owner, participants, messages, invites)
+        tracing::debug!("Deleting user record");
         sqlx::query("DELETE FROM users WHERE id = ?")
             .bind(user_id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(AppError::from)?;
+            .map_err(|e| {
+                tracing::error!("Failed to delete user record: {}", e);
+                AppError::from(e)
+            })?;
+        tracing::debug!("Deleted user record successfully");
 
-        tx.commit().await.map_err(AppError::from)?;
+        tracing::debug!("Committing transaction");
+        tx.commit().await
+            .map_err(|e| {
+                tracing::error!("Failed to commit transaction: {}", e);
+                AppError::from(e)
+            })?;
+
+        tracing::info!("Successfully deleted user {}", user_id);
         Ok(())
     }
 }

@@ -248,6 +248,7 @@ impl EventDispatcher {
                     ErrorType::Auth(details) => error!("Auth error: {}", details),
                     ErrorType::DataRecovery => error!("Data recovery error"),
                     ErrorType::Generic(msg) => error!("Generic error: {}", msg),
+                    ErrorType::GroupRemoveMember => error!("Group remove member error"),
                 }
 
                 // Decidi se mostrare toast e quale messaggio
@@ -273,6 +274,9 @@ impl EventDispatcher {
                     }
                     ErrorType::Invite => {
                         Some("Impossibile inviare l'invito. Riprova.".to_string())
+                    }
+                    ErrorType::GroupRemoveMember => {
+                        Some("Impossibile rimuovere il membro dal gruppo. Riprova.".to_string())
                     }
                     ErrorType::Auth(details) => {
                         Some(details.clone())
@@ -307,10 +311,7 @@ impl EventDispatcher {
             UiEvent::ConversationCompleteFetched(conv, messages) => {
                 ConversationHandler::handle_conversation_complete_fetched(state, conv, messages);
             }
-
-            UiEvent::ConversationListUpdated => {
-                ConversationHandler::handle_conversation_list_updated(state);
-            }
+            
 
             UiEvent::SendPing => {
                 debug!("Manual ping requested");

@@ -1,5 +1,5 @@
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
 
@@ -252,49 +252,160 @@ impl ConversationService {
         ConversationRepo::remove_member(pool, conversation_id, user_id_to_kick).await
     }
 
-    pub async fn broadcast_user_left_group(
-        st: &AppState,
+
+    pub async fn notify_user_left_group(
+        state: &AppState,
         conversation_id: Uuid,
         user_id: Uuid,
-        username: String,
-        participant_ids: Vec<Uuid>,
-    ) {
+        username: &str,
+    ) -> Result<()> {
+        use tracing::error;
+
+        // Ottieni partecipanti rimanenti (escludendo chi è uscito)
+        let participants = ConversationRepo::list_participant_ids(&state.pool, conversation_id)
+            .await?
+            .into_iter()
+            .filter(|&id| id != user_id)
+            .collect::<Vec<_>>();
+
+        if participants.is_empty() {
+            info!("No remaining participants in group {}", conversation_id);
+            return Ok(());
+        }
+
         info!(
-            "Broadcasting user_left_group: user={} ({}) left conversation={} to {} participants",
-            user_id, username, conversation_id, participant_ids.len()
-        );
+        "Notifying {} participants that user {} ({}) left conversation {}",
+        participants.len(), user_id, username, conversation_id
+    );
 
-        let payload = json!({
-            "type": "user_left_group",
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "username": username,
-            "timestamp": chrono::Utc::now().timestamp()
-        });
+        // Crea l'evento
+        let event = json!({
+        "type": "user_left_group",
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "username": username,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
 
-        for pid in participant_ids {
-            match st
+        // Invia a tutti i partecipanti rimasti
+        for participant_id in participants {
+            match state
                 .send_sequenced_event_to_user(
-                    pid,
+                    participant_id,
                     "user_left_group",
-                    payload.clone(),
+                    event.clone(),
                     Some(conversation_id),
                 )
                 .await
             {
                 Ok(seq) => {
-                    info!(
-                        "✅ Sent user_left_group event (seq={}) to user {}",
-                        seq, pid
-                    );
+                    info!("Sent user_left_group event (seq={}) to user {}", seq, participant_id);
                 }
                 Err(e) => {
-                    warn!(
-                        "❌ Failed to send user_left_group to user {}: {}",
-                        pid, e
-                    );
+                    // NON propagare l'errore - è normale che alcuni utenti siano offline
+                    warn!("Failed to send user_left_group to user {} (likely offline): {}", participant_id, e);
                 }
             }
         }
+
+        Ok(())
+    }
+
+    pub async fn notify_user_deleted_account(
+        state: &AppState,
+        conversation_id: Uuid,
+        deleted_user_id: Uuid,
+        deleted_username: &str,
+    ) -> Result<()> {
+        // Ottieni partecipanti rimanenti (escludendo l'utente eliminato)
+        let participants = ConversationRepo::list_participant_ids(&state.pool, conversation_id)
+            .await?
+            .into_iter()
+            .filter(|&id| id != deleted_user_id)
+            .collect::<Vec<_>>();
+
+        if participants.is_empty() {
+            info!("No remaining participants in group {}", conversation_id);
+            return Ok(());
+        }
+
+        info!(
+            "Notifying {} participants that user {} ({}) deleted their account in conversation {}",
+            participants.len(), deleted_user_id, deleted_username, conversation_id
+        );
+
+        // Crea l'evento
+        let event = json!({
+            "type": "user_deleted_account",
+            "conversation_id": conversation_id,
+            "deleted_user_id": deleted_user_id,
+            "deleted_username": deleted_username,
+        });
+
+        // Invia a tutti i partecipanti rimasti
+        for participant_id in participants {
+            // 1. Salva nel DB e incrementa sequenza
+            match state
+                .send_sequenced_event_to_user(
+                    participant_id,
+                    "user_deleted_account",
+                    event.clone(),
+                    Some(conversation_id),
+                )
+                .await
+            {
+                Ok(seq) => {
+                    info!("Persisted user_deleted_account event (seq={}) to user {}", seq, participant_id);
+                }
+                Err(e) => {
+                    warn!("Failed to persist user_deleted_account to user {}: {}", participant_id, e);
+                }
+            }
+
+            // 2. Invia IMMEDIATAMENTE al canale WebSocket se l'utente è online
+            let user_tx = state.get_or_create_user_notification_channel(participant_id).await;
+            if let Err(e) = user_tx.send(event.clone()) {
+                // È normale che alcuni utenti siano offline
+                warn!("Failed to send real-time user_deleted_account to user {} (likely offline): {}", participant_id, e);
+            } else {
+                info!("Sent real-time user_deleted_account notification to user {}", participant_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn notify_conversation_deleted(
+        state: &AppState,
+        conversation_id: Uuid,
+        deleted_user_id: Uuid,
+        reason: &str,
+    ) -> Result<()> {
+        use tracing::error;
+
+        let participant_ids = ConversationRepo::list_participant_ids(&state.pool, conversation_id)
+            .await?;
+
+        for participant_id in participant_ids {
+            if participant_id != deleted_user_id {
+                let user_tx = state.get_or_create_user_notification_channel(participant_id).await;
+
+                let notification = json!({
+                "type": "conversation_deleted",
+                "conversation_id": conversation_id.to_string(),
+                "reason": reason,
+                "deleted_user_id": deleted_user_id.to_string(),
+            });
+
+                if let Err(e) = user_tx.send(notification) {
+                    // NON propagare - è normale che alcuni utenti siano offline
+                    warn!("Failed to notify user {} about conversation deletion (likely offline): {}", participant_id, e);
+                } else {
+                    info!("Notified user {} about conversation {} deletion (reason: {})",
+                      participant_id, conversation_id, reason);
+                }
+            }
+        }
+        Ok(())
     }
 }

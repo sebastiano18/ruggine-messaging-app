@@ -1,3 +1,4 @@
+use serde_json::Value;
 use crate::app::events::helpers;
 use crate::models::*;
 use crate::state::core::AppState;
@@ -130,15 +131,11 @@ impl UserNotificationHandler {
             }
             "member_removed" => {
                 // Gestisce quando un utente viene espulso dal gruppo
-                let username = event_data
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown");
-
-                info!("User {} removed from group (conversation: {:?})", username, conversation_id);
-
-                // Il messaggio di sistema arriverà come evento new_message dal server
-                // salvato in user_events per persistenza
+                if let Some(conv_id) = conversation_id {
+                    Self::handle_member_removed(state, conv_id, event_data);
+                } else {
+                    warn!("member_removed notification without conversation_id");
+                }
             }
             "member_list_updated" => {
                 // Aggiorna la lista dei membri SOLO se è per la conversazione corrente
@@ -164,19 +161,18 @@ impl UserNotificationHandler {
                 }
             }
             "user_left_group" => {
-                // Gestisce quando un altro utente lascia il gruppo
-                let username = event_data
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown");
-
-                info!("User {} left the group (conversation: {:?})", username, conversation_id);
-
-                // Il messaggio di sistema arriverà come evento new_message dal server
-                // salvato in user_events per persistenza
-
-                // Richiedi aggiornamento della lista conversazioni
-                let _ = state.ui_tx.send(UiEvent::ConversationListUpdated);
+                if let Some(conv_id) = conversation_id {
+                    Self::handle_user_left_group(state, conv_id, event_data);
+                } else {
+                    warn!("user_left_group notification without conversation_id");
+                }
+            }
+            "user_deleted_account" => {
+                if let Some(conv_id) = conversation_id {
+                    Self::handle_user_deleted_account(state, conv_id, event_data);
+                } else {
+                    warn!("user_deleted_account notification without conversation_id");
+                }
             }
             "conversation_created_complete" => {
                 Self::handle_conversation_created_complete(state, event_data);
@@ -786,7 +782,7 @@ impl UserNotificationHandler {
                 info!("New conversation '{}' added to list", conversation.title);
             }
 
-            // ✅ NUOVO: Parse e carica i membri se presenti nel payload
+
             if let Some(members_value) = conv_obj.get("members") {
                 if let Ok(members) = serde_json::from_value::<Vec<ParticipantInfo>>(members_value.clone()) {
                     if !members.is_empty() {
@@ -947,5 +943,194 @@ impl UserNotificationHandler {
             client_msg_id: None,
             is_confirmed: Some(true),
         })
+    }
+
+    /// Gestisce quando un utente lascia un gruppo
+    fn handle_user_left_group(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        event_data: serde_json::Value,
+    ) {
+        // Estrai user_id dall'evento
+        // Gestisce sia UUID nativi che stringhe per robustezza
+        let user_id = event_data
+            .get("user_id")
+            .and_then(|v| {
+                serde_json::from_value::<Uuid>(v.clone()).ok()
+                    .or_else(|| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+            })
+            .unwrap_or(Uuid::nil());
+
+        let username = event_data
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+
+        info!("User {} ({}) left group {}", username, user_id, conversation_id);
+
+        // 1. Rimuovi il membro dalla lista membri
+        if let Some(members) = state.members_list.get_mut(&conversation_id) {
+            let before_count = members.len();
+            members.retain(|m| m.user_id != user_id);
+            let after_count = members.len();
+
+            if before_count != after_count {
+                debug!("Removed member {} from conversation {} members list ({} -> {} members)",
+                   username, conversation_id, before_count, after_count);
+            }
+        }
+
+        // 2. Aggiungi messaggio di sistema
+        let system_message_content = format!("{} ha lasciato il gruppo", username);
+        helpers::add_system_message_to_conversation(
+            state,
+            conversation_id,
+            system_message_content,
+        );
+        
+
+        info!("User left group handled: {} in conversation {}", username, conversation_id);
+    }
+
+    /// Gestisce quando un utente viene rimosso dal gruppo
+    fn handle_member_removed(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        event_data: serde_json::Value,
+    ) {
+        // Estrai user_id e username dell'utente rimosso
+        // Gestisce sia UUID nativi che stringhe per robustezza
+        let removed_user_id = event_data
+            .get("removed_user_id")
+            .and_then(|v| {
+                serde_json::from_value::<Uuid>(v.clone()).ok()
+                    .or_else(|| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+            })
+            .unwrap_or(Uuid::nil());
+
+        let removed_username = event_data
+            .get("removed_username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+
+        info!(
+            "User {} ({}) removed from group {}",
+            removed_username, removed_user_id, conversation_id
+        );
+
+        // 1. Rimuovi il membro dalla lista membri
+        if let Some(members) = state.members_list.get_mut(&conversation_id) {
+            let before_count = members.len();
+            members.retain(|m| m.user_id != removed_user_id);
+            let after_count = members.len();
+
+            if before_count != after_count {
+                debug!(
+                    "Removed member {} from conversation {} members list ({} -> {} members)",
+                    removed_username, conversation_id, before_count, after_count
+                );
+            }
+        }
+
+        // 2. Aggiungi messaggio di sistema
+        let system_message_content = format!("{} è stato espulso dal gruppo", removed_username);
+        helpers::add_system_message_to_conversation(
+            state,
+            conversation_id,
+            system_message_content,
+        );
+        
+
+        info!(
+            "Member removed handled: {} in conversation {}",
+            removed_username, conversation_id
+        );
+    }
+
+    /// Gestisce quando un utente elimina il proprio account
+    fn handle_user_deleted_account(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        event_data: serde_json::Value,
+    ) {
+        // Estrai user_id e username dell'utente che ha eliminato l'account
+        // Gestisce sia UUID nativi che stringhe per robustezza
+        let deleted_user_id = event_data
+            .get("deleted_user_id")
+            .and_then(|v| {
+                // Prova prima come UUID nativo
+                serde_json::from_value::<Uuid>(v.clone()).ok()
+                    // Se fallisce, prova come stringa
+                    .or_else(|| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+            })
+            .unwrap_or(Uuid::nil());
+
+        let deleted_username = event_data
+            .get("deleted_username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+
+        info!(
+            "User {} ({}) deleted their account - removing all their messages from conversation {}",
+            deleted_username, deleted_user_id, conversation_id
+        );
+
+        // 1. Rimuovi TUTTI i messaggi dell'utente dalla cache della conversazione
+        if let Some(messages) = state.conversation_messages.get_mut(&conversation_id) {
+            let before_count = messages.len();
+            messages.retain(|m| m.author_id != deleted_user_id);
+            let after_count = messages.len();
+            let removed = before_count - after_count;
+
+            if removed > 0 {
+                info!(
+                    "Removed {} messages from user {} in conversation {} cache",
+                    removed, deleted_username, conversation_id
+                );
+            }
+        }
+
+        // 2. Se è la conversazione corrente, rimuovi anche da state.messages
+        if state.cid == Some(conversation_id) {
+            let before_count = state.messages.len();
+            state.messages.retain(|m| m.author_id != deleted_user_id);
+            let after_count = state.messages.len();
+            let removed = before_count - after_count;
+
+            if removed > 0 {
+                info!(
+                    "Removed {} messages from user {} in current UI",
+                    removed, deleted_username
+                );
+            }
+        }
+
+        // 3. Rimuovi il membro dalla lista membri
+        if let Some(members) = state.members_list.get_mut(&conversation_id) {
+            let before_count = members.len();
+            members.retain(|m| m.user_id != deleted_user_id);
+            let after_count = members.len();
+
+            if before_count != after_count {
+                debug!(
+                    "Removed member {} from conversation {} members list ({} -> {} members)",
+                    deleted_username, conversation_id, before_count, after_count
+                );
+            }
+        }
+
+        // 4. Aggiungi messaggio di sistema
+        let system_message_content = format!("{} ha eliminato il proprio account", deleted_username);
+        helpers::add_system_message_to_conversation(
+            state,
+            conversation_id,
+            system_message_content,
+        );
+        
+
+        info!(
+            "User deleted account handled: {} in conversation {}",
+            deleted_username, conversation_id
+        );
     }
 }

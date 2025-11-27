@@ -64,6 +64,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "warning" => handle_server_warning(tx, &parsed_value),
         "message_deleted" => handle_message_deleted(tx, &parsed_value),
         "check_user_response" => handle_check_user_response(tx, &parsed_value),
+        "account_deleted_confirm" => handle_account_deleted_confirm(tx, &parsed_value),
         _ => {
             debug!("Unhandled message type: {}", msg_type);
         }
@@ -1063,4 +1064,14 @@ fn handle_new_message_event(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, va
         recovery: false, // È un evento real-time, non recovery
     });
 
+}
+
+fn handle_account_deleted_confirm(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+    info!("Account deletion confirmed by server - triggering immediate logout");
+
+    if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+        debug!("Server message: {}", message);
+    }
+
+    let _ = tx.send(UiEvent::LoggedOut);
 }

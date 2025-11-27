@@ -214,11 +214,6 @@ impl ConversationsSidebar {
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let Some(date_text) = self.get_last_message_date(state, conv) {
-                        ui.add(egui::Label::new(RichText::new(date_text).size(10.0).color(preview_color)).selectable(false));
-                        ui.add_space(4.0);
-                    }
-
                     if let Some(&unread_count) = state.conversation_unread_counts.get(&conv.id) {
                         if unread_count > 0 {
                             let badge_text = if unread_count > 99 { "99+".to_string() } else { unread_count.to_string() };
@@ -227,6 +222,11 @@ impl ConversationsSidebar {
                             ui.painter().text(rect.center(), Align2::CENTER_CENTER, &badge_text, egui::FontId::proportional(10.0), egui::Color32::WHITE);
                             ui.add_space(6.0);
                         }
+                    }
+
+                    if let Some(date_text) = self.get_last_message_date(state, conv) {
+                        ui.add(egui::Label::new(RichText::new(date_text).size(10.0).color(preview_color)).selectable(false));
+                        ui.add_space(4.0);
                     }
                 });
             });

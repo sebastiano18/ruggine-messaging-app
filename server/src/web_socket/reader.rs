@@ -6,11 +6,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::{
-    actor::OutboundMsg,
-    handlers,
-    initial_state::get_initial_state,
-};
+use super::{actor::OutboundMsg, handlers, initial_state::get_initial_state};
 use crate::state::AppState;
 
 pub fn spawn_reader(
@@ -179,9 +175,10 @@ pub fn spawn_reader(
                         }
 
                         "request_user_resume" => {
-                            if let Err(e) =
-                                handlers::handle_user_events_resume_request(&state, &value, user_id, &out_tx)
-                                    .await
+                            if let Err(e) = handlers::handle_user_events_resume_request(
+                                &state, &value, user_id, &out_tx,
+                            )
+                            .await
                             {
                                 error!("Failed to handle user resume request: {}", e);
                             }
@@ -244,7 +241,9 @@ pub fn spawn_reader(
                                 {
                                     Ok(messages) => {
                                         if let Err(e) = state
-                                            .send_messages_resume(user_id, conv_id, messages, &out_tx)
+                                            .send_messages_resume(
+                                                user_id, conv_id, messages, &out_tx,
+                                            )
                                             .await
                                         {
                                             error!(
@@ -266,7 +265,9 @@ pub fn spawn_reader(
                         }
 
                         "mark_read" => {
-                            if let Err(e) = handlers::handle_mark_read(&state, user_id, &value).await {
+                            if let Err(e) =
+                                handlers::handle_mark_read(&state, user_id, &value).await
+                            {
                                 error!("Failed to handle mark_read from user {}: {}", user_id, e);
                             }
                         }
@@ -275,19 +276,25 @@ pub fn spawn_reader(
                             debug!("Invite user request from user {}", user_id);
                             last_heartbeat = Instant::now();
 
-                            match handlers::handle_incoming_message(&state, &mut value, user_id, &username).await {
+                            match handlers::handle_incoming_message(
+                                &state, &mut value, user_id, &username,
+                            )
+                            .await
+                            {
                                 Ok(()) => {
                                     debug!("Successfully invited user to group by {}", user_id);
                                 }
                                 Err(e) => {
                                     error!("Failed to invite user: {}", e);
-                                    let user_message = if e.to_string().contains("Nessun utente è stato aggiunto") {
-                                        "Nessun utente è stato aggiunto al gruppo.".to_string()
-                                    } else if e.to_string().contains("solo per i gruppi") {
-                                        "Puoi invitare utenti solo nei gruppi.".to_string()
-                                    } else {
-                                        e.to_string()
-                                    };
+                                    let user_message =
+                                        if e.to_string().contains("Nessun utente è stato aggiunto")
+                                        {
+                                            "Nessun utente è stato aggiunto al gruppo.".to_string()
+                                        } else if e.to_string().contains("solo per i gruppi") {
+                                            "Puoi invitare utenti solo nei gruppi.".to_string()
+                                        } else {
+                                            e.to_string()
+                                        };
                                     let error_response = json!({
                                         "type": "error",
                                         "message": user_message,
@@ -301,22 +308,33 @@ pub fn spawn_reader(
                         }
 
                         "create_group_with_participants" => {
-                            debug!("Create group with participants request from user {}", user_id);
+                            debug!(
+                                "Create group with participants request from user {}",
+                                user_id
+                            );
                             last_heartbeat = Instant::now();
 
-                            match handlers::handle_create_group_with_participants(&state, &mut value, user_id, &username, &out_tx).await {
+                            match handlers::handle_create_group_with_participants(
+                                &state, &mut value, user_id, &username, &out_tx,
+                            )
+                            .await
+                            {
                                 Ok(()) => {
-                                    debug!("Successfully created group with participants by {}", user_id);
+                                    debug!(
+                                        "Successfully created group with participants by {}",
+                                        user_id
+                                    );
                                 }
                                 Err(e) => {
                                     error!("Failed to create group with participants: {}", e);
-                                    let user_message = if e.to_string().contains("username richiesti") {
-                                        "Devi inserire username e password.".to_string()
-                                    } else if e.to_string().contains("già partecipante") {
-                                        "Sei già in questa conversazione.".to_string()
-                                    } else {
-                                        e.to_string()
-                                    };
+                                    let user_message =
+                                        if e.to_string().contains("username richiesti") {
+                                            "Devi inserire username e password.".to_string()
+                                        } else if e.to_string().contains("già partecipante") {
+                                            "Sei già in questa conversazione.".to_string()
+                                        } else {
+                                            e.to_string()
+                                        };
                                     let error_response = json!({
                                         "type": "error",
                                         "message": user_message,
@@ -331,22 +349,44 @@ pub fn spawn_reader(
 
                         "leave_group" => {
                             last_heartbeat = Instant::now();
-                            if let Err(e) = handlers::handle_leave_group(&state, &value, user_id, &out_tx).await {
+                            if let Err(e) =
+                                handlers::handle_leave_group(&state, &value, user_id, &out_tx).await
+                            {
                                 error!("Failed to handle leave_group: {}", e);
+                            }
+                        }
+
+                        "remove_member" => {
+                            last_heartbeat = Instant::now();
+                            if let Err(e) =
+                                handlers::handle_remove_member(&state, &value, user_id, &out_tx)
+                                    .await
+                            {
+                                error!("Failed to handle remove_member: {}", e);
                             }
                         }
 
                         "delete_conversation" => {
                             last_heartbeat = Instant::now();
-                            if let Err(e) = handlers::handle_delete_conversation(&state, &value, user_id, &out_tx).await {
+                            if let Err(e) = handlers::handle_delete_conversation(
+                                &state, &value, user_id, &out_tx,
+                            )
+                            .await
+                            {
                                 error!("Failed to handle delete_conversation: {}", e);
                             }
                         }
 
                         "delete_message" => {
                             last_heartbeat = Instant::now();
-                            if let Err(e) = handlers::handle_delete_message(&state, &value, user_id, &out_tx).await {
-                                error!("Failed to handle delete_message from user {}: {}", user_id, e);
+                            if let Err(e) =
+                                handlers::handle_delete_message(&state, &value, user_id, &out_tx)
+                                    .await
+                            {
+                                error!(
+                                    "Failed to handle delete_message from user {}: {}",
+                                    user_id, e
+                                );
                                 let error_response = json!({
                                     "type": "error",
                                     "message": e.to_string(),
@@ -360,8 +400,34 @@ pub fn spawn_reader(
 
                         "check_user" => {
                             last_heartbeat = Instant::now();
-                            if let Err(e) = handlers::handle_check_user(&state, &value, user_id, &out_tx).await {
+                            if let Err(e) =
+                                handlers::handle_check_user(&state, &value, user_id, &out_tx).await
+                            {
                                 error!("Failed to handle check_user: {}", e);
+                            }
+                        }
+
+                        "delete_user" => {
+                            info!("User {} requested account deletion", user_id);
+                            last_heartbeat = Instant::now();
+
+                            match handlers::handle_delete_user(&state, user_id, &out_tx).await {
+                                Ok(()) => {
+                                    info!("Successfully deleted user {}", user_id);
+                                    // ✅ NON chiudere - lascia che il client chiuda dopo aver ricevuto la conferma
+                                    // Il messaggio account_deleted_confirm è già stato inviato da handle_delete_user
+                                }
+                                Err(e) => {
+                                    error!("Failed to delete user {}: {}", user_id, e);
+                                    let error_response = json!({
+                                        "type": "error",
+                                        "message": e.to_string(),
+                                        "error_code": "DELETE_USER_FAILED"
+                                    });
+                                    if let Ok(txt) = serde_json::to_string(&error_response) {
+                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    }
+                                }
                             }
                         }
 
@@ -369,8 +435,10 @@ pub fn spawn_reader(
                             total_messages_processed += 1;
                             last_heartbeat = Instant::now();
 
-                            match handlers::handle_incoming_message(&state, &mut value, user_id, &username)
-                                .await
+                            match handlers::handle_incoming_message(
+                                &state, &mut value, user_id, &username,
+                            )
+                            .await
                             {
                                 Ok(()) => {
                                     debug!("Successfully processed message from user {}", user_id);
@@ -420,15 +488,15 @@ pub fn spawn_reader(
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                        if msg.contains("database") || msg.contains("sql") =>
-                                            {
-                                                error!(
+                                            if msg.contains("database") || msg.contains("sql") =>
+                                        {
+                                            error!(
                                                 "Database-related internal error for user {}, closing connection",
                                                 user_id
                                             );
-                                                let _ = stop_tx.send(true);
-                                                break;
-                                            }
+                                            let _ = stop_tx.send(true);
+                                            break;
+                                        }
                                         crate::error::AppError::Unauthorized => {
                                             warn!(
                                                 "Unauthorized action by user {}, closing connection",
