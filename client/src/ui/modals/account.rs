@@ -299,11 +299,18 @@ impl AccountModal {
                     0
                 };
                 if user_gap > 0 {
-                    ui.label(
-                        egui::RichText::new(format!("⚠ Gap: {} eventi", user_gap))
-                            .size(11.0)
-                            .color(egui::Color32::YELLOW)
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(egui_remixicon::icons::ERROR_WARNING_LINE)
+                                .size(12.0)
+                                .color(egui::Color32::YELLOW)
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("Gap: {} eventi", user_gap))
+                                .size(11.0)
+                                .color(egui::Color32::YELLOW)
+                        );
+                    });
                 }
             });
         });
@@ -320,8 +327,8 @@ impl AccountModal {
                             .size(14.0)
                             .color(egui::Color32::WHITE)
                     )
-                    .fill(egui::Color32::from_rgb(200, 100, 40))
-                    .min_size(egui::vec2(180.0, 40.0));
+                        .fill(egui::Color32::from_rgb(200, 100, 40))
+                        .min_size(egui::vec2(180.0, 40.0));
 
                     if ui.add(logout_btn).clicked() {
                         if let Some(token) = &state.token {
@@ -344,8 +351,8 @@ impl AccountModal {
                                 .size(14.0)
                                 .color(egui::Color32::WHITE)
                         )
-                        .fill(egui::Color32::from_rgb(180, 50, 50))
-                        .min_size(egui::vec2(180.0, 40.0));
+                            .fill(egui::Color32::from_rgb(180, 50, 50))
+                            .min_size(egui::vec2(180.0, 40.0));
 
                         if ui.add(delete_btn).clicked() {
                             let _ = state.ui_tx.send(UiEvent::DeleteAccountStart);

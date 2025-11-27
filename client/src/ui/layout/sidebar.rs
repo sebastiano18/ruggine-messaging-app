@@ -2,18 +2,15 @@ use eframe::egui;
 use crate::models::Page;
 use crate::state::AppState;
 use crate::ui::sidebar::conversations::ConversationsSidebar;
-use crate::ui::sidebar::group_management::GroupManagementSidebar;
 
 pub struct SidebarManager {
     conversations_sidebar: ConversationsSidebar,
-    group_management_sidebar: GroupManagementSidebar,
 }
 
 impl SidebarManager {
     pub fn new() -> Self {
         Self {
             conversations_sidebar: ConversationsSidebar::new(),
-            group_management_sidebar: GroupManagementSidebar::new(),
         }
     }
 
@@ -26,10 +23,6 @@ impl SidebarManager {
                 Page::Conversations | Page::Chat => {
                     self.conversations_sidebar.show(ui, state);
                 },
-                // Se avessi una Page::GroupManagement:
-                // Page::GroupManagement => {
-                //     self.group_management_sidebar.show(ui, state);
-                // }
             }
         });
     }
