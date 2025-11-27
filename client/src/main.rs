@@ -2,7 +2,7 @@ mod app;
 mod state;
 mod models;
 mod api;
-mod style;
+mod ui;
 
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()

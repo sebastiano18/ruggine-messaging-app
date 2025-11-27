@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{Align, Align2, Frame, Layout, RichText, TextEdit};
 use chrono::{DateTime, Local};
 use tracing::error;
-use crate::app::sidebar_components::conversation_popups;
+use crate::ui::modals::conversation_popups;
 
 pub struct ConversationsSidebar {
     search_query: String,

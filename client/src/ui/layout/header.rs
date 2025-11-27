@@ -2,17 +2,12 @@ use eframe::egui;
 use egui::{Align, Layout};
 use crate::models::WsStatus;
 use crate::state::AppState;
-use crate::app::sidebar_components::sidebar_account::AccountSidebar;
 
-pub struct HeaderManager {
-    account_sidebar: AccountSidebar,
-}
+pub struct HeaderManager;
 
 impl HeaderManager {
     pub fn new() -> Self {
-        Self {
-            account_sidebar: AccountSidebar::new(),
-        }
+        Self
     }
 
     pub fn show_header(&mut self, ctx: &egui::Context, state: &mut AppState) {
@@ -27,7 +22,6 @@ impl HeaderManager {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // User info se autenticato
                         if state.is_authenticated() {
-
                             ui.add_space(8.0);
 
                             if state.is_loading && !state.is_initial_load_complete {
@@ -39,7 +33,7 @@ impl HeaderManager {
                             self.show_websocket_status(ui, state);
                             ui.separator();
 
-                            // Usa un bottone invisibile per avere il cursore corretto
+                            // Bottone account - apre il modal
                             let button = egui::Button::new(
                                 egui::RichText::new(format!("{} {}", egui_remixicon::icons::USER_FILL, state.username)).size(18.0))
                                 .fill(egui::Color32::from_rgb(255, 140, 60).linear_multiply(0.06));
@@ -59,7 +53,7 @@ impl HeaderManager {
 
     fn show_app_title(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{}", egui_remixicon::icons::CHAT_SMILE_FILL)).size(30.0).color(egui::Color32::from_rgb(200, 100, 40))); 
+            ui.label(egui::RichText::new(format!("{}", egui_remixicon::icons::CHAT_SMILE_FILL)).size(30.0).color(egui::Color32::from_rgb(200, 100, 40))); 
             ui.label(egui::RichText::new("Ruggine Chat").size(24.0).strong());
         });
     }
@@ -88,9 +82,5 @@ impl HeaderManager {
                 ).on_hover_text("WebSocket disconnesso");
             },
         }
-    }
-
-    pub fn show_account_popup_content(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
-        self.account_sidebar.show(ui, state);
     }
 }

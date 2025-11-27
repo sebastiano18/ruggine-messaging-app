@@ -1,10 +1,6 @@
-pub mod sidebar_components;
-pub mod header;
-mod app;
-mod sidebar;
-mod components;
 pub(crate) mod events;
-mod ws_manager;
+pub mod ws_manager;
+mod app;
 
+// Re-export App al livello corretto
 pub use app::App;
-
