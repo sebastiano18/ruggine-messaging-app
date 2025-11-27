@@ -121,8 +121,11 @@ impl ConversationsSidebar {
             .rounding(egui::Rounding::same(8.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let icon_color = ui.visuals().weak_text_color();
-                    ui.label(RichText::new("🔍").size(14.0).color(icon_color));
+                    ui.label(
+                        RichText::new(egui_remixicon::icons::SEARCH_LINE)
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color())
+                    );
                     ui.add_space(8.0);
 
                     TextEdit::singleline(&mut self.search_query)
@@ -314,11 +317,19 @@ impl ConversationsSidebar {
     fn show_empty_state(&mut self, ui: &mut egui::Ui, _state: &mut AppState) {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.label(RichText::new("📭").size(48.0));
+            ui.label(
+                RichText::new(egui_remixicon::icons::INBOX_LINE)
+                    .size(48.0)
+                    .color(ui.visuals().weak_text_color())
+            );
             ui.add_space(12.0);
             ui.label(RichText::new("Nessuna conversazione").size(16.0).color(ui.visuals().text_color()));
             ui.add_space(8.0);
-            ui.label(RichText::new("Clicca 🔄 per caricare le conversazioni").size(12.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                RichText::new("Le tue conversazioni appariranno qui")
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color())
+            );
             ui.add_space(12.0);
             ui.label(RichText::new("oppure").size(11.0).color(ui.visuals().weak_text_color()));
             ui.add_space(12.0);
@@ -336,7 +347,11 @@ impl ConversationsSidebar {
     fn show_no_search_results(&self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
-            ui.label(RichText::new("🔍").size(40.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                RichText::new(egui_remixicon::icons::SEARCH_LINE)
+                    .size(40.0)
+                    .color(ui.visuals().weak_text_color())
+            );
             ui.add_space(12.0);
             ui.label(RichText::new("Nessun risultato").size(15.0).color(ui.visuals().text_color()));
             ui.add_space(6.0);
