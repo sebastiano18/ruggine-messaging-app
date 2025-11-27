@@ -36,6 +36,7 @@ pub struct CreateGroupPopupState {
     pub manual_username_input: String,
     pub selected_participants: HashSet<String>,
     pub search_query: String,
+    pub pending_user_verification: Option<String>,
 }
 
 impl CreateGroupPopupState {
@@ -48,6 +49,7 @@ impl CreateGroupPopupState {
         self.manual_username_input.clear();
         self.selected_participants.clear();
         self.search_query.clear();
+        self.pending_user_verification = None;
     }
 }
 
@@ -55,6 +57,7 @@ impl CreateGroupPopupState {
 pub struct InvitePopupState {
     pub search_query: String,
     pub selected_users: HashSet<String>,
+    pub pending_user_verification: Option<String>,
 }
 
 impl InvitePopupState {
@@ -65,6 +68,7 @@ impl InvitePopupState {
     pub fn reset(&mut self) {
         self.search_query.clear();
         self.selected_users.clear();
+        self.pending_user_verification = None;
     }
 }
 
@@ -412,6 +416,53 @@ impl AppState {
         self.user_check_request_id = None;
         self.user_check_timestamp = None;
 
+        // ========================================================================
+        // GESTIONE VERIFICA UTENTE PER POPUP CREAZIONE GRUPPO
+        // ========================================================================
+        if let Some(pending) = &self.create_group_popup.pending_user_verification {
+            if pending.to_lowercase() == username.to_lowercase() {
+                if exists {
+                    // ✅ Utente esiste! Aggiungilo alla lista partecipanti
+                    self.create_group_popup.selected_participants.insert(username.clone());
+                    info!("User '{}' verified and added to group creation", username);
+                } else {
+                    // ❌ Utente non esiste, mostra errore
+                    let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
+                        format!("Utente '{}' non trovato", username)
+                    )));
+                    info!("User '{}' not found for group creation", username);
+                }
+                // Reset dello stato di verifica del popup
+                self.create_group_popup.pending_user_verification = None;
+                return; // Non continuare con la gestione DM
+            }
+        }
+
+        // ========================================================================
+        // GESTIONE VERIFICA UTENTE PER POPUP INVITO MEMBRI
+        // ========================================================================
+        if let Some(pending) = &self.invite_popup.pending_user_verification {
+            if pending.to_lowercase() == username.to_lowercase() {
+                if exists {
+                    // ✅ Utente esiste! Aggiungilo alla lista utenti da invitare
+                    self.invite_popup.selected_users.insert(username.clone());
+                    info!("User '{}' verified and added to invite list", username);
+                } else {
+                    // ❌ Utente non esiste, mostra errore
+                    let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
+                        format!("Utente '{}' non trovato", username)
+                    )));
+                    info!("User '{}' not found for invite", username);
+                }
+                // Reset dello stato di verifica del popup
+                self.invite_popup.pending_user_verification = None;
+                return; // Non continuare con la gestione DM
+            }
+        }
+
+        // ========================================================================
+        // GESTIONE NORMALE PER CREAZIONE DM (codice originale)
+        // ========================================================================
         if exists {
             info!("User '{}' exists (id: {:?}), creating DM stub", username, user_id);
 

@@ -140,30 +140,20 @@ pub async fn handle_delete_user(
 ) -> Result<()> {
     info!("User {} requested account deletion", user_id);
 
-    // 1. Notifica tutti i partecipanti delle conversazioni dell'utente
-    //    PRIMA di eliminare l'utente dal database
     UserService::notify_participants_of_deleted_user(state, user_id).await?;
-
-    // 2. Elimina l'utente dal database (con CASCADE)
     UserService::delete_user(&state.pool, user_id).await?;
 
     info!("User {} deleted successfully", user_id);
-
-    // 3. Invia conferma al client prima di chiudere
+    
     let confirm_msg = serde_json::json!({
         "type": "account_deleted_confirm",
         "message": "Account eliminato con successo"
     });
+
     if let Ok(txt) = serde_json::to_string(&confirm_msg) {
+        info!("Sending account_deleted_confirm to client");  // ← AGGIUNGI QUESTO LOG
         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
     }
 
-    // 4. Chiudi la connessione WebSocket
-    let close_frame = Some(axum::extract::ws::CloseFrame {
-        code: axum::extract::ws::close_code::NORMAL,
-        reason: "Account deleted successfully".into(),
-    });
-    let _ = out_tx.send(OutboundMsg::Close(close_frame)).await;
-
-    Ok(())
+    Ok(())  // ✅ NON deve esserci Close qui
 }

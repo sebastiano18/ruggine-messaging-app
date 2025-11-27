@@ -562,6 +562,7 @@ impl App {
         const SLIDE_IN_OFFSET: f32 = 40.0;
         const RIGHT_PADDING: f32 = 48.0;
         const TOAST_SPACING: f32 = 8.0;
+        const MAX_WIDTH: f32 = 300.0;
 
         let screen_rect = ctx.screen_rect();
         let is_dark = ctx.style().visuals.dark_mode;
@@ -625,7 +626,7 @@ impl App {
             let area_id = egui::Id::new("toast").with(toast.id);
             let response = egui::Area::new(area_id)
                 .order(egui::Order::Foreground)
-                .fixed_pos(egui::pos2(screen_rect.max.x - 320.0 - RIGHT_PADDING, pos_y))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-RIGHT_PADDING, pos_y))
                 .movable(false)
                 .interactable(false)
                 .show(ctx, |ui| {
@@ -636,7 +637,7 @@ impl App {
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                         .show(ui, |ui| {
-                            ui.set_width(296.0);
+                            ui.set_max_width(MAX_WIDTH);
 
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 10.0;
