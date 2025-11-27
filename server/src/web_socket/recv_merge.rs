@@ -1,7 +1,5 @@
 // recv_merge.rs - Complete rewrite with centralized notification handling
 // recv_merge.rs - Complete rewrite with centralized notification handling
-// recv_merge.rs - Complete rewrite with centralized notification handling
-// recv_merge.rs - Complete rewrite with centralized notification handling
 use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -303,6 +301,25 @@ pub async fn spawn_receiver(
                                                 break;
                                             }
                                         }
+
+                                        // Reset contatori backoff
+                                        empty_backoff_seconds = 30;
+                                        consecutive_none_count = 0;
+                                    }
+                                    "member_removed" | "user_left_group" | "user_deleted_account" => {
+                                        // Eventi che rimuovono l'utente da una conversazione
+                                        // Forward l'evento al client
+                                        if let Ok(txt) = serde_json::to_string(&val) {
+                                            if out_tx.send(OutboundMsg::Text(txt)).await.is_err() {
+                                                warn!("Failed to send {} to user {}", msg_type, user_id);
+                                            } else {
+                                                info!("Forwarded {} to user {}", msg_type, user_id);
+                                            }
+                                        }
+                                        
+                                        // Refresh stream per rimuovere conversazioni da cui l'utente non è più partecipante
+                                        info!("Refreshing streams after {} for user {}", msg_type, user_id);
+                                        stream_manager.refresh_conversation_streams(&state, user_id).await;
 
                                         // Reset contatori backoff
                                         empty_backoff_seconds = 30;

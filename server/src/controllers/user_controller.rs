@@ -92,14 +92,15 @@ pub async fn delete_self(
     State(st): State<AppState>,
 ) -> Result<StatusCode> {
     
+
+    // POI prova a notificare (best-effort, può fallire)
     if let Err(e) = UserService::notify_participants_of_deleted_user(&st, user.id).await {
-        tracing::error!("Failed to notify participants about user {} deletion: {}", user.id, e);
-        // Continuiamo comunque con la cancellazione
+        tracing::warn!("Failed to notify participants (non-critical): {}", e);
     }
-    
-    // Ora elimina l'utente
+
+    // PRIMA elimina dal DB
     UserService::delete_user(&st.pool, user.id).await?;
-    
-    tracing::info!("User {} successfully deleted their account", user.id);
+
+    tracing::info!("User {} successfully deleted", user.id);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -2,15 +2,15 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::Row;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
     state::AppState,
     services::conversation_service::ConversationService,
-    services::message_service::MessageService,
 };
+use crate::repositories::conversation_repo::ConversationRepo;
 use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::broadcast_to_conversation;
 
@@ -308,16 +308,13 @@ pub async fn handle_invite_user(
         let system_message_content = format!("{} è stato aggiunto al gruppo", target_username_actual);
 
         // Ottieni lista di tutti i partecipanti per inviare il messaggio di sistema
-        let all_participant_ids = match crate::services::conversation_service::ConversationService::list_participant_ids(
+        let all_participant_ids = crate::services::conversation_service::ConversationService::list_participant_ids(
             &state.pool,
             conversation_id
-        ).await {
-            Ok(ids) => ids,
-            Err(e) => {
-                warn!("Failed to get participant ids for system message: {}", e);
-                Vec::new()
-            }
-        };
+        ).await.unwrap_or_else(|e| {
+            warn!("Failed to get participant ids for system message: {}", e);
+            Vec::new()
+        });
 
         // Crea il payload del messaggio di sistema
         let system_msg = json!({
@@ -460,144 +457,169 @@ pub async fn handle_leave_group(
     user_id: Uuid,
     out_tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<()> {
-    let cid_opt = value
+    let conversation_id = value
         .get("conversation_id")
         .and_then(|v| v.as_str())
-        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::BadRequest("Missing conversation_id".into()))?;
 
-    if cid_opt.is_none() {
-        let err = json!({
-            "type":"error",
-            "error_code":"INVALID_REQUEST",
-            "message":"Missing or invalid conversation_id",
-            "op":"leave_group"
-        });
-        if let Ok(txt) = serde_json::to_string(&err) {
-            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-        }
-        return Err(AppError::BadRequest("Missing conversation_id".into()));
-    }
-
-    let conversation_id = cid_opt.unwrap();
-
-    let participants_res = ConversationService::list_participant_ids(&state.pool, conversation_id).await;
-
-    let username_res = sqlx::query_scalar::<_, String>(
-        "SELECT username FROM users WHERE id = ?"
-    )
+    // Ottieni username prima di rimuovere dal DB
+    let username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
         .bind(user_id.to_string())
         .fetch_one(&state.pool)
-        .await;
+        .await?;
 
-    let leave_res = ConversationService::leave_group(
-        &state.pool,
-        conversation_id,
-        user_id
-    ).await;
+    // Rimuovi l'utente dal gruppo nel DB
+    ConversationService::leave_group(&state.pool, conversation_id, user_id).await?;
 
-    if let Err(e) = leave_res {
-        let (code, message) = match &e {
-            AppError::Unauthorized => ("FORBIDDEN", "Non sei autorizzato a eseguire questa azione".to_string()),
-            AppError::NotFound => ("NOT_FOUND", "Conversazione non trovata".to_string()),
-            AppError::BadRequest(msg) => ("BAD_REQUEST", msg.clone()),
-            _ => ("LEAVE_FAILED", "Impossibile uscire dal gruppo. Riprova.".to_string()),
-        };
-        let err = json!({
-            "type":"error",
-            "error_code": code,
-            "message": message,
-            "op":"leave_group",
-            "conversation_id": conversation_id
-        });
-        if let Ok(txt) = serde_json::to_string(&err) {
-            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-        }
-        return Err(e);
-    }
+    // Notifica gli altri partecipanti
+    ConversationService::notify_user_left_group(state, conversation_id, user_id, &username).await?;
 
-    if let (Ok(participants), Ok(username)) = (participants_res, username_res) {
-        let remaining_participants: Vec<Uuid> = participants.into_iter()
-            .filter(|&id| id != user_id)
-            .collect();
-
-        if !remaining_participants.is_empty() {
-            let timestamp = chrono::Utc::now().timestamp();
-            let system_message_content = format!("{} ha lasciato il gruppo", username);
-            let system_msg = json!({
-                "type": "message",
-                "id": uuid::Uuid::new_v4(),
-                "conversation_id": conversation_id,
-                "author_id": uuid::Uuid::nil(),
-                "author_username": "system",
-                "content": system_message_content,
-                "created_at": timestamp,
-                "sequence_num": null
-            });
-
-            for participant_id in &remaining_participants {
-                if let Err(e) = state.send_sequenced_event_to_user(
-                    *participant_id,
-                    "new_message",
-                    system_msg.clone(),
-                    Some(conversation_id),
-                ).await {
-                    warn!("Failed to send system message to {}: {}", participant_id, e);
-                }
-            }
-
-            let members_data = match ConversationService::get_members(
-                &state.pool,
-                conversation_id,
-                remaining_participants[0]
-            ).await {
-                Ok(data) => data,
-                Err(e) => {
-                    warn!("Failed to get updated members list after user left: {}", e);
-                    Vec::new()
-                }
-            };
-
-            let members: Vec<serde_json::Value> = members_data
-                .into_iter()
-                .map(|(user_id, username, role, joined_at)| json!({
-                    "user_id": user_id,
-                    "username": username,
-                    "role": role,
-                    "joined_at": joined_at
-                }))
-                .collect();
-
-            let payload = json!({
-                "conversation_id": conversation_id,
-                "members": members,
-                "timestamp": chrono::Utc::now().timestamp()
-            });
-
-            for participant_id in &remaining_participants {
-                if let Err(e) = state.send_sequenced_event_to_user(
-                    *participant_id,
-                    "member_list_updated",
-                    payload.clone(),
-                    Some(conversation_id),
-                ).await {
-                    error!("Failed to send member_list_updated event to {}: {}", participant_id, e);
-                }
-            }
-
-            info!("Sent member_list_updated event to {} participants", remaining_participants.len());
-        } else {
-            info!("No remaining participants to notify (group now empty)");
-        }
-    }
-
+    // Invia ACK all'utente che è uscito
     let ack = json!({
-        "type":"leave_group_ack",
+        "type": "leave_group_ack",
         "conversation_id": conversation_id,
-        "status":"ok"
+        "status": "ok"
     });
     if let Ok(txt) = serde_json::to_string(&ack) {
         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
     }
+
+    Ok(())
+}
+
+pub async fn handle_remove_member(
+    state: &AppState,
+    value: &Value,
+    requester_id: Uuid,
+    out_tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<()> {
+    // 1. Estrai conversation_id
+    let conversation_id = value
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::BadRequest("Missing or invalid conversation_id".into()))?;
+
+    // 2. Estrai user_id dell'utente da rimuovere
+    let user_to_remove_id = value
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::BadRequest("Missing or invalid user_id".into()))?;
+
+    info!(
+        "User {} requesting to remove user {} from conversation {}",
+        requester_id, user_to_remove_id, conversation_id
+    );
+
+    // 3. Verifica che sia un gruppo
+    let conversation_kind = ConversationRepo::get_conversation_kind(&state.pool, conversation_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound)?;
+
+    if conversation_kind != "group" {
+        return Err(AppError::BadRequest("Can only remove members from groups".into()));
+    }
+
+    // 4. Verifica che il requester sia l'owner del gruppo
+    let owner_id: String = sqlx::query_scalar(
+        "SELECT owner_id FROM conversations WHERE id = ?"
+    )
+        .bind(conversation_id.to_string())
+        .fetch_one(&state.pool)
+        .await?;
+
+    if owner_id != requester_id.to_string() {
+        return Err(AppError::Forbidden);
+    }
+
+    // 5. Verifica che non stia cercando di rimuovere se stesso
+    if requester_id == user_to_remove_id {
+        return Err(AppError::BadRequest(
+            "Cannot remove yourself. Use leave_group instead".into()
+        ));
+    }
+
+    // 6. Verifica che l'utente da rimuovere sia effettivamente un membro
+    let is_member = ConversationRepo::is_participant(&state.pool, conversation_id, user_to_remove_id).await?;
+    if !is_member {
+        return Err(AppError::BadRequest("User is not a member of this group".into()));
+    }
+
+    // 7. Ottieni username dell'utente da rimuovere prima di eliminarlo
+    let removed_username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+        .bind(user_to_remove_id.to_string())
+        .fetch_one(&state.pool)
+        .await?;
+
+    // 8. Rimuovi l'utente dal gruppo
+    sqlx::query("DELETE FROM participants WHERE conversation_id = ? AND user_id = ?")
+        .bind(conversation_id.to_string())
+        .bind(user_to_remove_id.to_string())
+        .execute(&state.pool)
+        .await?;
+
+    info!(
+        "User {} removed from group {} by owner {}",
+        removed_username, conversation_id, requester_id
+    );
+
+    // 9. Ottieni lista partecipanti DOPO la rimozione (per notificare chi è rimasto)
+    let remaining_participants = ConversationService::list_participant_ids(&state.pool, conversation_id).await?;
+
+    // 10. Notifica l'utente rimosso
+    let removed_event = json!({
+        "conversation_id": conversation_id.to_string(),
+        "removed_user_id": user_to_remove_id.to_string(),
+        "removed_username": removed_username.clone(),
+        "removed_by": requester_id.to_string(),
+    });
+
+    if let Err(e) = state.send_sequenced_event_to_user(
+        user_to_remove_id,
+        "member_removed",
+        removed_event,
+        Some(conversation_id),
+    ).await {
+        warn!("Failed to notify removed user {}: {}", user_to_remove_id, e);
+    }
+
+    // 11. Notifica i membri rimanenti del gruppo
+    let member_removed_event = json!({
+        "conversation_id": conversation_id.to_string(),
+        "removed_user_id": user_to_remove_id.to_string(),
+        "removed_username": removed_username,
+        "removed_by": requester_id.to_string(),
+    });
+
+    for participant_id in remaining_participants {
+        if let Err(e) = state.send_sequenced_event_to_user(
+            participant_id,
+            "member_removed",
+            member_removed_event.clone(),
+            Some(conversation_id),
+        ).await {
+            warn!("Failed to notify participant {}: {}", participant_id, e);
+        }
+    }
+
+    // 12. Invia ACK al requester
+    let ack = json!({
+        "type": "remove_member_ack",
+        "conversation_id": conversation_id.to_string(),
+        "removed_user_id": user_to_remove_id.to_string(),
+        "status": "ok"
+    });
+
+    if let Ok(txt) = serde_json::to_string(&ack) {
+        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+    }
+
+    info!(
+        "Successfully removed user {} from group {}",
+        removed_username, conversation_id
+    );
 
     Ok(())
 }

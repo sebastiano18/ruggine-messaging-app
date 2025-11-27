@@ -81,38 +81,22 @@ impl AuthHandler {
     pub fn handle_delete_account_confirm(state: &mut AppState) {
         state.confirm_delete_account = false;
 
-        let Some(token) = state.token.clone() else {
-            let _ = state.ui_tx.send(UiEvent::LoggedOut);
+        // Verifica che ci sia una connessione WebSocket attiva
+        if state.ws_ctrl.is_none() {
+            let _ = state.ui_tx.send(UiEvent::Error(ErrorType::Auth(
+                "WebSocket non connesso".into()
+            )));
             return;
         };
 
-        let base = state.base.clone();
-        let tx = state.ui_tx.clone();
-
-        state.rt.spawn(async move {
-            match crate::api::auth::delete_account(&base, &token).await {
-                Ok(()) => {
-                    let _ = tx.send(UiEvent::LoggedOut);
-                }
-                Err(e) => {
-                    let error_msg = if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
-                        match req_err.status() {
-                            Some(StatusCode::UNAUTHORIZED) => {
-                                let _ = tx.send(UiEvent::LoggedOut);
-                                return;
-                            }
-                            Some(StatusCode::FORBIDDEN) => {
-                                "Non hai i permessi per eliminare questo account.".to_string()
-                            }
-                            _ => format!("Eliminazione fallita: {}", req_err)
-                        }
-                    } else {
-                        format!("Eliminazione account fallita: {}", e)
-                    };
-
-                    let _ = tx.send(UiEvent::Error(ErrorType::Auth(error_msg)));
-                }
-            }
-        });
+        if let Err(e) = state.ui_to_net_tx.try_send(Outgoing::DeleteUser) {
+            let _ = state.ui_tx.send(UiEvent::Error(ErrorType::Auth(
+                format!("Impossibile inviare richiesta: {}", e)
+            )));
+            return;
+        }
+        
     }
+    
+    
 }

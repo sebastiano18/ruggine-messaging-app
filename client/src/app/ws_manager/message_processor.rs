@@ -85,6 +85,9 @@ impl MessageProcessor {
                                     Outgoing::InviteUser { .. } => {
                                         crate::models::ErrorType::Invite
                                     }
+                                    Outgoing::RemoveMember { .. } => {
+                                        crate::models::ErrorType::GroupRemoveMember
+                                    }
                                     // Per tutte le altre operazioni (Ping, Typing, ecc.) usa Connection
                                     _ => crate::models::ErrorType::Connection
                                 };
@@ -353,10 +356,24 @@ impl MessageProcessor {
                 })
             }
 
+            Outgoing::RemoveMember { cid, user_id } => {
+                serde_json::json!({
+                    "type": "remove_member",
+                    "conversation_id": cid.to_string(),
+                    "user_id": user_id.to_string()
+                })
+            }
+
             Outgoing::DeleteMessage { mid } => {
                 serde_json::json!({
                     "type": "delete_message",
                     "mid": mid.to_string()
+                })
+            }
+
+            Outgoing::DeleteUser => {
+                serde_json::json!({
+                    "type": "delete_user"
                 })
             }
         };

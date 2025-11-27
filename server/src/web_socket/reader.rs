@@ -336,6 +336,13 @@ pub fn spawn_reader(
                             }
                         }
 
+                        "remove_member" => {
+                            last_heartbeat = Instant::now();
+                            if let Err(e) = handlers::handle_remove_member(&state, &value, user_id, &out_tx).await {
+                                error!("Failed to handle remove_member: {}", e);
+                            }
+                        }
+
                         "delete_conversation" => {
                             last_heartbeat = Instant::now();
                             if let Err(e) = handlers::handle_delete_conversation(&state, &value, user_id, &out_tx).await {
@@ -362,6 +369,31 @@ pub fn spawn_reader(
                             last_heartbeat = Instant::now();
                             if let Err(e) = handlers::handle_check_user(&state, &value, user_id, &out_tx).await {
                                 error!("Failed to handle check_user: {}", e);
+                            }
+                        }
+
+                        "delete_user" => {
+                            info!("User {} requested account deletion", user_id);
+                            last_heartbeat = Instant::now();
+
+                            match handlers::handle_delete_user(&state, user_id, &out_tx).await {
+                                Ok(()) => {
+                                    info!("Successfully deleted user {}", user_id);
+                                    // Chiudi la connessione dopo la cancellazione
+                                    let _ = stop_tx.send(true);
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!("Failed to delete user {}: {}", user_id, e);
+                                    let error_response = json!({
+                                        "type": "error",
+                                        "message": e.to_string(),
+                                        "error_code": "DELETE_USER_FAILED"
+                                    });
+                                    if let Ok(txt) = serde_json::to_string(&error_response) {
+                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    }
+                                }
                             }
                         }
 
