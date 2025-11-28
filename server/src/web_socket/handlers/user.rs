@@ -83,20 +83,32 @@ pub async fn handle_user_events_resume_request(
         .unwrap_or(100)
         .min(1000);
 
+    // ✅ USA LA NUOVA FUNZIONE che arricchisce automaticamente
     match state
-        .get_user_events_since(user_id, from_sequence, limit)
+        .get_user_events_since_enriched(user_id, from_sequence, limit)
         .await
     {
         Ok(events) => {
             if !events.is_empty() {
                 info!(
-                    "Sending {} user events in resume to user {}",
+                    "Sending {} enriched user events in resume to user {}",
                     events.len(),
                     user_id
                 );
-                state
-                    .send_user_events_resume(user_id, events, out_tx)
-                    .await?;
+                
+                let resume_msg = json!({
+                    "type": "user_events_resume",
+                    "events": events,
+                    "count": events.len(),
+                    "timestamp": chrono::Utc::now().timestamp()
+                });
+
+                if let Ok(txt) = serde_json::to_string(&resume_msg) {
+                    out_tx
+                        .send(OutboundMsg::Text(txt))
+                        .await
+                        .map_err(|_| AppError::Internal("Failed to send response".into()))?;
+                }
             } else {
                 let response = json!({
                     "type": "user_resume_complete",
@@ -115,7 +127,7 @@ pub async fn handle_user_events_resume_request(
             Ok(())
         }
         Err(e) => {
-            error!("Failed to get user events for resume: {}", e);
+            error!("Failed to get enriched user events for resume: {}", e);
             let error_response = json!({
                 "type": "error",
                 "message": "Failed to retrieve user events",
@@ -144,16 +156,16 @@ pub async fn handle_delete_user(
     UserService::delete_user(&state.pool, user_id).await?;
 
     info!("User {} deleted successfully", user_id);
-    
+
     let confirm_msg = serde_json::json!({
         "type": "account_deleted_confirm",
         "message": "Account eliminato con successo"
     });
 
     if let Ok(txt) = serde_json::to_string(&confirm_msg) {
-        info!("Sending account_deleted_confirm to client");  // ← AGGIUNGI QUESTO LOG
+        info!("Sending account_deleted_confirm to client");
         let _ = out_tx.send(OutboundMsg::Text(txt)).await;
     }
 
-    Ok(())  // ✅ NON deve esserci Close qui
+    Ok(())
 }

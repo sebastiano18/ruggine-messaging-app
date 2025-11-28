@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use std::collections::HashMap;
 
 use crate::{
     error::{AppError, Result},
@@ -15,12 +16,8 @@ use crate::services::partecipant::ParticipantService;
 use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::{broadcast_to_conversation, send_message_confirmation};
 use crate::web_socket::handlers::conversation::handle_message_with_new_conversation;
-use crate::web_socket::utils::extract_conversation_id;
+use crate::web_socket::utils::{batch_insert_user_events, extract_conversation_id};
 
-
-/// Router principale per gestire i messaggi in arrivo
-
-/// Handlers for message operations (send, mark read, delete)
 
 pub async fn handle_chat_message(
     state: &AppState,
@@ -142,51 +139,75 @@ pub async fn handle_chat_message(
         conversation_id
     );
 
-    let mut message_event_data = json!({
-        "id": msg_id,
-        "conversation_id": conversation_id,
-        "author_id": user_id,
-        "author_username": username,
-        "content": content,
-        "created_at": ts,
-        "conversation_sequence": message_sequence,
-    });
+    if participants.len() > 1 {
+        let recipients: Vec<Uuid> = participants
+            .into_iter()
+            .filter(|&p| p != user_id)
+            .collect();
 
-    if let Some(ref client_id) = client_msg_id {
-        message_event_data["client_msg_id"] = json!(client_id);
-    }
+        if !recipients.is_empty() {
+            // 1️⃣ Salva notification LEGGERA nel DB (per recovery offline users)
+            let notification_payload = json!({
+                "message_id": msg_id,
+                "message_sequence": message_sequence,
+                "conversation_id": conversation_id,
+                "timestamp": ts
+            });
 
-    for participant_id in participants {
-        let event_payload = json!({
-            "type": "new_message",
-            "conversation_id": conversation_id,
-            "conversation_sequence": message_sequence,
-            "message": message_event_data.clone()
-        });
-
-        match state
-            .send_sequenced_event_to_user(
-                participant_id,
-                "new_message",
-                event_payload,
+            match batch_insert_user_events(
+                &state.pool,
+                &recipients,
+                "new_message_notification",
+                &notification_payload,
                 Some(conversation_id),
-            )
-            .await
-        {
-            Ok(user_seq) => {
-                debug!(
-                    "Event seq={} created for user {} - msg {} conv {}",
-                    user_seq, participant_id, msg_id, conversation_id
-                );
-            }
-            Err(e) => {
-                warn!("Failed to create event for user {}: {}", participant_id, e);
+            ).await {
+                Ok(user_sequences) => {
+                    info!(
+                        "Batch inserted {} lightweight notifications for message {}",
+                        user_sequences.len(),
+                        msg_id
+                    );
+
+                    // 2️⃣ Costruisci messaggio COMPLETO (hai già tutti i dati qui!)
+                    let mut message_data = json!({
+                        "id": msg_id,
+                        "conversation_id": conversation_id,
+                        "author_id": user_id,
+                        "author_username": username,
+                        "content": content,
+                        "created_at": ts,
+                        "sequence_num": message_sequence,
+                    });
+
+                    if let Some(ref client_id) = client_msg_id {
+                        message_data["client_msg_id"] = json!(client_id);
+                    }
+
+                    let full_event = json!({
+                        "type": "new_message",
+                        "conversation_id": conversation_id,
+                        "conversation_sequence": message_sequence,
+                        "message": message_data
+                    });
+
+                    // 3️⃣ Invia messaggio COMPLETO agli utenti online (via user_notification_channel)
+                    let channels = state.user_notification_channels.read().await;
+                    for (recipient_id, user_seq) in recipients.iter().zip(&user_sequences) {
+                        if let Some(tx) = channels.get(recipient_id) {
+                            let mut event = full_event.clone();
+                            event["sequence"] = json!(user_seq);
+                            let _ = tx.send(event);  // ← Messaggio completo, non notification!
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to batch insert user_events: {}", e);
+                }
             }
         }
     }
 
-    info!("User events created for all participants");
-
+    // 4️⃣ Broadcast alla conversazione
     let mut broadcast_msg = json!({
         "type": "chat_message",
         "id": msg_id,
@@ -217,12 +238,13 @@ pub async fn handle_chat_message(
     Ok(())
 }
 
+
+
 pub async fn handle_mark_read(
     state: &AppState,
     user_id: Uuid,
     msg: &serde_json::Value,
 ) -> Result<()> {
-    // 1. Estrai conversation_id dal messaggio
     let conversation_id_str = msg
         .get("conversation_id")
         .and_then(|v| v.as_str())
@@ -231,14 +253,11 @@ pub async fn handle_mark_read(
     let conversation_id = Uuid::parse_str(conversation_id_str)
         .map_err(|_| AppError::BadRequest("Invalid conversation_id format".into()))?;
 
-    // 2. Estrai sequence_num dal messaggio
     let sequence_num = msg
         .get("sequence_num")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::BadRequest("Missing or invalid sequence_num".into()))?;
 
-    // 3. Valida che l'utente sia partecipante (security check)
-    use crate::repositories::conversation_repo::ConversationRepo;
     let is_participant = ConversationRepo::is_participant(&state.pool, conversation_id, user_id).await?;
 
     if !is_participant {
@@ -246,10 +265,9 @@ pub async fn handle_mark_read(
             "User {} attempted to mark_read conversation {} (not a participant)",
             user_id, conversation_id
         );
-        return Ok(()); // Ignora silenziosamente per sicurezza
+        return Ok(());
     }
 
-    // 4. Aggiorna last_read_sequence nel database
     ParticipantService::mark_read(&state.pool, conversation_id, user_id, sequence_num).await?;
 
     info!(
@@ -266,9 +284,6 @@ pub async fn handle_delete_message(
     user_id: Uuid,
     out_tx: &mpsc::Sender<OutboundMsg>,
 ) -> crate::error::Result<()> {
-    use crate::services::message_service::MessageService;
-
-    // 1. Extract message_id (mid)
     let message_id_str = value
         .get("mid")
         .and_then(|v| v.as_str())
@@ -279,16 +294,12 @@ pub async fn handle_delete_message(
 
     info!("Processing delete request for message {} from user {}", message_id, user_id);
 
-    // 2. Call the service to delete the message. This also performs authorization.
-    // The service returns the conversation_id on success.
     let conversation_id = MessageService::delete_message(&state.pool, message_id, user_id).await?;
 
     info!("Message {} in conversation {} deleted successfully from DB", message_id, conversation_id);
 
-    // 3. Get all participants of the conversation to notify them.
     let participants = ConversationService::list_participant_ids(&state.pool, conversation_id).await?;
 
-    // 4. Broadcast the deletion event to all participants.
     ConversationService::broadcast_message_deleted(
         state,
         conversation_id,
@@ -296,7 +307,6 @@ pub async fn handle_delete_message(
         participants,
     ).await;
 
-    // 5. (Optional) Send an ACK to the original sender
     let ack = json!({
         "type": "delete_message_ack",
         "message_id": message_id,

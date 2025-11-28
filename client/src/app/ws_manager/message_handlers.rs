@@ -965,8 +965,7 @@ fn handle_member_added(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
     // Mostra notifica all'utente
     let message = format!("{} è stato aggiunto al gruppo", username);
     let _ = tx.send(UiEvent::Info(message));
-
-    // ✅ RIMOSSO: Non triggerare più ConversationListUpdated
+    
 }
 
 fn handle_leave_group_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {

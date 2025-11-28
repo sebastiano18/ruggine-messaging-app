@@ -13,10 +13,10 @@ pub mod reader;
 pub mod recv_merge;
 
 // Moduli interni (non esportati pubblicamente)
-mod utils;
+pub(crate) mod utils;
 pub(crate) mod broadcast;
 mod initial_state;
-mod handlers;
+pub mod handlers;
 
 
 pub async fn ws_handler(
