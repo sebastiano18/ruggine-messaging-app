@@ -425,7 +425,7 @@ impl AppState {
 
         Ok(())
     }
-
+    
     /// Invia evento sequenziato all'utente (store nel DB + WebSocket)
     pub async fn send_sequenced_event_to_user(
         &self,
@@ -441,12 +441,12 @@ impl AppState {
         self.store_user_event(user_id, sequence, event_type, &event_data, conversation_id)
             .await?;
 
-        // Aggiungi sequence, event_type, type e user_id ai dati dell'evento
+        // Costruisci evento con metadati (SENZA user_id per evitare collisioni)
         let mut enriched_event = event_data;
         enriched_event["type"] = json!("user_event");
         enriched_event["sequence"] = json!(sequence);
-        enriched_event["user_id"] = json!(user_id);
         enriched_event["event_type"] = json!(event_type);
+
         if let Some(cid) = conversation_id {
             enriched_event["conversation_id"] = json!(cid);
         }
@@ -456,15 +456,15 @@ impl AppState {
         match user_tx.send(enriched_event) {
             Ok(receiver_count) => {
                 debug!(
-                    "Sent sequenced event (seq={}) to user {} ({} receivers)",
-                    sequence, user_id, receiver_count
-                );
+                "Sent sequenced event (seq={}) to user {} ({} receivers)",
+                sequence, user_id, receiver_count
+            );
             }
             Err(_) => {
                 debug!(
-                    "No active receivers for user {} event (seq={}), stored for recovery",
-                    user_id, sequence
-                );
+                "No active receivers for user {} event (seq={}), stored for recovery",
+                user_id, sequence
+            );
             }
         }
 
@@ -857,5 +857,205 @@ impl AppState {
         } else {
             Ok(None)
         }
+    }
+
+    // === NUOVE FUNZIONI PER ARRICCHIMENTO EVENTI ===
+
+    /// Recupera user_events e arricchisce le notifications con messaggi completi
+    ///
+    /// Questa funzione:
+    /// 1. Recupera eventi dal DB (possono essere notifications leggere)
+    /// 2. Identifica quali eventi sono "new_message_notification"
+    /// 3. Fa batch SELECT per recuperare tutti i messaggi in 1 query
+    /// 4. Arricchisce le notifications convertendole in "new_message" con contenuto completo
+    /// 5. Ritorna eventi nel formato che il client si aspetta
+    pub async fn get_user_events_since_enriched(
+        &self,
+        user_id: Uuid,
+        from_sequence: u64,
+        limit: i64,
+    ) -> Result<Vec<Value>> {
+        let user_id_str = user_id.to_string();
+
+        // 1. Recupera eventi dal DB
+        let rows = sqlx::query(
+            "SELECT id, event_type, event_data, sequence_num, conversation_id, created_at
+             FROM user_events
+             WHERE user_id = ? AND sequence_num > ?
+             ORDER BY sequence_num ASC
+             LIMIT ?"
+        )
+            .bind(&user_id_str)
+            .bind(from_sequence as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. Estrai tutti i message_id dalle notifications
+        let mut message_ids_to_fetch = Vec::new();
+
+        for row in &rows {
+            let event_type: String = row.try_get("event_type").map_err(AppError::from)?;
+
+            if event_type == "new_message_notification" {
+                let event_data_str: String = row.try_get("event_data").map_err(AppError::from)?;
+
+                if let Ok(event_data) = serde_json::from_str::<Value>(&event_data_str) {
+                    if let Some(msg_id_str) = event_data.get("message_id").and_then(|v| v.as_str()) {
+                        if let Ok(msg_id) = Uuid::parse_str(msg_id_str) {
+                            message_ids_to_fetch.push(msg_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3.  Batch SELECT tutti i messaggi (1 query invece di N)
+        let messages_map = if !message_ids_to_fetch.is_empty() {
+            info!(
+                "Enriching {} new_message_notification events for user {}",
+                message_ids_to_fetch.len(),
+                user_id
+            );
+            self.batch_get_messages(&message_ids_to_fetch).await?
+        } else {
+            HashMap::new()
+        };
+
+        // 4. Arricchisci gli eventi
+        let mut enriched_events = Vec::new();
+
+        for row in rows {
+            let event_type: String = row.try_get("event_type").map_err(AppError::from)?;
+            let event_data_str: String = row.try_get("event_data").map_err(AppError::from)?;
+            let sequence: i64 = row.try_get("sequence_num").map_err(AppError::from)?;
+            let created_at: i64 = row.try_get("created_at").map_err(AppError::from)?;
+
+            let mut event_data: Value = serde_json::from_str(&event_data_str)
+                .map_err(|e| AppError::Internal(format!("JSON parse error: {}", e)))?;
+
+            let final_event_type = if event_type == "new_message_notification" {
+                // Arricchisci notification con messaggio completo
+                if let Some(message_id_str) = event_data.get("message_id").and_then(|v| v.as_str()) {
+                    if let Ok(message_id) = Uuid::parse_str(message_id_str) {
+                        if let Some(full_message) = messages_map.get(&message_id) {
+                            // Converti notification in new_message (formato che client si aspetta)
+                            event_data = json!({
+                    "type": "new_message",
+                    "conversation_id": event_data.get("conversation_id")
+                        .unwrap_or(&json!(null)),
+                    "conversation_sequence": event_data.get("message_sequence")
+                        .unwrap_or(&json!(null)),
+                    "message": full_message
+                });
+                        } else {
+                            warn!(
+                    "Message {} not found for enrichment (may have been deleted)",
+                    message_id
+                );
+                        }
+                    }
+                }
+
+                
+                "new_message"
+            } else {
+                
+                &event_type
+            };
+
+            // Aggiungi metadata per compatibilità client
+            event_data["type"] = json!(&final_event_type);
+            event_data["sequence"] = json!(sequence);
+            event_data["event_type"] = json!(&final_event_type);
+            event_data["created_at"] = json!(created_at);
+
+            enriched_events.push(event_data);
+        }
+
+        info!(
+            "Enriched {} events for user {} (from sequence {})",
+            enriched_events.len(),
+            user_id,
+            from_sequence
+        );
+
+        Ok(enriched_events)
+    }
+
+    /// Helper: Batch SELECT messaggi per ID (1 query per tutti)
+    ///
+    /// Recupera tutti i messaggi richiesti in una singola query usando WHERE IN
+    /// Ritorna una HashMap per lookup veloce: message_id -> messaggio completo
+    async fn batch_get_messages(&self, message_ids: &[Uuid]) -> Result<HashMap<Uuid, Value>> {
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        info!("Batch fetching {} messages for enrichment", message_ids.len());
+
+        // Costruisci query con placeholders
+        let placeholders = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query_str = format!(
+            "SELECT m.id, m.conversation_id, m.author_id, u.username as author_username,
+                    m.content, m.created_at, m.sequence_num
+             FROM messages m
+             INNER JOIN users u ON m.author_id = u.id
+             WHERE m.id IN ({})",
+            placeholders
+        );
+
+        // Bind tutti i message_id
+        let mut query = sqlx::query(&query_str);
+        for id in message_ids {
+            query = query.bind(id.to_string());
+        }
+
+        let rows = query.fetch_all(&self.pool).await.map_err(AppError::from)?;
+
+        // Costruisci HashMap per lookup veloce
+        let mut messages_map = HashMap::new();
+
+        for row in rows {
+            let id_str: String = row.try_get("id").map_err(AppError::from)?;
+            let id = Uuid::parse_str(&id_str)
+                .map_err(|_| AppError::Internal("Invalid message UUID in database".into()))?;
+
+            let mut message = json!({
+                "id": id,
+                "conversation_id": row.try_get::<String, _>("conversation_id")
+                    .map_err(AppError::from)?,
+                "author_id": row.try_get::<String, _>("author_id")
+                    .map_err(AppError::from)?,
+                "author_username": row.try_get::<String, _>("author_username")
+                    .map_err(AppError::from)?,
+                "content": row.try_get::<String, _>("content")
+                    .map_err(AppError::from)?,
+                "created_at": row.try_get::<i64, _>("created_at")
+                    .map_err(AppError::from)?,
+                "sequence_num": row.try_get::<i64, _>("sequence_num")
+                    .map_err(AppError::from)?
+            });
+
+            // Aggiungi client_msg_id dalla cache se disponibile
+            if let Some(client_id) = self.message_confirmation_cache.get(&id).await {
+                message["client_msg_id"] = json!(client_id);
+            }
+
+            messages_map.insert(id, message);
+        }
+
+        info!(
+            "Batch fetched {} out of {} requested messages",
+            messages_map.len(),
+            message_ids.len()
+        );
+
+        Ok(messages_map)
     }
 }

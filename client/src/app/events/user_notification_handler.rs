@@ -119,15 +119,11 @@ impl UserNotificationHandler {
             }
             "member_added" => {
                 // Gestisce quando un utente viene aggiunto al gruppo
-                let username = event_data
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown");
-
-                info!("User {} added to group (conversation: {:?})", username, conversation_id);
-
-                // Il messaggio di sistema arriverà come evento new_message dal server
-                // salvato in user_events per persistenza
+                if let Some(conv_id) = conversation_id {
+                    Self::handle_member_added(state, conv_id, event_data);
+                } else {
+                    warn!("member_added notification without conversation_id");
+                }
             }
             "member_removed" => {
                 // Gestisce quando un utente viene espulso dal gruppo
@@ -987,7 +983,7 @@ impl UserNotificationHandler {
             conversation_id,
             system_message_content,
         );
-        
+
 
         info!("User left group handled: {} in conversation {}", username, conversation_id);
     }
@@ -1039,7 +1035,7 @@ impl UserNotificationHandler {
             conversation_id,
             system_message_content,
         );
-        
+
 
         info!(
             "Member removed handled: {} in conversation {}",
@@ -1126,11 +1122,141 @@ impl UserNotificationHandler {
             conversation_id,
             system_message_content,
         );
-        
+
 
         info!(
             "User deleted account handled: {} in conversation {}",
             deleted_username, conversation_id
         );
+    }
+
+    /// Gestisce quando un utente viene aggiunto al gruppo
+    fn handle_member_added(
+        state: &mut AppState,
+        conversation_id: Uuid,
+        event_data: serde_json::Value,
+    ) {
+        // Debug: logga il payload completo
+        debug!("Received member_added event for conversation {}: {:?}", conversation_id, event_data);
+
+        // Estrai user_id e username dell'utente aggiunto
+        let added_user_id = event_data
+            .get("user_id")
+            .and_then(|v| {
+                debug!("Raw user_id value: {:?}", v);
+                serde_json::from_value::<Uuid>(v.clone()).ok()
+                    .or_else(|| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+            });
+
+        // Se non riusciamo a estrarre un user_id valido, logga errore e esci
+        let added_user_id = match added_user_id {
+            Some(id) if id != Uuid::nil() => {
+                debug!("Successfully extracted valid user_id: {}", id);
+                id
+            }
+            _ => {
+                warn!(
+                "Invalid or missing user_id in member_added event for conversation {}",
+                conversation_id
+            );
+                return;
+            }
+        };
+
+        let added_username = event_data
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
+
+        info!(
+        "User {} ({}) added to group {}",
+        added_username, added_user_id, conversation_id
+    );
+
+        // 1. Aggiungi il membro alla lista membri
+        if let Some(members) = state.members_list.get_mut(&conversation_id) {
+            let before_count = members.len();
+
+            // Verifica che il membro non sia già presente
+            if members.iter().any(|m| m.user_id == added_user_id) {
+                debug!(
+                "Member {} ({}) already exists in conversation {}, skipping",
+                added_username, added_user_id, conversation_id
+            );
+                return;
+            }
+
+            // Crea il nuovo membro
+            let new_member = crate::models::ParticipantInfo {
+                user_id: added_user_id,
+                username: added_username.to_string(),
+                role: "member".to_string(),
+            };
+
+            members.push(new_member);
+
+            // Riordina: owner primo, poi tutti gli altri in ordine alfabetico
+            // Ottieni l'owner_id dalla conversazione
+            if let Some(convs) = state.conversations.as_ref() {
+                if let Some(conv) = convs.iter().find(|c| c.id == conversation_id) {
+                    let owner_id = conv.owner_id;
+
+                    debug!("Sorting members with owner_id: {}", owner_id);
+
+                    // Ordina con owner sempre primo
+                    members.sort_by(|a, b| {
+                        // Owner sempre primo (solo se owner_id è valido)
+                        if owner_id != Uuid::nil() {
+                            if a.user_id == owner_id && b.user_id != owner_id {
+                                return std::cmp::Ordering::Less;
+                            } else if a.user_id != owner_id && b.user_id == owner_id {
+                                return std::cmp::Ordering::Greater;
+                            }
+                        }
+
+                        // Tutti gli altri in ordine alfabetico
+                        a.username.to_lowercase().cmp(&b.username.to_lowercase())
+                    });
+                } else {
+                    // Fallback: ordina solo alfabeticamente se non troviamo la conversazione
+                    debug!(
+                    "Conversation {} not found in state, sorting alphabetically only",
+                    conversation_id
+                );
+                    members.sort_by(|a, b| a.username.to_lowercase().cmp(&b.username.to_lowercase()));
+                }
+            } else {
+                // Fallback: ordina solo alfabeticamente se conversations non è disponibile
+                debug!("Conversations not available in state, sorting alphabetically only");
+                members.sort_by(|a, b| a.username.to_lowercase().cmp(&b.username.to_lowercase()));
+            }
+
+            let after_count = members.len();
+
+            if after_count > before_count {
+                debug!(
+                "Added member {} to conversation {} members list ({} -> {} members)",
+                added_username, conversation_id, before_count, after_count
+            );
+            }
+        } else {
+            debug!(
+            "Members list not loaded for conversation {}, member {} will appear after next refresh",
+            conversation_id, added_username
+        );
+        }
+
+        // 2. Aggiungi messaggio di sistema localmente
+        let system_message_content = format!("{} è stato aggiunto al gruppo", added_username);
+        helpers::add_system_message_to_conversation(
+            state,
+            conversation_id,
+            system_message_content,
+        );
+
+        info!(
+        "Member added handled successfully: {} ({}) in conversation {}",
+        added_username, added_user_id, conversation_id
+    );
     }
 }
