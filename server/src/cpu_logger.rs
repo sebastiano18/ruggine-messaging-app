@@ -17,7 +17,7 @@ pub fn spawn_cpu_logger() {
 
             if let Some(proc) = sys.process(pid) {
                 let cpu_percent = proc.cpu_usage() / sys.cpus().len() as f32;
-                let memory_kb = proc.memory() as f64 / (1024.0 * 1024.0);
+                let memory_mb = proc.memory() as f64 / (1024.0 * 1024.0);
 
                 // Scrive sul file di log
                 let mut file = OpenOptions::new()
@@ -28,10 +28,10 @@ pub fn spawn_cpu_logger() {
 
                 writeln!(
                     file,
-                      "[{}] CPU: {:.2}% | Memoria: {:.2} GB",
+                    "[{}] Server CPU (Tempo/Uso): {:.2}% | Dimensione App (Memoria): {:.2} MB",
                     Local::now().format("%Y-%m-%d %H:%M:%S"),
                     cpu_percent,
-                    memory_kb
+                    memory_mb
                 ).unwrap();
             }
 
