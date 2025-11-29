@@ -20,8 +20,8 @@ impl ConversationHandler {
             user_sequence
         );
 
-        state.user_sequence_confirmed = user_sequence;
-        state.user_sequence_received = user_sequence;
+        // Imposta sequenza iniziale (aggiorna anche Arc per ping task)
+        SequenceHandler::set_initial_user_sequence(state, user_sequence);
 
         state.conversations = Some(conversations.clone());
 

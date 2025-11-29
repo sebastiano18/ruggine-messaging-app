@@ -23,7 +23,7 @@ impl WebSocketHandler {
             UiEvent::WsDisconnected => {
                 state.ws_status = WsStatus::Disconnected;
                 SequenceHandler::reset_sequence_on_disconnect(state);
-                warn!("WebSocket disconnected");
+                warn!("WebSocket disconnected, requesting reconnection");
             }
 
             UiEvent::WsError(error) => {
@@ -36,6 +36,8 @@ impl WebSocketHandler {
 
             _ => {}
         }
+        
+        (state.egui_waker)();
     }
 
     fn handle_incoming_message(state: &mut crate::state::core::AppState, msg: MessageDto) {

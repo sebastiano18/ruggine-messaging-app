@@ -4,6 +4,8 @@ mod models;
 mod api;
 mod ui;
 
+use std::sync::Arc;
+
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -26,7 +28,15 @@ fn main() -> eframe::Result<()> {
             egui_remixicon::add_to_fonts(&mut fonts);
             cc.egui_ctx.set_fonts(fonts);
 
-            Box::new(app::App::new())
+            // ✅ NUOVO: Crea waker per svegliare egui da thread esterni
+            let waker = {
+                let ctx = cc.egui_ctx.clone();
+                Arc::new(move || {
+                    ctx.request_repaint();
+                })
+            };
+
+            Box::new(app::App::new(waker))
         }),
     )
 }

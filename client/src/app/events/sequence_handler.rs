@@ -7,6 +7,14 @@ pub struct SequenceHandler;
 
 impl SequenceHandler {
 
+    /// Setta la sequenza iniziale (quando si riceve lo stato dal server)
+    pub fn set_initial_user_sequence(state: &mut AppState, sequence: u64) {
+        state.user_sequence_confirmed = sequence;
+        state.user_sequence_received = sequence;
+        state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::Relaxed);
+        info!("Initial user sequence set to {}", sequence);
+    }
+
     /// Metodo centralizzato per aggiornare la user sequence con gap detection
     /// Commenta le righe interne per forzare i resume durante il testing
     pub fn update_user_sequence(state: &mut AppState, sequence: u64) {
@@ -48,6 +56,8 @@ impl SequenceHandler {
         // Aggiorna sequence_confirmed se continua
         if sequence == state.user_sequence_confirmed + 1 {
             state.user_sequence_confirmed = sequence;
+            // Aggiorna anche l'Arc per il ping task indipendente
+            state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::Relaxed);
             debug!("User sequence {} confirmed (continuous)", sequence);
         }
     }
@@ -392,13 +402,26 @@ impl SequenceHandler {
     /// Invia ping al server con la sequence corrente
     pub fn send_ping(state: &mut AppState) {
         let user_seq = Some(state.user_sequence_confirmed);
-        debug!("Sending ping - user_seq: {:?}", user_seq);
+        debug!("Sending manual ping - user_seq: {:?}", user_seq);
         state.sequence_stats.ping_count += 1;
 
-        let outgoing = Outgoing::Ping {
-            user_sequence: user_seq,
-        };
-        let _ = state.ui_to_net_tx.try_send(outgoing);
+        // Use direct WebSocket channel (bypasses rate limiter, same as automatic pings)
+        if let Some(ref ws_ctrl) = state.ws_ctrl {
+            let json_msg = serde_json::json!({
+                "type": "ping",
+                "timestamp": chrono::Utc::now().timestamp(),
+                "user_sequence": user_seq
+            });
+
+            if let Ok(msg_str) = serde_json::to_string(&json_msg) {
+                match ws_ctrl.outgoing_tx.send(msg_str) {
+                    Ok(_) => debug!("Manual ping sent directly to WebSocket"),
+                    Err(e) => warn!("Failed to send manual ping: {}", e),
+                }
+            }
+        } else {
+            warn!("Cannot send manual ping: no WebSocket control available");
+        }
     }
 
     /// Richiede resume degli user events dal server

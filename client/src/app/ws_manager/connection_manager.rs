@@ -51,6 +51,9 @@ impl ConnectionManager {
             match (&self.last_ws_status, &current_status) {
                 (_, WsStatus::Connected) => {
                     self.reset_backoff();
+                    // Clear connection timeout timer - connection successful
+                    state.connection_attempt_start = None;
+                    debug!("Connection established, cleared connection timeout timer");
                 }
                 (WsStatus::Connecting, WsStatus::Disconnected) => {
                     let should_logout = self.increment_backoff();
@@ -123,17 +126,20 @@ impl ConnectionManager {
                 }
             }
             WsStatus::Connecting => {
-                // Timeout check per connessione
-                if state.last_ping_time.elapsed() > Duration::from_secs(30) {
-                    error!("Connection timeout, retrying");
-                    self.disconnect_websocket(state, true); // Notifica UI (errore reale)
-                    self.stats.last_error = Some("Connection timeout".into());
+                // Timeout check per connessione usando timer dedicato
+                if let Some(start) = state.connection_attempt_start {
+                    if start.elapsed() > Duration::from_secs(30) {
+                        error!("Connection timeout, retrying");
+                        self.disconnect_websocket(state, true); // Notifica UI (errore reale)
+                        self.stats.last_error = Some("Connection timeout".into());
+                    }
                 }
             }
             WsStatus::Connected => {
                 self.monitor_active_connection(state);
             }
         }
+        (state.egui_waker)();
     }
 
     /// Monitoraggio connessione attiva
@@ -179,8 +185,11 @@ impl ConnectionManager {
         };
 
         let tx = state.ui_tx.clone();
+        let session_id = state.current_session_id; // Passa session_id corrente
+        let user_seq_shared = state.user_sequence_shared.clone(); // Clone PRIMA dell'async block
+        let waker = state.egui_waker.clone(); // ✅ NUOVO: Clone waker per svegliare egui
         state.ws_status = WsStatus::Connecting;
-        state.last_ping_time = Instant::now();
+        state.connection_attempt_start = Some(Instant::now()); // Start connection timeout timer
 
         self.last_attempt = Some(Instant::now());
 
@@ -196,7 +205,7 @@ impl ConnectionManager {
         }
 
         state.rt.spawn(async move {
-            match crate::api::ws::connect(&base, &token).await {
+            match crate::api::ws::connect(&base, &token, session_id).await {
                 Ok(mut ws) => {
                     debug!("WebSocket connected successfully");
 
@@ -205,8 +214,10 @@ impl ConnectionManager {
                             info!("WebSocket subscribed successfully");
 
                             let _ = tx.send(UiEvent::WsConnected);
+                            waker(); // ✅ Sveglia egui per mostrare stato connesso
                             let tx_reader = tx.clone();
                             let tx_disconnect = tx.clone();
+                            let waker_clone = waker.clone(); // ✅ Clone per il callback
 
                             let ctrl = crate::api::ws::spawn_bidirectional_handler(
                                 ws,
@@ -214,17 +225,21 @@ impl ConnectionManager {
                                     super::message_handlers::handle_websocket_message(
                                         &tx_reader, msg,
                                     );
+                                    waker_clone(); // ✅ SVEGLIA EGUI dopo ogni messaggio!
                                 },
                                 Some(tx_disconnect),
+                                user_seq_shared,
                             );
 
                             let _ = tx.send(UiEvent::WsControlReady(ctrl));
+                            waker(); // ✅ Sveglia egui per processare WsControlReady
                         }
                         Err(e) => {
                             error!("WebSocket subscribe failed: {}", e);
                             let _ =
                                 tx.send(UiEvent::WsError(format!("Sottoscrizione fallita: {}", e)));
                             let _ = tx.send(UiEvent::WsDisconnected);
+                            waker(); // ✅ Sveglia egui per mostrare errore subscribe
                         }
                     }
                 }
@@ -232,6 +247,7 @@ impl ConnectionManager {
                     error!("WebSocket connection failed: {}", e);
                     let _ = tx.send(UiEvent::WsError(format!("Connessione fallita: {}", e)));
                     let _ = tx.send(UiEvent::WsDisconnected);
+                    waker(); // ✅ Sveglia egui per mostrare errore connessione
                 }
             }
         });
@@ -257,6 +273,7 @@ impl ConnectionManager {
         // Invia evento solo se richiesto (non per reconnect interni)
         if notify_ui {
             let _ = state.ui_tx.send(UiEvent::WsDisconnected);
+            (state.egui_waker)(); // ✅ Sveglia egui per mostrare disconnessione
         }
 
         if let Some(ctrl) = state.ws_ctrl.take() {

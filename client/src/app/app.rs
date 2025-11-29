@@ -1,3 +1,5 @@
+use std::time::Duration;
+use std::sync::Arc;
 use crate::app::events::sequence_handler::SequenceHandler;
 use crate::app::ws_manager::ws_manager::WebSocketManager;
 use crate::models::{Page, WsStatus};
@@ -21,9 +23,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(waker: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
-            state: AppState::new(),
+            state: AppState::new(waker),
             ws_manager: WebSocketManager::new(),
             sidebar_manager: SidebarManager::new(),
             header_manager: HeaderManager::new(),
@@ -38,6 +40,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Lifecycle management
         self.ws_manager.ensure_ws_lifecycle(&mut self.state);
+
+        // ✅ drain_events() ora verrà chiamato perché waker sveglia egui quando arrivano messaggi
         self.state.drain_events();
         self.state.prune_expired_toasts(std::time::Duration::from_secs(5));
 

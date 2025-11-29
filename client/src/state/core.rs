@@ -3,6 +3,7 @@
 use crate::api::ws::WsControl;
 use crate::models::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;
@@ -135,12 +136,21 @@ pub struct AppState {
     pub conversation_sequences: HashMap<Uuid, u64>,
     pub conversation_sequences_confirmed: HashMap<Uuid, u64>,
 
+    // Shared state per ping task indipendente
+    pub user_sequence_shared: Arc<AtomicU64>,
+
+    // ✅ NUOVO: Waker per svegliare egui da thread esterni (WebSocket)
+    pub egui_waker: Arc<dyn Fn() + Send + Sync>,
+
     // Ping/Pong management
     pub ping_interval: Duration,
     pub last_ping_time: Instant,
     pub missed_pings: u32,
     pub max_missed_pings: u32,
     pub ping_timeout: Duration,
+
+    // Connection timeout tracking (separate from ping timer)
+    pub connection_attempt_start: Option<Instant>,
 
     // Recovery state
     pub is_recovering_user_events: bool,
@@ -194,10 +204,13 @@ pub struct AppState {
     pub pending_user_check: Option<String>,
     pub user_check_request_id: Option<String>,
     pub user_check_timestamp: Option<Instant>,
+
+    // WebSocket session tracking
+    pub current_session_id: Option<Uuid>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(waker: Arc<dyn Fn() + Send + Sync>) -> Self {
         let rt = Runtime::new().expect("tokio runtime");
         let (tx, rx) = mpsc::unbounded_channel();
         let (ui_to_net_tx, ui_to_net_rx) = mpsc::channel::<Outgoing>(200);
@@ -260,11 +273,17 @@ impl AppState {
             conversation_sequences: HashMap::new(),
             conversation_sequences_confirmed: HashMap::new(),
 
+            user_sequence_shared: Arc::new(AtomicU64::new(0)),
+
+            egui_waker: waker,
+
             ping_interval: Duration::from_secs(30),
             last_ping_time: Instant::now(),
             missed_pings: 0,
             max_missed_pings: 3,
             ping_timeout: Duration::from_secs(15),
+
+            connection_attempt_start: None,
 
             is_recovering_user_events: false,
             is_recovering_messages: HashMap::new(),
@@ -297,6 +316,8 @@ impl AppState {
             pending_user_check: None,
             user_check_request_id: None,
             user_check_timestamp: None,
+
+            current_session_id: None,
         }
     }
 }
