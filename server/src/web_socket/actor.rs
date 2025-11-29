@@ -23,6 +23,7 @@ pub enum OutboundMsg {
     Binary(Vec<u8>),
     Pong(Vec<u8>),
     Close(Option<axum::extract::ws::CloseFrame<'static>>),
+    ForceLogout { reason: String },
 }
 
 pub struct ConnectionActor;
@@ -33,12 +34,51 @@ impl ConnectionActor {
         state: AppState,
         user_id: Uuid,
         username: String,
+        client_session_id: Option<Uuid>,
     ) -> Result<()> {
+        // CRITICAL: Se utente già connesso, verifica se è stesso client o altro device
+        if state.is_user_connected(user_id).await {
+            if let Some(old_conn) = state.get_connection_info(user_id).await {
+                // Se client passa session_id E corrisponde alla vecchia connessione
+                // → stesso client che riconnette (es. dopo calo rete)
+                if client_session_id.is_some() && client_session_id == Some(old_conn.session_id) {
+                    info!(
+                        "Same client reconnecting (session: {}), replacing connection silently",
+                        old_conn.session_id
+                    );
+                    // Replace silenzioso - nessun messaggio "logged_out"
+                    state.unregister_connection(user_id).await;
+                } else {
+                    // Altro client (diverso session_id) o nessun session_id fornito
+                    // → nuovo dispositivo che si connette
+                    warn!(
+                        "Different client connecting (old session: {}, new session: {:?}), force logout old session",
+                        old_conn.session_id, client_session_id
+                    );
+                    // Force disconnect con messaggio al vecchio client
+                    state.force_disconnect_user(user_id).await;
+                }
+            } else {
+                // Caso edge: is_connected ma nessuna info (non dovrebbe mai succedere)
+                warn!("User marked as connected but no connection info found, proceeding anyway");
+            }
+        }
+
         let (mut ws_tx, ws_rx) = socket.split();
 
         // Coordinamento shutdown + coda bounded verso l'unico writer
         let (stop_tx, stop_rx) = watch::channel(false);
         let (out_tx, mut out_rx) = mpsc::channel::<OutboundMsg>(1024);
+
+        // Riutilizza client_session_id se fornito, altrimenti genera nuovo
+        let session_id = client_session_id.unwrap_or_else(|| Uuid::new_v4());
+        state.register_connection(user_id, session_id, username.clone(), out_tx.clone()).await?;
+
+        
+        info!(
+            "WebSocket connection established for user {} (session: {})",
+            user_id, session_id
+        );
 
         // Clone dedicato del receiver per il writer
         let mut stop_rx_writer = stop_rx.clone();
@@ -96,6 +136,33 @@ impl ConnectionActor {
                             OutboundMsg::Binary(b) => Message::Binary(b),
                             OutboundMsg::Pong(b)   => Message::Pong(b),
                             OutboundMsg::Close(f)  => Message::Close(f),
+                            OutboundMsg::ForceLogout { reason } => {
+                                // Invia messaggio di logout al client
+                                let logout_msg = json!({
+                                    "type": "logged_out",
+                                    "reason": reason,
+                                    "message": "You have been logged out because a new session was started from another device",
+                                    "timestamp": chrono::Utc::now().timestamp()
+                                });
+
+                                if let Ok(txt) = serde_json::to_string(&logout_msg) {
+                                    info!("Sending force logout message to user {}: {}", user_id, reason);
+                                    // Invia il messaggio
+                                    let _ = timeout(
+                                        Duration::from_secs(2),
+                                        ws_tx.send(Message::Text(txt))
+                                    ).await;
+                                }
+
+                                // Poi chiudi gracefully
+                                let _ = timeout(
+                                    Duration::from_secs(2),
+                                    ws_tx.send(Message::Close(None))
+                                ).await;
+
+                                info!("Force logout completed for user {}", user_id);
+                                break; // Esci dal loop per terminare il writer
+                            }
                         };
 
                         // Send con timeout per evitare blocchi
@@ -237,6 +304,9 @@ impl ConnectionActor {
         if let Err(e) = connection_result {
             warn!("Connection ended with error for user {}: {:?}", user_id, e);
         }
+
+        // CRITICAL: Deregistra la connessione per permettere nuovi login
+        state.unregister_connection(user_id).await;
 
         Ok(())
     }

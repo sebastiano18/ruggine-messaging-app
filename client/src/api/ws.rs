@@ -21,11 +21,18 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub struct WsControl {
     pub shutdown: oneshot::Sender<()>,
     pub outgoing_tx: mpsc::UnboundedSender<String>,
+    pub user_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Connessione WebSocket con validazione URL migliorata
-pub async fn connect(base: &str, token: &str) -> Result<WsStream> {
-    let ws_url = format!("{}/ws", base.trim_end_matches('/')).replacen("http", "ws", 1);
+pub async fn connect(base: &str, token: &str, session_id: Option<uuid::Uuid>) -> Result<WsStream> {
+    let ws_url = if let Some(sid) = session_id {
+        format!("{}/ws?session_id={}", base.trim_end_matches('/'), sid)
+            .replacen("http", "ws", 1)
+    } else {
+        format!("{}/ws", base.trim_end_matches('/')).replacen("http", "ws", 1)
+    };
+
     debug!("Connecting to WebSocket: {}", ws_url);
 
     // Validazione token
@@ -63,10 +70,55 @@ pub fn spawn_bidirectional_handler(
     mut ws: WsStream,
     mut on_text: impl FnMut(String) + Send + 'static,
     disconnect_notifier: Option<mpsc::UnboundedSender<crate::models::UiEvent>>,
+    user_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> WsControl {
 
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
+
+    // Clone per vari task
+    let ping_tx = outgoing_tx.clone();
+    let ping_user_seq = user_sequence.clone();
+
+    // ========================================================================
+    // TASK INDIPENDENTE: Invia ping automatici ogni 30 secondi
+    // Questo task gira su tokio e NON dipende dal loop UI di egui
+    // ========================================================================
+    tokio::spawn(async move {
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Skip first immediate tick
+        ping_interval.tick().await;
+
+        loop {
+            ping_interval.tick().await;
+
+            let user_seq = ping_user_seq.load(std::sync::atomic::Ordering::Relaxed);
+
+            let ping_json = serde_json::json!({
+                "type": "ping",
+                "timestamp": chrono::Utc::now().timestamp(),
+                "user_sequence": user_seq,
+            });
+
+            match serde_json::to_string(&ping_json) {
+                Ok(msg) => {
+                    // Se il send fallisce, il WebSocket è chiuso -> termina task
+                    if ping_tx.send(msg).is_err() {
+                        debug!("Ping task: WebSocket closed, stopping ping task");
+                        break;
+                    }
+                    debug!("🔔 Automatic ping sent from independent tokio task (user_seq: {})", user_seq);
+                }
+                Err(e) => {
+                    error!("Failed to serialize ping JSON: {}", e);
+                }
+            }
+        }
+
+        debug!("Independent ping task terminated");
+    });
 
     tokio::spawn(async move {
         // Ping WebSocket base ogni 60 secondi (solo per keepalive)
@@ -240,6 +292,7 @@ pub fn spawn_bidirectional_handler(
     WsControl {
         shutdown: shutdown_tx,
         outgoing_tx,
+        user_sequence,
     }
 }
 
@@ -247,6 +300,7 @@ pub fn spawn_bidirectional_handler(
 pub fn spawn_simple_handler(
     mut ws: WsStream,
     mut on_text: impl FnMut(String) + Send + 'static,
+    user_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> WsControl {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<String>();
@@ -305,5 +359,6 @@ pub fn spawn_simple_handler(
     WsControl {
         shutdown: shutdown_tx,
         outgoing_tx,
+        user_sequence,
     }
 }

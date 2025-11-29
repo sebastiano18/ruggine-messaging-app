@@ -27,6 +27,12 @@ impl AuthHandler {
         state.token = Some(token.clone());
         state.user_id = Some(user_id);
 
+        // Genera session_id se non esiste già
+        if state.current_session_id.is_none() {
+            state.current_session_id = Some(uuid::Uuid::new_v4());
+            info!("Generated new session_id: {:?}", state.current_session_id);
+        }
+
         state.user_sequence_confirmed = last_sequence;
         state.user_sequence_received = last_sequence;
         state.conversation_sequences.clear();
@@ -117,6 +123,9 @@ impl AuthHandler {
         // Reset ping/pong
         state.missed_pings = 0;
         state.last_ping_time = Instant::now();
+
+        // CRITICAL: Reset session_id per forzare nuovo session al prossimo login
+        state.current_session_id = None;
     }
 
     pub fn handle_delete_account_start(state: &mut AppState) {
@@ -145,8 +154,5 @@ impl AuthHandler {
             )));
             return;
         }
-        
     }
-    
-    
 }

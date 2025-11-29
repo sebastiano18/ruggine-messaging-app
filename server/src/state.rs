@@ -4,9 +4,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{collections::HashMap, sync::Arc, time::Instant};
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{RwLock, broadcast, mpsc, watch};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+// === Gestione Connessioni Attive ===
+#[derive(Clone)]
+pub struct ActiveConnection {
+    pub session_id: Uuid,
+    pub user_id: Uuid,
+    pub username: String,
+    pub connected_at: Instant,
+    pub out_tx: mpsc::Sender<OutboundMsg>,
+}
+
+impl ActiveConnection {
+    pub fn new(
+        session_id: Uuid,
+        user_id: Uuid,
+        username: String,
+        out_tx: mpsc::Sender<OutboundMsg>,
+    ) -> Self {
+        Self {
+            session_id,
+            user_id,
+            username,
+            connected_at: Instant::now(),
+            out_tx,
+        }
+    }
+}
 
 // === Cache per Message Confirmations ===
 #[derive(Clone)]
@@ -150,6 +177,8 @@ pub struct AppState {
     pub message_confirmation_cache: MessageConfirmationCache,
     // NUOVO: Cache per client_temp_id delle conversazioni
     pub conversation_confirmation_cache: ConversationConfirmationCache,
+    // Tracciamento connessioni WebSocket attive
+    pub active_connections: Arc<RwLock<HashMap<Uuid, ActiveConnection>>>,
 }
 
 // === Strutture di supporto ===
@@ -183,6 +212,7 @@ impl AppState {
             user_notification_channels: Arc::new(RwLock::new(HashMap::new())),
             message_confirmation_cache: MessageConfirmationCache::new(),
             conversation_confirmation_cache: ConversationConfirmationCache::new(), // NUOVO
+            active_connections: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -425,7 +455,7 @@ impl AppState {
 
         Ok(())
     }
-    
+
     /// Invia evento sequenziato all'utente (store nel DB + WebSocket)
     pub async fn send_sequenced_event_to_user(
         &self,
@@ -962,10 +992,10 @@ impl AppState {
                     }
                 }
 
-                
+
                 "new_message"
             } else {
-                
+
                 &event_type
             };
 
@@ -1057,5 +1087,109 @@ impl AppState {
         );
 
         Ok(messages_map)
+    }
+
+    // === Gestione Connessioni Attive ===
+
+    /// Verifica se un utente ha già una connessione WebSocket attiva
+    pub async fn is_user_connected(&self, user_id: Uuid) -> bool {
+        let connections = self.active_connections.read().await;
+        connections.contains_key(&user_id)
+    }
+
+    /// Registra una nuova connessione attiva per l'utente
+    pub async fn register_connection(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+        username: String,
+        out_tx: mpsc::Sender<OutboundMsg>,
+    ) -> Result<()> {
+        let mut connections = self.active_connections.write().await;
+
+        // Double-check: se c'è già una connessione, è un errore
+        if connections.contains_key(&user_id) {
+            return Err(AppError::Conflict(
+                format!("User {} already has an active connection", user_id)
+            ));
+        }
+
+        let conn = ActiveConnection::new(session_id, user_id, username.clone(), out_tx);
+        connections.insert(user_id, conn);
+
+        info!(
+            "Registered active connection for user {} (session: {}, total connections: {})",
+            user_id, session_id, connections.len()
+        );
+
+        Ok(())
+    }
+
+    /// Rimuove la connessione attiva per l'utente
+    pub async fn unregister_connection(&self, user_id: Uuid) {
+        let mut connections = self.active_connections.write().await;
+
+        if let Some(conn) = connections.remove(&user_id) {
+            info!(
+                "Unregistered connection for user {} (session: {}, uptime: {:?}, remaining: {})",
+                user_id,
+                conn.session_id,
+                conn.connected_at.elapsed(),
+                connections.len()
+            );
+        } else {
+            warn!("Attempted to unregister non-existent connection for user {}", user_id);
+        }
+    }
+
+    /// Force disconnect di una sessione esistente (nuova connessione da altro client)
+    pub async fn force_disconnect_user(&self, user_id: Uuid) -> bool {
+        // Prima ottieni la connessione con read lock
+        let (old_session_id, out_tx) = {
+            let connections = self.active_connections.read().await;
+
+            match connections.get(&user_id) {
+                Some(conn) => (conn.session_id, conn.out_tx.clone()),
+                None => return false,
+            }
+        };
+
+        info!(
+            "Force disconnecting user {} (old session: {}) for new session",
+            user_id, old_session_id
+        );
+
+        // CRITICAL: Invia messaggio ForceLogout
+        // Il writer task lo processerà, invierà il logout JSON, e POI chiuderà
+        match out_tx.send(OutboundMsg::ForceLogout {
+            reason: "new_session".to_string()
+        }).await {
+            Ok(_) => {
+                info!("ForceLogout message queued for old session {}", old_session_id);
+            }
+            Err(e) => {
+                warn!("Failed to queue ForceLogout for old session: {:?}", e);
+            }
+        }
+
+        // CRITICAL: Rimuovi IMMEDIATAMENTE da active_connections
+        // Il vecchio task chiamerà unregister_connection ma troverà già rimosso
+        {
+            let mut connections = self.active_connections.write().await;
+            if let Some(removed) = connections.remove(&user_id) {
+                info!(
+                    "Immediately unregistered old session {} for user {} (forced by new connection)",
+                    removed.session_id, user_id
+                );
+            }
+        }
+
+        true
+    }
+
+    /// Ottieni informazioni su una connessione attiva
+    pub async fn get_connection_info(&self, user_id: Uuid) -> Option<ActiveConnection> {
+        let connections = self.active_connections.read().await;
+        connections.get(&user_id).cloned()
     }
 }

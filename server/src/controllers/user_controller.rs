@@ -1,5 +1,7 @@
 // controllers/users_controller.rs
 // controllers/users_controller.rs
+// controllers/users_controller.rs
+// controllers/users_controller.rs
 use crate::{error::Result, services::user_service::UserService, state::AppState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -91,7 +93,7 @@ pub async fn delete_self(
     user: AuthUser,
     State(st): State<AppState>,
 ) -> Result<StatusCode> {
-    
+
 
     // POI prova a notificare (best-effort, può fallire)
     if let Err(e) = UserService::notify_participants_of_deleted_user(&st, user.id).await {

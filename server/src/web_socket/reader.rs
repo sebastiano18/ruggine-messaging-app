@@ -28,6 +28,8 @@ pub fn spawn_reader(
         let mut last_heartbeat = Instant::now();
         const CLIENT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
 
+        let mut initial_state_sent = false;
+
         info!("Reader task started for user {}", user_id);
 
         while let Some(msg) = ws_rx.next().await {
@@ -103,57 +105,47 @@ pub fn spawn_reader(
 
                     match message_type {
                         "subscribe" => {
-                            info!("User {} subscribing to updates", username);
+                            if initial_state_sent {
+                                info!("User {} re-subscribing - skipping initial_state", username);
 
-                            match get_initial_state(&state.pool, user_id).await {
-                                Ok(initial_state) => {
-                                    let msg = json!({
-                                        "type": "initial_state",
-                                        "conversations": initial_state.conversations,
-                                        "user_sequence": initial_state.user_sequence,
-                                        "members_by_conversation": initial_state.members_by_conversation,
-                                        "timestamp": chrono::Utc::now().timestamp()
-                                    });
+                            } else {
+                                info!("User {} subscribing - sending initial_state", username);
 
-                                    if let Ok(txt) = serde_json::to_string(&msg) {
-                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
-                                        info!(
-                                            "Sent initial state to user {} with {} conversations and {} groups with members",
-                                            username,
-                                            initial_state.conversations.len(),
-                                            initial_state.members_by_conversation.len()
-                                        );
-                                    }
-
-                                    if initial_state.pending_events.len() > 0 {
-                                        let events_msg = json!({
-                                            "type": "user_events_resume",
-                                            "events": initial_state.pending_events,
-                                            "count": initial_state.pending_events.len()
+                                // Prima subscribe in questa connessione: manda initial_state
+                                match get_initial_state(&state.pool, user_id).await {
+                                    Ok(initial_state) => {
+                                        let msg = json!({
+                                            "type": "initial_state",
+                                            "conversations": initial_state.conversations,
+                                            "user_sequence": initial_state.user_sequence,
+                                            "members_by_conversation": initial_state.members_by_conversation,
+                                            "timestamp": chrono::Utc::now().timestamp()
                                         });
 
-                                        if let Ok(txt) = serde_json::to_string(&events_msg) {
+                                        if let Ok(txt) = serde_json::to_string(&msg) {
                                             let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                            initial_state_sent = true;
                                             info!(
-                                                "Sent {} pending events to user {}",
-                                                initial_state.pending_events.len(),
-                                                username
+                                                "Sent initial state to user {} with {} conversations and {} groups",
+                                                username,
+                                                initial_state.conversations.len(),
+                                                initial_state.members_by_conversation.len()
                                             );
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to get initial state for user {}: {}",
-                                        username, e
-                                    );
-                                    let error_msg = json!({
-                                        "type": "error",
-                                        "message": "Failed to load initial state",
-                                        "error_code": "INITIAL_STATE_ERROR"
-                                    });
-                                    if let Ok(txt) = serde_json::to_string(&error_msg) {
-                                        let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to get initial state for user {}: {}",
+                                            username, e
+                                        );
+                                        let error_msg = json!({
+                                            "type": "error",
+                                            "message": "Failed to load initial state",
+                                            "error_code": "INITIAL_STATE_ERROR"
+                                        });
+                                        if let Ok(txt) = serde_json::to_string(&error_msg) {
+                                            let _ = out_tx.send(OutboundMsg::Text(txt)).await;
+                                        }
                                     }
                                 }
                             }
@@ -178,7 +170,7 @@ pub fn spawn_reader(
                             if let Err(e) = handlers::handle_user_events_resume_request(
                                 &state, &value, user_id, &out_tx,
                             )
-                            .await
+                                .await
                             {
                                 error!("Failed to handle user resume request: {}", e);
                             }
@@ -279,7 +271,7 @@ pub fn spawn_reader(
                             match handlers::handle_incoming_message(
                                 &state, &mut value, user_id, &username,
                             )
-                            .await
+                                .await
                             {
                                 Ok(()) => {
                                     debug!("Successfully invited user to group by {}", user_id);
@@ -317,7 +309,7 @@ pub fn spawn_reader(
                             match handlers::handle_create_group_with_participants(
                                 &state, &mut value, user_id, &username, &out_tx,
                             )
-                            .await
+                                .await
                             {
                                 Ok(()) => {
                                     debug!(
@@ -371,7 +363,7 @@ pub fn spawn_reader(
                             if let Err(e) = handlers::handle_delete_conversation(
                                 &state, &value, user_id, &out_tx,
                             )
-                            .await
+                                .await
                             {
                                 error!("Failed to handle delete_conversation: {}", e);
                             }
@@ -438,7 +430,7 @@ pub fn spawn_reader(
                             match handlers::handle_incoming_message(
                                 &state, &mut value, user_id, &username,
                             )
-                            .await
+                                .await
                             {
                                 Ok(()) => {
                                     debug!("Successfully processed message from user {}", user_id);
@@ -488,15 +480,15 @@ pub fn spawn_reader(
                                             break;
                                         }
                                         crate::error::AppError::Internal(msg)
-                                            if msg.contains("database") || msg.contains("sql") =>
-                                        {
-                                            error!(
+                                        if msg.contains("database") || msg.contains("sql") =>
+                                            {
+                                                error!(
                                                 "Database-related internal error for user {}, closing connection",
                                                 user_id
                                             );
-                                            let _ = stop_tx.send(true);
-                                            break;
-                                        }
+                                                let _ = stop_tx.send(true);
+                                                break;
+                                            }
                                         crate::error::AppError::Unauthorized => {
                                             warn!(
                                                 "Unauthorized action by user {}, closing connection",

@@ -1,4 +1,4 @@
-use crate::models::{ConversationDto, GapInfo, MessageDto, ParticipantInfo, UiEvent, UserEventData};
+use crate::models::{ConversationDto, ErrorType, GapInfo, MessageDto, ParticipantInfo, UiEvent, UserEventData};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -65,6 +65,7 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "message_deleted" => handle_message_deleted(tx, &parsed_value),
         "check_user_response" => handle_check_user_response(tx, &parsed_value),
         "account_deleted_confirm" => handle_account_deleted_confirm(tx, &parsed_value),
+        "logged_out" => handle_logged_out(tx, &parsed_value),
         _ => {
             debug!("Unhandled message type: {}", msg_type);
         }
@@ -1072,5 +1073,27 @@ fn handle_account_deleted_confirm(tx: &tokio::sync::mpsc::UnboundedSender<UiEven
         debug!("Server message: {}", message);
     }
 
+    let _ = tx.send(UiEvent::LoggedOut);
+}
+
+fn handle_logged_out(tx: &UnboundedSender<UiEvent>, value: &Value) {
+    // 1. Estrae reason e message dal server
+    let reason = value.get("reason").and_then(|r| r.as_str()).unwrap_or("unknown");
+    let message = value.get("message").and_then(|m| m.as_str()).unwrap_or("...");
+
+    // 2. Log dettagliato
+    warn!("Logged out by server - reason: {}, message: {}", reason, message);
+
+    // 3. Messaggio user-friendly
+    let user_message: String = if reason == "new_session" {
+        String::from("Sei stato disconnesso perché hai effettuato l'accesso da un altro dispositivo")
+    } else {
+        String::from(message)
+    };
+
+    // 4. Notifica UI (mostra errore/dialog)
+    let _ = tx.send(UiEvent::Error(ErrorType::Auth(user_message)));
+
+    // 5. CRITICAL: Trigga logout locale senza chiamare server
     let _ = tx.send(UiEvent::LoggedOut);
 }

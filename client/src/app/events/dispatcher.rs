@@ -311,12 +311,16 @@ impl EventDispatcher {
             UiEvent::ConversationCompleteFetched(conv, messages) => {
                 ConversationHandler::handle_conversation_complete_fetched(state, conv, messages);
             }
-            
+
 
             UiEvent::SendPing => {
                 debug!("Manual ping requested");
                 SequenceHandler::send_ping(state);
             }
         }
+
+        // ✅ CRITICO: Sveglia egui dopo OGNI evento processato
+        // Questo garantisce che l'UI si aggiorni immediatamente
+        (state.egui_waker)();
     }
 }
