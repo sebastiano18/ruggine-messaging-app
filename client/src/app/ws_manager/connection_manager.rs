@@ -187,7 +187,7 @@ impl ConnectionManager {
         let tx = state.ui_tx.clone();
         let session_id = state.current_session_id; // Passa session_id corrente
         let user_seq_shared = state.user_sequence_shared.clone(); // Clone PRIMA dell'async block
-        let waker = state.egui_waker.clone(); // ✅ NUOVO: Clone waker per svegliare egui
+        let waker = state.egui_waker.clone(); //Clone waker per svegliare egui
         state.ws_status = WsStatus::Connecting;
         state.connection_attempt_start = Some(Instant::now()); // Start connection timeout timer
 

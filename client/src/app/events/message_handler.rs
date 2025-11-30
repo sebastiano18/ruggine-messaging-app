@@ -46,9 +46,7 @@ impl MessageHandler {
         if let Some(client_id) = client_msg_id {
             state.pending_confirmations.remove(&client_id);
         }
-
-        // NESSUN TOAST QUI - viene già mostrato da send_via_websocket
-
+        
         info!("Handled message send failure: msg_id={}, cid={}", msg_id, conversation_id);
     }
 

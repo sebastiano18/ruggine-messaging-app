@@ -400,6 +400,7 @@ impl AppState {
         let base = self.base.clone();
         let token = token.clone();
         let tx = self.ui_tx.clone();
+        let waker = self.egui_waker.clone(); // ← Clone waker per svegliare egui
 
         self.rt.spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -411,14 +412,16 @@ impl AppState {
                 Some(30),
                 before_seq,
             )
-            .await
+                .await
             {
                 Ok(messages) => {
                     let _ = tx.send(UiEvent::OlderMessagesLoaded(messages));
+                    waker(); // Sveglia egui
                 }
                 Err(e) => {
                     error!("Failed to load messages: {}", e);
                     let _ = tx.send(UiEvent::LoadingError);
+                    waker(); // Sveglia egui
                 }
             }
         });
@@ -432,6 +435,7 @@ impl AppState {
         self.is_loading_members = true;
         let base = self.base.clone();
         let tx = self.ui_tx.clone();
+        let waker = self.egui_waker.clone(); // ← Clone waker per svegliare egui
 
         self.rt.spawn(async move {
             match crate::api::conversation::get_conversation_members(&base, &token, conversation_id)
@@ -439,6 +443,7 @@ impl AppState {
             {
                 Ok(members) => {
                     let _ = tx.send(UiEvent::MembersLoaded(conversation_id, members));
+                    waker(); 
                 }
                 Err(e) => {
                     error!("Failed to load members: {}", e);
@@ -446,6 +451,7 @@ impl AppState {
                         "Errore caricamento membri: {}",
                         e
                     ))));
+                    waker();
                 }
             }
         });

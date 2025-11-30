@@ -652,11 +652,21 @@ impl UserNotificationHandler {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            let title = conv_obj
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or("Gruppo")
-                .to_string();
+            let title = if kind == "dm" {
+                // Per i DM usa display_title
+                conv_obj
+                    .get("display_title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Chat Diretta")
+                    .to_string()
+            } else {
+                // Per i gruppi usa title
+                conv_obj
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Gruppo")
+                    .to_string()
+            };
 
             let last_read_sequence = conv_obj
                 .get("last_read_sequence")
@@ -679,7 +689,7 @@ impl UserNotificationHandler {
                 title: title.clone(),
                 owner_id,
                 created_at,
-                last_read_sequence,
+                last_read_sequence: last_msg_seq,  // ✅ Imposta al last_msg_seq per evitare unread
                 last_activity,
                 last_msg_seq,
             };
@@ -764,29 +774,87 @@ impl UserNotificationHandler {
                     convs.push(conversation.clone());
                 }
 
-                // Inizializza entry se non esistono
+                // ✅ Inizializza entry - unread a 0, sequences al last_msg_seq
                 state.conversation_unread_counts.entry(id).or_insert(0);
-                state.conversation_sequences.entry(id).or_insert(0);
-                state.conversation_sequences_confirmed.entry(id).or_insert(0);
+                state.conversation_sequences.entry(id).or_insert(last_msg_seq as u64);
+                state.conversation_sequences_confirmed.entry(id).or_insert(last_msg_seq as u64);
                 state.conversation_messages.entry(id).or_insert_with(Vec::new);
 
-                // Il messaggio "X è stato aggiunto al gruppo" arriva già dal server
-                // come evento new_message salvato in user_events, non serve aggiungerlo qui
+                // 🆕 Se è un gruppo e NON è uno stub replacement, mostra "Sei stato aggiunto al gruppo" come anteprima
+                if kind == "group" && stub_to_replace.is_none() {
+                    let system_message = MessageDto {
+                        id: Uuid::new_v4(),
+                        conversation_id: id,
+                        author_id: Uuid::nil(),
+                        author_username: "system".to_string(),
+                        content: "Sei stato aggiunto al gruppo".to_string(),
+                        created_at: chrono::Utc::now().timestamp(),
+                        sequence_num: None,
+                        client_msg_id: None,
+                        is_confirmed: Some(true),
+                    };
+
+                    // ✅ Invia come anteprima
+                    let _ = state.ui_tx.send(UiEvent::LastMessageUpdate {
+                        conversation_id: id,
+                        message: system_message,
+                    });
+
+                    info!("✅ Set 'you joined group' as preview for {}", id);
+                } else if let Some(last_msg) = conv_obj.get("last_message") {
+                    // Per DM o stub replacement, usa l'ultimo messaggio come anteprima
+                    if let (Some(msg_id_str), Some(author_id_str), Some(content), Some(created_at), Some(seq_num)) = (
+                        last_msg.get("id").and_then(|v| v.as_str()),
+                        last_msg.get("author_id").and_then(|v| v.as_str()),
+                        last_msg.get("content").and_then(|v| v.as_str()),
+                        last_msg.get("created_at").and_then(|v| v.as_i64()),
+                        last_msg.get("sequence_num").and_then(|v| v.as_i64())
+                    ) {
+                        if let (Ok(msg_id), Ok(author_id)) = (
+                            Uuid::parse_str(msg_id_str),
+                            Uuid::parse_str(author_id_str)
+                        ) {
+                            let author_username = last_msg
+                                .get("author_username")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown")
+                                .to_string();
+
+                            let message = MessageDto {
+                                id: msg_id,
+                                conversation_id: id,
+                                author_id,
+                                author_username,
+                                content: content.to_string(),
+                                created_at,
+                                sequence_num: Some(seq_num as u64),
+                                client_msg_id: None,
+                                is_confirmed: Some(true),
+                            };
+
+                            let _ = state.ui_tx.send(UiEvent::LastMessageUpdate {
+                                conversation_id: id,
+                                message,
+                            });
+
+                            info!("📨 Sent LastMessageUpdate for conversation {}", id);
+                        }
+                    }
+                }
 
                 super::utils::move_conversation_to_top(state, id);
 
                 info!("New conversation '{}' added to list", conversation.title);
             }
 
-
             if let Some(members_value) = conv_obj.get("members") {
                 if let Ok(members) = serde_json::from_value::<Vec<ParticipantInfo>>(members_value.clone()) {
                     if !members.is_empty() {
                         info!("📋 Received {} members for conversation '{}': {:?}",
-                            members.len(),
-                            conversation.title,
-                            members.iter().map(|m| &m.username).collect::<Vec<_>>()
-                        );
+                        members.len(),
+                        conversation.title,
+                        members.iter().map(|m| &m.username).collect::<Vec<_>>()
+                    );
 
                         // Invia evento per aggiornare la UI con i membri
                         let _ = state.ui_tx.send(UiEvent::MembersLoaded(id, members));
@@ -994,8 +1062,6 @@ impl UserNotificationHandler {
         conversation_id: Uuid,
         event_data: serde_json::Value,
     ) {
-        // Estrai user_id e username dell'utente rimosso
-        // Gestisce sia UUID nativi che stringhe per robustezza
         let removed_user_id = event_data
             .get("removed_user_id")
             .and_then(|v| {
@@ -1010,9 +1076,18 @@ impl UserNotificationHandler {
             .unwrap_or("Unknown");
 
         info!(
-            "User {} ({}) removed from group {}",
-            removed_username, removed_user_id, conversation_id
-        );
+        "User {} ({}) removed from group {}",
+        removed_username, removed_user_id, conversation_id
+    );
+
+
+        if state.user_id == Some(removed_user_id) {
+            info!("You were removed from conversation {}, deleting it", conversation_id);
+            let _ = state.ui_tx.send(UiEvent::ConversationDeleted(conversation_id));
+            return; // Non serve fare altro
+        }
+
+        // Se l'utente rimosso è qualcun altro, continua normalmente:
 
         // 1. Rimuovi il membro dalla lista membri
         if let Some(members) = state.members_list.get_mut(&conversation_id) {
@@ -1022,9 +1097,9 @@ impl UserNotificationHandler {
 
             if before_count != after_count {
                 debug!(
-                    "Removed member {} from conversation {} members list ({} -> {} members)",
-                    removed_username, conversation_id, before_count, after_count
-                );
+                "Removed member {} from conversation {} members list ({} -> {} members)",
+                removed_username, conversation_id, before_count, after_count
+            );
             }
         }
 
@@ -1036,11 +1111,10 @@ impl UserNotificationHandler {
             system_message_content,
         );
 
-
         info!(
-            "Member removed handled: {} in conversation {}",
-            removed_username, conversation_id
-        );
+        "Member removed handled: {} in conversation {}",
+        removed_username, conversation_id
+    );
     }
 
     /// Gestisce quando un utente elimina il proprio account

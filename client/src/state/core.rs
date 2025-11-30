@@ -139,7 +139,7 @@ pub struct AppState {
     // Shared state per ping task indipendente
     pub user_sequence_shared: Arc<AtomicU64>,
 
-    // ✅ NUOVO: Waker per svegliare egui da thread esterni (WebSocket)
+    // Waker per svegliare egui da thread esterni (WebSocket)
     pub egui_waker: Arc<dyn Fn() + Send + Sync>,
 
     // Ping/Pong management
