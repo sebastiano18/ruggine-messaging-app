@@ -427,7 +427,7 @@ fn process_last_message(
         .and_then(|s| s.as_i64())
         .map(|s| s as u64);
 
-    // ✅ AGGIUNTO: Estrae l'UUID dal server
+    // Estrae l'UUID dal server
     let message_id = msg
         .get("id")
         .and_then(|id| id.as_str())
@@ -443,7 +443,7 @@ fn process_last_message(
     );
 
     let last_msg_dto = MessageDto {
-        id: message_id, // ✅ MODIFICATO: Usa l'UUID dal server
+        id: message_id,
         author_id,
         author_username,
         conversation_id,

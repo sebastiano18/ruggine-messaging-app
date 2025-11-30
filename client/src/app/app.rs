@@ -41,7 +41,7 @@ impl eframe::App for App {
         // Lifecycle management
         self.ws_manager.ensure_ws_lifecycle(&mut self.state);
 
-        // ✅ drain_events() ora verrà chiamato perché waker sveglia egui quando arrivano messaggi
+        //  drain_events()  verrà chiamato perché waker sveglia egui quando arrivano messaggi
         self.state.drain_events();
         self.state.prune_expired_toasts(std::time::Duration::from_secs(5));
 

@@ -28,7 +28,7 @@ fn main() -> eframe::Result<()> {
             egui_remixicon::add_to_fonts(&mut fonts);
             cc.egui_ctx.set_fonts(fonts);
 
-            // ✅ NUOVO: Crea waker per svegliare egui da thread esterni
+            //Crea waker per svegliare egui da thread esterni
             let waker = {
                 let ctx = cc.egui_ctx.clone();
                 Arc::new(move || {

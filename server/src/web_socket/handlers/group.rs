@@ -201,6 +201,20 @@ pub async fn handle_invite_user(
     let conv_title: Option<String> = conv_info.try_get("title").ok();
     let conv_created_at: i64 = conv_info.try_get("created_at").map_err(AppError::from)?;
 
+    // 🆕 Ottieni l'ultimo messaggio della conversazione (se esiste)
+    let last_message_opt = sqlx::query(
+        "SELECT id, author_id, content, created_at, sequence_num
+         FROM messages
+         WHERE conversation_id = ?
+         ORDER BY sequence_num DESC
+         LIMIT 1"
+    )
+        .bind(conversation_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+
     let mut added_count = 0;
     let mut skipped_count = 0;
 
@@ -248,18 +262,50 @@ pub async fn handle_invite_user(
 
         let ts = Utc::now().timestamp();
 
+        // 🆕 Costruisci il payload della conversazione con l'ultimo messaggio
+        let mut conversation_data = json!({
+            "id": conversation_id,
+            "kind": &kind,
+            "title": &conv_title,
+            "owner_id": owner_id,
+            "created_at": conv_created_at,
+            "last_read_sequence": 0,
+            "last_activity": ts,
+            "last_msg_seq": 0
+        });
+
+        // 🆕 Aggiungi l'ultimo messaggio se esiste
+        if let Some(ref msg_row) = last_message_opt {
+            if let (Ok(msg_id), Ok(author_id), Ok(content), Ok(created_at), Ok(seq_num)) = (
+                msg_row.try_get::<String, _>("id").and_then(|s| Uuid::parse_str(&s).map_err(|e| sqlx::Error::Decode(Box::new(e)))),
+                msg_row.try_get::<String, _>("author_id").and_then(|s| Uuid::parse_str(&s).map_err(|e| sqlx::Error::Decode(Box::new(e)))),
+                msg_row.try_get::<String, _>("content"),
+                msg_row.try_get::<i64, _>("created_at"),
+                msg_row.try_get::<i64, _>("sequence_num")
+            ) {
+                // Ottieni l'username dell'autore
+                let author_username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                    .bind(author_id.to_string())
+                    .fetch_one(&state.pool)
+                    .await
+                    .unwrap_or_else(|_| "Unknown".to_string());
+
+                conversation_data["last_message"] = json!({
+                    "id": msg_id,
+                    "author_id": author_id,
+                    "author_username": author_username,
+                    "content": content,
+                    "created_at": created_at,
+                    "sequence_num": seq_num
+                });
+
+                info!("📨 Including last message preview in new_conversation event for user {}", target_user_id);
+            }
+        }
+
         // Invia evento new_conversation al nuovo membro
         let event_data = json!({
-            "conversation": {
-                "id": conversation_id,
-                "kind": &kind,
-                "title": &conv_title,
-                "owner_id": owner_id,
-                "created_at": conv_created_at,
-                "last_read_sequence": 0,
-                "last_activity": ts,
-                "last_msg_seq": 0
-            }
+            "conversation": conversation_data
         });
 
         match state.send_sequenced_event_to_user(
@@ -287,7 +333,7 @@ pub async fn handle_invite_user(
                 Vec::new()
             }
         };
-        
+
         if !participant_ids.is_empty() {
             let member_added_payload = json!({
                 "username": target_username_actual,
