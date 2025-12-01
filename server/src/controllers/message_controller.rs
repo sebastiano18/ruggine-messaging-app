@@ -13,6 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::error::AppError;
+use crate::repositories::conversation_repo::ConversationRepo;
 
 #[derive(Deserialize)]
 pub struct PostMessageReq {
@@ -37,11 +38,22 @@ pub struct MessageQuery {
 
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn list(
+    user: AuthUser,
     Path(conversation_id): Path<Uuid>,
     Query(params): Query<ListQuery>,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<Message>>> {
-    // Usa il metodo con paginazione se c'è before_sequence
+    
+    let is_participant = ConversationRepo::is_participant(
+        &st.pool,
+        conversation_id,
+        user.id
+    ).await?;
+
+    if !is_participant {
+        return Err(AppError::Forbidden);
+    }
+    
     let messages = if params.before_sequence.is_some() {
         MessageService::list_with_pagination(
             &st.pool,
@@ -50,7 +62,6 @@ pub async fn list(
             params.before_sequence,
         ).await?
     } else {
-        // Comportamento originale per compatibilità
         let rows = MessageService::list(&st.pool, conversation_id, params.limit.unwrap_or(50)).await?;
         rows.into_iter()
             .map(|(id, author_id, author_username, content, created_at, sequence_num)| Message {
@@ -68,7 +79,6 @@ pub async fn list(
 
     Ok(Json(messages))
 }
-
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn post(
     user: AuthUser,
