@@ -87,11 +87,7 @@ fn show_chat_interface(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 ui.set_width(ui.available_width() - 40.0); // Margine destro - REGOLA ANCHE QUESTO
 
                 // Se abbiamo solo 0-1 messaggi (vuoto o solo anteprima)
-                if s.messages.len() <= 1 && *s.has_more_messages.get(&cid).unwrap_or(&true) {
-                    if !s.is_loading_more {
-                        s.load_older_messages();
-                    }
-
+                if s.messages.is_empty() && s.is_loading_more {
                     ui.vertical_centered(|ui| {
                         ui.add_space(messages_h / 2.0 - 20.0);
                         ui.spinner();

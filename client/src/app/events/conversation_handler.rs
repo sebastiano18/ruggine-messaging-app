@@ -355,12 +355,13 @@ impl ConversationHandler {
 
             if old_count > 0 {
                 debug!(
-                    "Reset unread count for conversation {} from {} to 0 (conversation opened)",
-                    cid, old_count
-                );
+                "Reset unread count for conversation {} from {} to 0 (conversation opened)",
+                cid, old_count
+            );
             }
         }
 
+        // Carica messaggi dalla cache se disponibili
         if let Some(cached) = state.conversation_messages.get(&cid) {
             state.messages = cached.clone();
 
@@ -384,7 +385,7 @@ impl ConversationHandler {
                         .map(|conv| conv.last_read_sequence)
                         .unwrap_or(0);
 
-                    // ✅ Invia mark_read SOLO se ci sono nuovi messaggi non letti
+                    // Invia mark_read SOLO se ci sono nuovi messaggi non letti
                     if max_seq as i64 > last_read_seq {
                         if let Err(e) = state.ui_to_net_tx.try_send(Outgoing::MarkRead {
                             conversation_id: cid,
@@ -393,44 +394,79 @@ impl ConversationHandler {
                             warn!("Failed to send mark_read: {}", e);
                         } else {
                             info!(
-                                "✅ Sent mark_read for conversation {} up to sequence {} (was at {})",
-                                cid, max_seq, last_read_seq
-                            );
+                            "Sent mark_read for conversation {} up to sequence {} (was at {})",
+                            cid, max_seq, last_read_seq
+                        );
 
                             if let Some(conversations) = &mut state.conversations {
                                 if let Some(conv) = conversations.iter_mut().find(|c| c.id == cid) {
                                     let old_last_read = conv.last_read_sequence;
                                     conv.last_read_sequence = max_seq as i64;
                                     debug!(
-                                        "Updated local last_read_sequence from {} to {}",
-                                        old_last_read, max_seq
-                                    );
+                                    "Updated local last_read_sequence from {} to {}",
+                                    old_last_read, max_seq
+                                );
                                 }
                             }
                         }
                     } else {
                         debug!(
-                            "Skipping mark_read for conversation {} - already at sequence {} (max_seq: {})",
-                            cid, last_read_seq, max_seq
-                        );
+                        "Skipping mark_read for conversation {} - already at sequence {} (max_seq: {})",
+                        cid, last_read_seq, max_seq
+                    );
                     }
                 } else {
                     debug!(
-                        "Skipping mark_read for conversation {} - conversation no longer exists",
-                        cid
-                    );
+                    "Skipping mark_read for conversation {} - conversation no longer exists",
+                    cid
+                );
                 }
             }
 
             info!(
-                "Loaded {} messages from cache for conversation {}",
-                cached.len(),
-                cid
-            );
+            "Loaded {} messages from cache for conversation {}",
+            cached.len(),
+            cid
+        );
         }
 
-        // ✅ RIMOSSO: Non viene più fatto fetch esplicito quando si apre un gruppo
-        // I messaggi vengono caricati dalla cache o tramite LoadConversationMessages come per i DM
+        // Controlli pre-caricamento: decidi se caricare messaggi dal server
+
+        // 1. Verifica se è uno stub in attesa di conferma
+        if state.is_dm_stub(cid) {
+            debug!("Skipping initial load for DM stub {} - waiting for server confirmation", cid);
+            state.has_more_messages.insert(cid, false);
+            return;
+        }
+
+        if state.is_group_stub(cid) {
+            debug!("Skipping initial load for Group stub {} - waiting for server confirmation", cid);
+            state.has_more_messages.insert(cid, false);
+            return;
+        }
+
+        // 2. Verifica se ci sono messaggi da caricare
+        let has_cached_messages = state
+            .conversation_messages
+            .get(&cid)
+            .map_or(false, |m| !m.is_empty());
+
+        let conversation_has_messages = state
+            .conversations
+            .as_ref()
+            .and_then(|convs| convs.iter().find(|c| c.id == cid))
+            .map_or(false, |conv| conv.last_msg_seq > 0);
+
+        if has_cached_messages || conversation_has_messages {
+            // Ha senso caricare: ci sono messaggi in cache o sul server
+            state.load_older_messages();
+        } else {
+            debug!(
+            "Skipping initial load for conversation {} - empty confirmed chat",
+            cid
+        );
+            state.has_more_messages.insert(cid, false);
+        }
     }
 
     pub fn handle_conversation_deleted(state: &mut AppState, cid: Uuid) {
