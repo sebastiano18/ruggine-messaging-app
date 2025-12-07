@@ -11,7 +11,7 @@ impl SequenceHandler {
     pub fn set_initial_user_sequence(state: &mut AppState, sequence: u64) {
         state.user_sequence_confirmed = sequence;
         state.user_sequence_received = sequence;
-        state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::Relaxed);
+        state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::SeqCst);
         info!("Initial user sequence set to {}", sequence);
     }
 
@@ -57,7 +57,7 @@ impl SequenceHandler {
         if sequence == state.user_sequence_confirmed + 1 {
             state.user_sequence_confirmed = sequence;
             // Aggiorna anche l'Arc per il ping task indipendente
-            state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::Relaxed);
+            state.user_sequence_shared.store(sequence, std::sync::atomic::Ordering::SeqCst);
             debug!("User sequence {} confirmed (continuous)", sequence);
         }
     }
@@ -183,6 +183,21 @@ impl SequenceHandler {
                 conversation_id: event.conversation_id,
                 recovery: true,
             });
+        }
+
+        // ✅ UN SOLO mark_read alla fine per la conversazione corrente
+        if let Some(current_cid) = state.cid {
+            if let Some(seq) = state.conversation_sequences.get(&current_cid).copied() {
+                let outgoing = Outgoing::MarkRead {
+                    conversation_id: current_cid,
+                    sequence_num: seq,
+                };
+                let _ = state.ui_to_net_tx.try_send(outgoing);
+                info!(
+                "Auto mark_read after resume for conversation {} up to seq {}",
+                current_cid, seq
+            );
+            }
         }
     }
 

@@ -373,20 +373,24 @@ impl AppState {
         let Some(cid) = self.cid else { return };
         let Some(ref token) = self.token else { return };
 
+        // Guard: evita caricamenti multipli simultanei
         if self.is_loading_more {
             return;
         }
 
+        // Guard: se sappiamo che non ci sono più messaggi, non caricare
         if !*self.has_more_messages.get(&cid).unwrap_or(&true) {
             return;
         }
 
+        // Determina il punto di partenza per la paginazione
         let before_seq = self
             .messages
             .first()
             .and_then(|m| m.sequence_num)
             .map(|seq| seq as i64);
 
+        // Se il primo messaggio ha sequence 1, siamo all'inizio
         if let Some(seq) = before_seq {
             if seq <= 1 {
                 self.has_more_messages.insert(cid, false);
@@ -400,7 +404,7 @@ impl AppState {
         let base = self.base.clone();
         let token = token.clone();
         let tx = self.ui_tx.clone();
-        let waker = self.egui_waker.clone(); // ← Clone waker per svegliare egui
+        let waker = self.egui_waker.clone();
 
         self.rt.spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -416,12 +420,12 @@ impl AppState {
             {
                 Ok(messages) => {
                     let _ = tx.send(UiEvent::OlderMessagesLoaded(messages));
-                    waker(); // Sveglia egui
+                    waker();
                 }
                 Err(e) => {
                     error!("Failed to load messages: {}", e);
                     let _ = tx.send(UiEvent::LoadingError);
-                    waker(); // Sveglia egui
+                    waker();
                 }
             }
         });

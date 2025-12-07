@@ -624,7 +624,7 @@ fn handle_user_events_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, v
                     Some(UserEventData {
                         sequence,
                         event_type,
-                        event_data: event.get("event_data").unwrap_or(&Value::Null).clone(),
+                        event_data: event.clone(),
                         conversation_id,
                         created_at,
                     })

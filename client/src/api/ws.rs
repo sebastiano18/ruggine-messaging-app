@@ -94,7 +94,7 @@ pub fn spawn_bidirectional_handler(
         loop {
             ping_interval.tick().await;
 
-            let user_seq = ping_user_seq.load(std::sync::atomic::Ordering::Relaxed);
+            let user_seq = ping_user_seq.load(std::sync::atomic::Ordering::SeqCst);
 
             let ping_json = serde_json::json!({
                 "type": "ping",
