@@ -413,17 +413,8 @@ impl MessageDto {
             created_at: chrono::Utc::now().timestamp(),
             sequence_num: None, // Verrà impostato quando confermato
             client_msg_id: Some(client_msg_id),
-            is_confirmed: Some(false), // Non ancora confermato dal server
+            is_confirmed: None, // ← In attesa di conferma (mostra orologio)
         }
     }
 
-    /// Verifica se il messaggio è stato confermato dal server
-    pub fn is_pending(&self) -> bool {
-        self.client_msg_id.is_some() && self.is_confirmed == Some(false)
-    }
-
-    /// Verifica se il messaggio è stato confermato dal server
-    pub fn is_server_confirmed(&self) -> bool {
-        self.is_confirmed == Some(true)
-    }
 }

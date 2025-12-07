@@ -427,11 +427,15 @@ fn show_my_message(ui: &mut egui::Ui, s: &mut AppState, message: &MessageDto) {
                         ui.add_space(3.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let (status_icon, status_color) = match message.is_confirmed {
-                                Some(true) => ("✔✔", egui::Color32::from_rgb(255, 220, 180)),
-                                Some(false) => ("❌", egui::Color32::from_rgb(255, 80, 80)),
-                                None => ("✔", egui::Color32::from_rgb(200, 200, 200)),
+                                Some(true) => (egui_remixicon::icons::CHECK_DOUBLE_LINE, egui::Color32::from_rgb(255, 220, 180)),
+                                Some(false) => (egui_remixicon::icons::CLOSE_CIRCLE_LINE, egui::Color32::from_rgb(255, 80, 80)),
+                                None => (egui_remixicon::icons::TIME_LINE, egui::Color32::from_rgb(200, 200, 200)),
                             };
-                            ui.colored_label(status_color, status_icon);
+                            ui.label(
+                                RichText::new(status_icon)
+                                    .size(14.0)
+                                    .color(status_color)
+                            );
                             ui.add_space(4.0);
                             let time = format_time(message.created_at);
                             ui.colored_label(egui::Color32::from_rgb(255, 200, 150), time);

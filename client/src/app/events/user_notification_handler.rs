@@ -2,7 +2,7 @@ use serde_json::Value;
 use crate::app::events::helpers;
 use crate::models::*;
 use crate::state::core::AppState;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use crate::app::events::buffer_handler::BufferHandler;
 use crate::app::events::sequence_handler::SequenceHandler;
@@ -20,19 +20,22 @@ impl UserNotificationHandler {
     ) {
         let expected = state.user_sequence_confirmed + 1;
 
-        if sequence > expected {
-            warn!(
+        // ✅ Skip tutti i check se è recovery - gli eventi sono garantiti validi
+        if !recovery {
+            if sequence > expected {
+                warn!(
                 "User event seq {} out of order (expected {}), buffering",
                 sequence, expected
             );
-            BufferHandler::buffer_user_event_for_reorder(state, sequence, event_data);
-            return;
-        } else if sequence < expected && sequence > 0 {
-            debug!(
+                BufferHandler::buffer_user_event_for_reorder(state, sequence, event_data);
+                return;
+            } else if sequence < expected && sequence > 0 {
+                debug!(
                 "User event seq {} already processed (expected {}), skipping",
                 sequence, expected
             );
-            return;
+                return;
+            }
         }
 
         if sequence > 0 {
@@ -46,10 +49,10 @@ impl UserNotificationHandler {
         let buffered_events = BufferHandler::try_deliver_buffered_user_events(state);
         if !buffered_events.is_empty() {
             info!(
-                "Delivering {} buffered user events after processing seq {}",
-                buffered_events.len(),
-                sequence
-            );
+            "Delivering {} buffered user events after processing seq {}",
+            buffered_events.len(),
+            sequence
+        );
 
             for buffered_event in buffered_events {
                 if let Some(event_seq) = buffered_event.get("sequence").and_then(|s| s.as_u64()) {
@@ -81,9 +84,9 @@ impl UserNotificationHandler {
         recovery: bool,
     ) {
         debug!(
-            "User notification - seq: {}, type: {}, recovery: {}",
-            sequence, event_type, recovery
-        );
+        "User notification - seq: {}, type: {}, recovery: {}",
+        sequence, event_type, recovery
+    );
 
         if recovery {
             state.sequence_stats.events_recovered += 1;
@@ -97,9 +100,9 @@ impl UserNotificationHandler {
             "conversation_deleted" => {
                 if let Some(cid) = conversation_id {
                     info!(
-                        "Applying conversation_deleted from UserNotification for {}",
-                        cid
-                    );
+                    "Applying conversation_deleted from UserNotification for {}",
+                    cid
+                );
                     let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
                 } else {
                     warn!("conversation_deleted notification without conversation_id");
@@ -108,9 +111,9 @@ impl UserNotificationHandler {
             "member_kicked" => {
                 if let Some(cid) = conversation_id {
                     info!(
-                        "User was kicked from conversation {}",
-                        cid
-                    );
+                    "User was kicked from conversation {}",
+                    cid
+                );
                     // Rimuovi la conversazione dalla lista
                     let _ = state.ui_tx.send(UiEvent::ConversationDeleted(cid));
                 } else {
@@ -194,11 +197,11 @@ impl UserNotificationHandler {
             }
         }
 
-        // ✅ Invia mark_read SOLO per eventi relativi ai messaggi
-        let should_mark_read = matches!(
-            event_type.as_str(),
-            "new_message" | "message_deleted" | "message_edited"
-        );
+
+        let should_mark_read = !recovery && matches!(  // ← AGGIUNGI !recovery &&
+        event_type.as_str(),
+        "new_message" | "message_deleted" | "message_edited"
+    );
 
         if should_mark_read {
             if let Some(conv_id) = conversation_id {
@@ -211,9 +214,9 @@ impl UserNotificationHandler {
 
                 if !conversation_exists {
                     debug!(
-                        "Skipping mark_read for conversation {} - conversation no longer exists",
-                        conv_id
-                    );
+                    "Skipping mark_read for conversation {} - conversation no longer exists",
+                    conv_id
+                );
                     return;
                 }
 
@@ -252,11 +255,6 @@ impl UserNotificationHandler {
                 msg.sequence_num = Some(conv_seq);
             }
 
-            info!(
-                "Processing new_message from UserEvent (msg_id: {}, conv_seq: {:?})",
-                msg.id, msg.sequence_num
-            );
-
             let already_in_cache = state
                 .conversation_messages
                 .get(&msg.conversation_id)
@@ -265,20 +263,15 @@ impl UserNotificationHandler {
 
             if already_in_cache {
                 debug!(
-                    "UserEvent message {} already in cache (from WebSocket), skipping",
-                    msg.id
-                );
-
+                "Message {} already in cache, skipping",
+                msg.id
+            );
                 return;
             }
 
             if let Some(conv_seq) = msg.sequence_num {
                 use super::sequence_handler::SequenceHandler;
                 SequenceHandler::update_conversation_sequence(state, msg.conversation_id, conv_seq);
-                debug!(
-                    "Updated conversation {} sequence to {} via UserEvent",
-                    msg.conversation_id, conv_seq
-                );
             }
 
             let cache = state
@@ -306,10 +299,6 @@ impl UserNotificationHandler {
             };
 
             cache.insert(cache_insert_pos, msg.clone());
-            debug!(
-                "UserEvent message {} cached at position {} for conversation {}",
-                msg.id, cache_insert_pos, msg.conversation_id
-            );
 
             if Some(msg.conversation_id) == state.cid {
                 let already_in_ui = state.messages.iter().any(|m| m.id == msg.id);
@@ -338,18 +327,14 @@ impl UserNotificationHandler {
 
                     state.messages.insert(ui_insert_pos, msg.clone());
                     debug!(
-                        "Added UserEvent message {} to UI at position {} (seq: {:?})",
-                        msg.id, ui_insert_pos, msg.sequence_num
-                    );
+                    "Message {} added to UI (seq: {:?})",
+                    msg.id, msg.sequence_num
+                );
                 } else {
-                    debug!("UserEvent message {} already in UI, skipping", msg.id);
+                    debug!("Message {} already in UI, skipping", msg.id);
                 }
             } else {
-                debug!(
-                    "UserEvent message {} cached for conversation {} (not current: {:?})",
-                    msg.id, msg.conversation_id, state.cid
-                );
-
+                // Messaggio per conversazione non corrente - gestisci unread count
                 if Some(msg.author_id) != state.user_id {
                     let current_unread = state
                         .conversation_unread_counts
@@ -360,18 +345,12 @@ impl UserNotificationHandler {
                     state
                         .conversation_unread_counts
                         .insert(msg.conversation_id, current_unread + 1);
-
-                    debug!(
-                        "Incremented unread count for conversation {} from {} to {} (new message from {})",
-                        msg.conversation_id,
-                        current_unread,
-                        current_unread + 1,
-                        msg.author_username
-                    );
                 }
             }
 
             super::utils::move_conversation_to_top(state, msg.conversation_id);
+        } else {
+            error!("Failed to parse MessageDto from event_data");
         }
     }
 
