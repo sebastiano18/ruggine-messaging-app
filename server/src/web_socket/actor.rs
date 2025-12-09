@@ -47,7 +47,7 @@ impl ConnectionActor {
                         old_conn.session_id
                     );
                     // Replace silenzioso - nessun messaggio "logged_out"
-                    state.unregister_connection(user_id).await;
+                    state.unregister_connection(user_id, old_conn.session_id).await;  // ← MODIFICATO: Aggiunto session_id
                 } else {
                     // Altro client (diverso session_id) o nessun session_id fornito
                     // → nuovo dispositivo che si connette
@@ -72,9 +72,9 @@ impl ConnectionActor {
 
         // Riutilizza client_session_id se fornito, altrimenti genera nuovo
         let session_id = client_session_id.unwrap_or_else(|| Uuid::new_v4());
-        state.register_connection(user_id, session_id, username.clone(), out_tx.clone()).await?;
+        state.register_connection(user_id, session_id, username.clone(), out_tx.clone(), stop_tx.clone()).await?;  // ← MODIFICATO: Aggiunto stop_tx.clone()
 
-        
+
         info!(
             "WebSocket connection established for user {} (session: {})",
             user_id, session_id
@@ -284,14 +284,8 @@ impl ConnectionActor {
         };
 
 
-        // Cleanup finale con grace period di 5 minuti
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(300)).await; // 5 minuti di grace period
-            cleanup_empty_channels(&state_clone, user_id).await;
-            info!("Cleanup completed for user {} after 5min grace period", user_id);
-        });
-        info!("Scheduled cleanup for user {} (5min grace period)", user_id);
+        // CRITICAL: Deregistra la connessione per permettere nuovi login
+        state.unregister_connection(user_id, session_id).await;
 
         // Log delle statistiche finali
         let (total_channels, total_receivers) = state.get_channel_stats().await;
@@ -300,13 +294,19 @@ impl ConnectionActor {
             user_id, total_channels, total_receivers
         );
 
+        // Schedule cleanup DOPO unregister per evitare memory leak
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            cleanup_empty_channels(&state_clone, user_id).await;
+            info!("Cleanup completed for user {} after 5min grace period", user_id);
+        });
+        info!("Scheduled cleanup for user {} (5min grace period)", user_id);
+
         // Propaga eventuali errori dai task
         if let Err(e) = connection_result {
             warn!("Connection ended with error for user {}: {:?}", user_id, e);
         }
-
-        // CRITICAL: Deregistra la connessione per permettere nuovi login
-        state.unregister_connection(user_id).await;
 
         Ok(())
     }

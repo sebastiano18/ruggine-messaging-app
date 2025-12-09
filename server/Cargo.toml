@@ -51,3 +51,8 @@ criterion = { version = "0.5.1", features = ["async_tokio"] }
 [[bench]]
 name = "message_stress_test"
 harness = false
+
+
+[[bench]]
+name = "login_stress_test"
+harness = false
