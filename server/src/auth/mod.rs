@@ -15,10 +15,9 @@ pub struct AuthUser {
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
-    uid: Uuid,     // <- UUID nativo serializzato come stringa in JWT
-    exp: usize,
+    uid: Uuid,
+    exp: i64,
 }
-
 #[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where

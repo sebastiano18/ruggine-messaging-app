@@ -27,11 +27,10 @@ impl AuthHandler {
         state.token = Some(token.clone());
         state.user_id = Some(user_id);
 
-        // Genera session_id se non esiste già
-        if state.current_session_id.is_none() {
-            state.current_session_id = Some(uuid::Uuid::new_v4());
-            info!("Generated new session_id: {:?}", state.current_session_id);
-        }
+        // SEMPRE genera nuovo session_id ad ogni login
+        // Questo previene riutilizzo di vecchi session_id che causano doppie connessioni
+        state.current_session_id = Some(uuid::Uuid::new_v4());
+        info!("Generated new session_id: {:?}", state.current_session_id);
 
         state.user_sequence_confirmed = last_sequence;
         state.user_sequence_received = last_sequence;

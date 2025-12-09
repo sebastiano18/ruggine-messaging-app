@@ -16,6 +16,7 @@ pub struct ActiveConnection {
     pub username: String,
     pub connected_at: Instant,
     pub out_tx: mpsc::Sender<OutboundMsg>,
+    pub stop_tx: watch::Sender<bool>,  
 }
 
 impl ActiveConnection {
@@ -24,6 +25,7 @@ impl ActiveConnection {
         user_id: Uuid,
         username: String,
         out_tx: mpsc::Sender<OutboundMsg>,
+        stop_tx: watch::Sender<bool>, 
     ) -> Self {
         Self {
             session_id,
@@ -31,6 +33,7 @@ impl ActiveConnection {
             username,
             connected_at: Instant::now(),
             out_tx,
+            stop_tx, 
         }
     }
 }
@@ -644,7 +647,7 @@ impl AppState {
 
     // === Resume Senders ===
 
-    /// Invia resume di user events mancanti (MODIFICATO per includere client_temp_id)
+    /// Invia resume di user events mancanti 
     pub async fn send_user_events_resume(
         &self,
         user_id: Uuid,
@@ -731,7 +734,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Invia resume di messaggi mancanti (MODIFICATO per includere client_msg_id)
+    /// Invia resume di messaggi mancanti
     pub async fn send_messages_resume(
         &self,
         user_id: Uuid,
@@ -1104,6 +1107,7 @@ impl AppState {
         session_id: Uuid,
         username: String,
         out_tx: mpsc::Sender<OutboundMsg>,
+        stop_tx: watch::Sender<bool>,  
     ) -> Result<()> {
         let mut connections = self.active_connections.write().await;
 
@@ -1114,7 +1118,7 @@ impl AppState {
             ));
         }
 
-        let conn = ActiveConnection::new(session_id, user_id, username.clone(), out_tx);
+        let conn = ActiveConnection::new(session_id, user_id, username.clone(), out_tx, stop_tx);
         connections.insert(user_id, conn);
 
         info!(
@@ -1126,30 +1130,42 @@ impl AppState {
     }
 
     /// Rimuove la connessione attiva per l'utente
-    pub async fn unregister_connection(&self, user_id: Uuid) {
+    /// CRITICAL: Verifica il session_id prima di rimuovere per evitare race condition
+    pub async fn unregister_connection(&self, user_id: Uuid, session_id: Uuid) {  //Aggiunto session_id
         let mut connections = self.active_connections.write().await;
 
-        if let Some(conn) = connections.remove(&user_id) {
-            info!(
-                "Unregistered connection for user {} (session: {}, uptime: {:?}, remaining: {})",
-                user_id,
-                conn.session_id,
-                conn.connected_at.elapsed(),
-                connections.len()
-            );
+        //  Check session_id prima di rimuovere
+        if let Some(conn) = connections.get(&user_id) {
+            if conn.session_id == session_id {
+                // Session_id corrisponde - rimuovi
+                let conn = connections.remove(&user_id).unwrap();
+                info!(
+                    "Unregistered connection for user {} (session: {}, uptime: {:?}, remaining: {})",
+                    user_id,
+                    conn.session_id,
+                    conn.connected_at.elapsed(),
+                    connections.len()
+                );
+            } else {
+                // Session_id diverso - la connessione è stata già sostituita da una nuova
+                debug!(
+                    "Skipping unregister for user {} - session_id mismatch (current: {}, requested: {})",
+                    user_id, conn.session_id, session_id
+                );
+            }
         } else {
-            warn!("Attempted to unregister non-existent connection for user {}", user_id);
+            warn!("Attempted to unregister non-existent connection for user {} (session: {})", user_id, session_id);
         }
     }
 
     /// Force disconnect di una sessione esistente (nuova connessione da altro client)
     pub async fn force_disconnect_user(&self, user_id: Uuid) -> bool {
         // Prima ottieni la connessione con read lock
-        let (old_session_id, out_tx) = {
+        let (old_session_id, out_tx, stop_tx) = {  //Prendi anche stop_tx
             let connections = self.active_connections.read().await;
 
             match connections.get(&user_id) {
-                Some(conn) => (conn.session_id, conn.out_tx.clone()),
+                Some(conn) => (conn.session_id, conn.out_tx.clone(), conn.stop_tx.clone()), 
                 None => return false,
             }
         };
@@ -1159,8 +1175,7 @@ impl AppState {
             user_id, old_session_id
         );
 
-        // CRITICAL: Invia messaggio ForceLogout
-        // Il writer task lo processerà, invierà il logout JSON, e POI chiuderà
+        // 1. Invia messaggio ForceLogout al client (best effort)
         match out_tx.send(OutboundMsg::ForceLogout {
             reason: "new_session".to_string()
         }).await {
@@ -1172,8 +1187,11 @@ impl AppState {
             }
         }
 
-        // CRITICAL: Rimuovi IMMEDIATAMENTE da active_connections
-        // Il vecchio task chiamerà unregister_connection ma troverà già rimosso
+        // 2. FORZA lo stop di TUTTI i task immediatamente
+        let _ = stop_tx.send(true);
+        info!("Stop signal sent to all tasks for old session {}", old_session_id);
+
+        // 3. Rimuovi da active_connections
         {
             let mut connections = self.active_connections.write().await;
             if let Some(removed) = connections.remove(&user_id) {

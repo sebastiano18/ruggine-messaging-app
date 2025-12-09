@@ -235,9 +235,10 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, _height: f32)
                 .desired_width(input_width)
         );
 
-        // Invio con Enter
+        // Invio con Enter e mantieni il focus
         if input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             send_message(s, cid);
+            input_response.request_focus();
         }
 
         ui.add_space(8.0);

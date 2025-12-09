@@ -346,6 +346,15 @@ pub async fn setup_conversation_subscription(
 
 /// Cleanup canali vuoti quando un utente si disconnette
 pub async fn cleanup_empty_channels(state: &AppState, user_id: Uuid) {
+    // CRITICAL: Non fare cleanup se l'utente ha una connessione attiva
+    // Questo previene race condition dove cleanup task della vecchia sessione
+    // rimuove canali broadcast che la NUOVA sessione sta usando
+    if state.is_user_connected(user_id).await {
+        info!("User {} has active connection, skipping cleanup (scheduled by old session)", user_id);
+        return;
+    }
+
+    info!("Starting cleanup for user {} (no active connections)", user_id);
     state.cleanup_empty_channels(user_id).await;
 }
 

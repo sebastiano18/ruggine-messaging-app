@@ -47,7 +47,7 @@ pub async fn init_pool(url: &str) -> anyhow::Result<SqlitePool> {
 
     // Connetti il pool
     let pool = SqlitePoolOptions::new()
-        .max_connections(10)
+        .max_connections(50)
         .connect_with(opts)
         .await
         .context("Connessione a SQLite fallita")?;

@@ -1,5 +1,4 @@
 // services/user_service.rs
-// services/user_service.rs
 use crate::{
     error::{AppError, Result},
     repositories::{user_repo::UserRepo, conversation_repo::ConversationRepo},
@@ -16,10 +15,9 @@ use tracing::{info, error, warn};
 #[derive(Serialize)]
 struct Claims {
     sub: String,
-    uid: Uuid,   // <- UUID nativo
-    exp: usize,
+    uid: Uuid,
+    exp: i64,
 }
-
 #[derive(Debug, Clone)]
 pub struct UserService;
 
@@ -66,7 +64,7 @@ impl UserService {
             .verify_password(password.as_bytes(), &parsed)
             .map_err(|_| AppError::Unauthorized)?;
 
-        let exp = (chrono::Utc::now() + Duration::hours(24)).timestamp() as usize;
+        let exp = (chrono::Utc::now() + Duration::hours(24)).timestamp();
         let claims = Claims { sub: username.to_owned(), uid, exp };
 
         let token = encode(
