@@ -137,8 +137,18 @@ impl ConversationsSidebar {
     }
 
     fn show_filtered_conversations(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
-        egui::ScrollArea::vertical()
+        // ID persistente per salvare lo scroll offset
+        let last_offset_id = ui.id().with("conversations_last_offset");
+
+        // Recupera l'ultimo offset salvato
+        let last_offset: f32 = ui.data_mut(|d|
+            d.get_temp(last_offset_id).unwrap_or(0.0)
+        );
+
+        // ScrollArea con cattura dell'output
+        let output = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .id_source("conversations_scroll")
             .show(ui, |ui| {
                 match &state.conversations {
                     None => {
@@ -161,10 +171,77 @@ impl ConversationsSidebar {
                                 self.render_conversation_item(ui, state, conv);
                                 ui.add_space(3.0);
                             }
+
+                            // ✨ Indicatore di caricamento quando si sta caricando più conversazioni
+                            if state.is_loading_more_conversations {
+                                ui.add_space(10.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.spinner();
+                                    ui.label(
+                                        RichText::new("Caricamento...")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                });
+                                ui.add_space(10.0);
+                            } else if !state.has_more_conversations {
+                                // 🏁 Mostra "Fine delle conversazioni" quando non ce ne sono più
+                                ui.add_space(10.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        RichText::new("Fine delle conversazioni")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                });
+                                ui.add_space(10.0);
+                            }
                         }
                     }
                 }
             });
+
+        // === 🔥 GESTIONE SCROLL PER TRIGGER FETCH (simile a chat.rs ma verso il BASSO) ===
+
+        // Detecta scroll verso il basso
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        let scrolling_down_with_wheel = scroll_delta < 0.0;
+        let scrolled_down = output.state.offset.y > last_offset + 5.0;
+
+        // Salva l'offset corrente per il prossimo frame
+        ui.data_mut(|d| d.insert_temp(last_offset_id, output.state.offset.y));
+
+        // Trigger: ha scrollato verso il basso E offset > soglia
+        let should_load_more = (scrolling_down_with_wheel || scrolled_down)
+            && output.state.offset.y > 100.0  // Attende almeno 100px di scroll
+            && !state.is_loading_more_conversations
+            && state.has_more_conversations
+            && state.conversations.as_ref().map_or(false, |c| !c.is_empty());
+
+        if should_load_more {
+            state.is_loading_more_conversations = true;
+
+            let cursor = state.conversations
+                .as_ref()
+                .and_then(|convs| convs.last())
+                .map(|conv| conv.last_activity);
+
+            let base = state.base.clone();
+            let token = state.token.clone().unwrap_or_default();
+            let tx = state.ui_tx.clone();
+
+            state.rt.spawn(async move {
+                match crate::api::conversation::get_conversations_paginated(&base, &token, cursor, 20).await {
+                    Ok(response) => {
+                        let _ = tx.send(UiEvent::ConversationsAppended(response));
+                    }
+                    Err(e) => {
+                        error!("Failed to load more conversations: {}", e);
+                        // TODO: Resetta is_loading_more in caso di errore
+                    }
+                }
+            });
+        }
     }
 
     fn render_conversation_item(
@@ -369,14 +446,13 @@ impl ConversationsSidebar {
         let tx = state.ui_tx.clone();
 
         state.rt.spawn(async move {
-            match crate::api::conversation::get_conversations(&base, &token2).await {
-                Ok(conversations) => {
-                    let _ = tx.send(UiEvent::ConversationsLoaded(conversations));
+            match crate::api::conversation::get_conversations_paginated(&base, &token2, None, 20).await {
+                Ok(response) => {
+                    let _ = tx.send(UiEvent::ConversationsAppended(response));
                 }
                 Err(e) => {
                     error!("Failed to load conversations: {}", e);
                     let _ = tx.send(UiEvent::Error(crate::models::ErrorType::DataRecovery));
-                    let _ = tx.send(UiEvent::ConversationsLoaded(vec![]));
                 }
             }
         });

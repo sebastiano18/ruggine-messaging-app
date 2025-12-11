@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-// === REQUEST/RESPONSE DTOs ===
+// Re-export API response types
+pub use crate::api::conversation::PaginatedConversationsResponse;
+
 #[derive(Serialize)]
 pub struct RegisterReq<'a> {
     pub username: &'a str,
@@ -55,7 +57,6 @@ pub struct SendMsgReq<'a> {
     pub content: &'a str,
 }
 
-// === CORE DATA MODELS ===
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct MessageDto {
     pub id: Uuid,
@@ -68,7 +69,6 @@ pub struct MessageDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sequence_num: Option<u64>,
 
-    // Campi per il tracking delle conferme messaggi
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_msg_id: Option<String>,
 
@@ -86,6 +86,15 @@ pub struct ConversationDto {
     pub last_read_sequence: i64,
     pub last_activity: i64,
     pub last_msg_seq: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConversationSummary {
+    pub conversation: ConversationDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<MessageDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<ParticipantInfo>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -107,7 +116,6 @@ pub struct ParticipantInfo {
     pub role: String,
 }
 
-// IMPORTANTE: MessageResponse ora include sequence
 #[derive(Deserialize)]
 pub struct MessageResponse {
     pub id: String,
@@ -116,10 +124,9 @@ pub struct MessageResponse {
     pub content: String,
     pub created_at: i64,
     #[serde(default)]
-    pub sequence_num: Option<i64>, // Nome campo dal server: sequence_num
+    pub sequence_num: Option<i64>,
 }
 
-// === ENUMS ===
 #[derive(Debug, Clone, PartialEq)]
 pub enum Page {
     Auth,
@@ -200,19 +207,15 @@ pub enum Outgoing {
     DeleteMessage {
         mid: Uuid,
     },
-    // NUOVO: Verifica esistenza utente
     CheckUser {
         username: String,
         request_id: String,
     },
-    // Elimina l'account utente
     DeleteUser,
 }
 
-// === EVENTI UI UNIFICATI ===
 #[derive(Debug)]
 pub enum UiEvent {
-    // Auth events
     Info(String),
     Error(ErrorType),
     LoginStarted,
@@ -220,23 +223,20 @@ pub enum UiEvent {
     Logged(String, Uuid, u64),
     LoggedOut,
     LoadingError,
-    DeleteAccountStart,    // primo click -> chiede conferma
-    DeleteAccountConfirm,  // secondo click -> esegue davvero
-    DeleteAccountCancel,   // annulla la conferma
+    DeleteAccountStart,
+    DeleteAccountConfirm,
+    DeleteAccountCancel,
 
-    // WebSocket events
     WsConnected,
     WsDisconnected,
     WsControlReady(crate::api::ws::WsControl),
     WsError(String),
     WsIncoming(MessageDto),
 
-    // Conversation events
     Opened(Uuid),
     Closed(Uuid),
     ConversationCreated(Uuid),
     DmStubCreated(Uuid, String),
-    // NUOVO: Risultato verifica utente
     UserCheckResult {
         username: String,
         exists: bool,
@@ -245,15 +245,16 @@ pub enum UiEvent {
     },
     ConversationDeleted(Uuid),
 
-    // Data loading events
     ConversationsLoaded(Vec<ConversationDto>),
+    ConversationsAppended(PaginatedConversationsResponse),
+    ConversationSummaryFetched(ConversationSummary),
+    ConversationFetchFailed(Uuid),
     AllMessagesLoaded(HashMap<Uuid, Vec<MessageDto>>),
     RefreshedMsgs(Vec<MessageDto>),
     SingleConversationLoaded(ConversationDto),
     InitialLoadComplete,
     LoadingProgress(String),
 
-    // Message events
     MessageSendFailed(Uuid),
     MessageConfirmation {
         client_msg_id: String,
@@ -266,15 +267,12 @@ pub enum UiEvent {
         conversation_id: Uuid,
     },
 
-    // General events
     InviteCreated(String),
     MembersLoaded(Uuid, Vec<ParticipantInfo>),
 
-    // Sistema unificato di fetch conversazione
     TriggerConversationFetch(Uuid, String),
     ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
-    
-    // Sistema di sequenze dual
+
     SendPing,
     PongReceived {
         current_user_sequence: u64,
@@ -296,7 +294,6 @@ pub enum UiEvent {
         recovery: bool,
     },
 
-    // Eventi per initial_state e conversation_messages
     InitialStateReceived {
         conversations: Vec<ConversationDto>,
         user_sequence: u64,
@@ -340,7 +337,7 @@ pub struct UserEventData {
 
 #[derive(Debug, Clone)]
 pub enum ErrorType {
-    Connection,              // Silent - solo indicatore di stato
+    Connection,
     MessageSend,
     MessageDelete,
     ConversationDelete,
@@ -353,7 +350,6 @@ pub enum ErrorType {
     Generic(String),
 }
 
-// === IMPLEMENTAZIONI PER MessageDto ===
 impl MessageDto {
     pub fn system_message(content: String) -> Self {
         Self {
@@ -370,12 +366,10 @@ impl MessageDto {
     }
 
     pub fn is_system_message(&self) -> bool {
-        // Messaggio di sistema classico (author_id nullo)
         if self.author_id == Uuid::nil() && self.author_username == "system" {
             return true;
         }
 
-        // Messaggi di sistema per eventi di gruppo (pattern matching)
         self.content.ends_with(" è stato aggiunto al gruppo") ||
             self.content.ends_with(" è stato espulso dal gruppo") ||
             self.content.ends_with(" ha lasciato il gruppo") ||
@@ -396,7 +390,6 @@ impl MessageDto {
         }
     }
 
-    /// Crea un messaggio ottimistico con client_msg_id per tracking
     pub fn optimistic_message(
         author_id: Uuid,
         author_username: String,
@@ -405,16 +398,15 @@ impl MessageDto {
         client_msg_id: String,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(), // ID temporaneo, verrà sostituito con server_msg_id
+            id: Uuid::new_v4(),
             author_id,
             author_username,
             conversation_id,
             content,
             created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None, // Verrà impostato quando confermato
+            sequence_num: None,
             client_msg_id: Some(client_msg_id),
-            is_confirmed: None, // ← In attesa di conferma (mostra orologio)
+            is_confirmed: None,
         }
     }
-
 }

@@ -5,9 +5,9 @@ use crate::controllers::conversation_controller as c;
 pub fn router() -> Router<AppState> {
     Router::new()
         // Gestione conversazioni unificate
-        .route("/conversations", get(c::mine))
+        //.route("/conversations", get(c::mine))
 
-        // NUOVO: Conversazione con messaggi in una sola chiamata
+        //Conversazione con messaggi in una sola chiamata
         .route("/conversations/:id/with-messages", get(c::get_conversation_with_messages))
 
         // Creazione gruppi
@@ -24,4 +24,10 @@ pub fn router() -> Router<AppState> {
         
         // Espelli un membro da una conversazione
         .route("/conversations/:id/members/:user_id", delete(c::kick_member))
+
+        // Ottieni conversazioni con paginazione
+        .route("/conversations", get(c::get_conversations))
+        
+        // Ottieni conversazione
+        .route("/conversations/:id", get(c::get_conversation))
 }

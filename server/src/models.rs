@@ -35,7 +35,29 @@ pub struct Message {
     pub author_username: String,
     pub content: String,
     pub created_at: i64,
-    pub sequence_num: Option<i64>, // AGGIUNTO: supporto sequence per messaggi
+    pub sequence_num: Option<i64>,
+}
+
+/// Conversation with optional last message - returned by repository queries
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationWithLastMessage {
+    // Core conversation fields
+    pub id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub owner_id: Uuid,
+    pub created_at: i64,
+    pub last_read_sequence: i64,
+    pub last_activity: i64,
+    pub last_msg_seq: i64,
+
+    // Optional last message fields (populated via LEFT JOIN)
+    pub last_msg_id: Option<Uuid>,
+    pub last_msg_author_id: Option<Uuid>,
+    pub last_msg_author_username: Option<String>,
+    pub last_msg_content: Option<String>,
+    pub last_msg_timestamp: Option<i64>,
+    pub last_msg_sequence: Option<i64>,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]

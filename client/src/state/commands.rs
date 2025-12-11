@@ -346,26 +346,7 @@ impl AppState {
 
         Some(stub_id)
     }
-
-    pub fn kick_member(&mut self, conversation_id: Uuid, user_id: Uuid) {
-        let Some(ref token) = self.token else { return };
-
-        let base = self.base.clone();
-        let token = token.clone();
-
-        self.rt.spawn(async move {
-            match crate::api::conversation::kick_member(&base, &token, conversation_id, user_id)
-                .await
-            {
-                Ok(_) => {
-                    info!("Member kicked successfully - will receive update via WebSocket");
-                }
-                Err(e) => {
-                    error!("Failed to kick member: {}", e);
-                }
-            }
-        });
-    }
+    
 
     // === MESSAGE LOADING ===
 
@@ -430,34 +411,5 @@ impl AppState {
             }
         });
     }
-
-    pub fn load_conversation_members(&mut self, conversation_id: Uuid, token: String) {
-        if self.is_loading_members {
-            return;
-        }
-
-        self.is_loading_members = true;
-        let base = self.base.clone();
-        let tx = self.ui_tx.clone();
-        let waker = self.egui_waker.clone(); // ← Clone waker per svegliare egui
-
-        self.rt.spawn(async move {
-            match crate::api::conversation::get_conversation_members(&base, &token, conversation_id)
-                .await
-            {
-                Ok(members) => {
-                    let _ = tx.send(UiEvent::MembersLoaded(conversation_id, members));
-                    waker(); 
-                }
-                Err(e) => {
-                    error!("Failed to load members: {}", e);
-                    let _ = tx.send(UiEvent::Error(ErrorType::Generic(format!(
-                        "Errore caricamento membri: {}",
-                        e
-                    ))));
-                    waker();
-                }
-            }
-        });
-    }
+    
 }

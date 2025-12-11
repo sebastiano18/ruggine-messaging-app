@@ -269,14 +269,14 @@ fn bench_login_with_conversations(c: &mut Criterion) {
     group.measurement_time(std::time::Duration::from_secs(30));
 
     // Test con numero crescente di conversazioni per utente
-    for num_convs in [10, 50, 100].iter() {
+    for num_convs in [10, 20, 50, 100].iter() {
         group.bench_with_input(
             BenchmarkId::from_parameter(num_convs),
             num_convs,
             |b, &num_convs| {
                 b.iter(|| {
                     let (state, users) = rt.block_on(async {
-                        let (state, users) = create_test_setup(50).await;
+                        let (state, users) = create_test_setup(1000).await;
 
                         // Crea N conversazioni per ogni utente
                         for (user_id, _) in &users {

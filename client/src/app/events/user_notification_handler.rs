@@ -251,6 +251,42 @@ impl UserNotificationHandler {
         let message_data = event_data.get("message").unwrap_or(&event_data);
 
         if let Ok(mut msg) = serde_json::from_value::<MessageDto>(message_data.clone()) {
+            // Check if conversation exists in loaded conversations
+            let conversation_exists = state.conversations
+                .as_ref()
+                .map(|convs| convs.iter().any(|c| c.id == msg.conversation_id))
+                .unwrap_or(false);
+
+            // Check if already fetching this conversation
+            let already_fetching = state.fetching_conversations.contains(&msg.conversation_id);
+
+            if !conversation_exists && !already_fetching {
+                // Conversation not loaded yet and not being fetched - fetch it
+                info!("Message received via user event for unloaded conversation {}, fetching...", msg.conversation_id);
+
+                // Mark as fetching
+                state.fetching_conversations.insert(msg.conversation_id);
+
+                let base = state.base.clone();
+                let token = state.token.clone().unwrap_or_default();
+                let tx = state.ui_tx.clone();
+                let conv_id = msg.conversation_id;
+
+                state.rt.spawn(async move {
+                    match crate::api::conversation::get_conversation(&base, &token, conv_id).await {
+                        Ok(summary) => {
+                            info!("Successfully fetched conversation {}", conv_id);
+                            let _ = tx.send(UiEvent::ConversationSummaryFetched(summary));
+                        }
+                        Err(e) => {
+                            error!("Failed to fetch conversation {}: {}", conv_id, e);
+                            // Send error event to clean up fetching state
+                            let _ = tx.send(UiEvent::ConversationFetchFailed(conv_id));
+                        }
+                    }
+                });
+            }
+
             if let Some(conv_seq) = conversation_sequence {
                 msg.sequence_num = Some(conv_seq);
             }
