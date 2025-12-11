@@ -6,7 +6,6 @@
 2. [Architettura del Sistema](#architettura-del-sistema)
    - [Panoramica Generale](#panoramica-generale)
    - [Stack Tecnologico](#stack-tecnologico)
-   - [Struttura delle Directory](#struttura-delle-directory)
 3. [Backend (Server)](#backend-server)
    - [Architettura Layered](#architettura-layered)
    - [Database Schema](#database-schema)
@@ -23,7 +22,6 @@
 7. [Deployment e Configurazione](#deployment-e-configurazione)
 8. [Performance e Scalabilità](#performance-e-scalabilità)
 9. [Testing](#testing)
-10. [Estensioni Future](#estensioni-future)
 
 ---
 
@@ -131,97 +129,6 @@
 | Serialization | serde + serde_json | 1.x | JSON handling |
 | Logging | tracing + env_logger | 0.11 | Client-side logging |
 
-### Struttura delle Directory
-
-```
-G39/
-├── client/                    # Frontend application
-│   ├── src/
-│   │   ├── api/              # API client modules
-│   │   │   ├── auth.rs       # Authentication API calls
-│   │   │   ├── chat.rs       # Message API calls
-│   │   │   ├── conversation.rs # Conversation API calls
-│   │   │   └── ws.rs         # WebSocket client
-│   │   ├── app/              # Application core
-│   │   │   ├── app.rs        # Main app struct
-│   │   │   ├── events/       # Event dispatching system
-│   │   │   │   ├── dispatcher.rs
-│   │   │   │   ├── auth_handler.rs
-│   │   │   │   ├── message_handler.rs
-│   │   │   │   ├── conversation_handler.rs
-│   │   │   │   ├── sequence_handler.rs
-│   │   │   │   └── websocket_handler.rs
-│   │   │   └── ws_manager/   # WebSocket lifecycle management
-│   │   │       ├── ws_manager.rs
-│   │   │       ├── health_monitor.rs
-│   │   │       ├── rate_limiter.rs
-│   │   │       └── message_processor.rs
-│   │   ├── state/            # State management
-│   │   │   ├── core.rs       # AppState (conversations, messages)
-│   │   │   ├── ui.rs         # UIState (modals, toasts)
-│   │   │   └── commands.rs   # Async commands
-│   │   ├── ui/               # User interface
-│   │   │   ├── pages/        # Page components
-│   │   │   ├── layout/       # Layout components (header, sidebar)
-│   │   │   └── modals/       # Modal dialogs
-│   │   ├── models.rs         # Data models (DTOs)
-│   │   └── main.rs           # Entry point
-│   └── Cargo.toml
-│
-├── server/                    # Backend application
-│   ├── src/
-│   │   ├── auth/             # JWT authentication
-│   │   │   └── jwt.rs
-│   │   ├── controllers/      # HTTP request handlers
-│   │   │   ├── user_controller.rs
-│   │   │   ├── conversation_controller.rs
-│   │   │   ├── message_controller.rs
-│   │   │   └── invite_controller.rs
-│   │   ├── services/         # Business logic layer
-│   │   │   ├── user_service.rs
-│   │   │   ├── conversation_service.rs
-│   │   │   ├── message_service.rs
-│   │   │   ├── invite_service.rs
-│   │   │   └── partecipant.rs
-│   │   ├── repositories/     # Data access layer
-│   │   │   ├── user_repo.rs
-│   │   │   ├── conversation_repo.rs
-│   │   │   ├── message_repo.rs
-│   │   │   └── invite_repo.rs
-│   │   ├── routers/          # Route definitions
-│   │   │   ├── user_route.rs
-│   │   │   ├── conversation_route.rs
-│   │   │   └── message_route.rs
-│   │   ├── web_socket/       # WebSocket handling
-│   │   │   ├── actor.rs      # ConnectionActor (main WS logic)
-│   │   │   ├── reader.rs     # Message reading
-│   │   │   ├── broadcast.rs  # Broadcasting logic
-│   │   │   ├── initial_state.rs
-│   │   │   └── handlers/     # Message type handlers
-│   │   │       ├── router.rs
-│   │   │       ├── message.rs
-│   │   │       ├── conversation.rs
-│   │   │       ├── group.rs
-│   │   │       └── user.rs
-│   │   ├── models.rs         # Database models
-│   │   ├── state.rs          # AppState definition
-│   │   ├── config.rs         # Configuration
-│   │   ├── db.rs             # Database initialization
-│   │   ├── error.rs          # Error types
-│   │   ├── cpu_logger.rs     # CPU monitoring
-│   │   └── main.rs           # Server entry point
-│   ├── migrations/           # SQLx database migrations
-│   │   ├── 20241210_initial_schema.sql
-│   │   └── ...
-│   ├── benches/              # Performance benchmarks
-│   └── Cargo.toml
-│
-├── MANUALE_UTENTE.md         # User manual
-├── MANUALE_PROGETTISTA.md    # This file
-└── README.md                 # Project overview
-```
-
----
 
 ## Backend (Server)
 
@@ -271,167 +178,9 @@ Il server segue un'architettura a **3 livelli** (three-tier architecture):
 
 Gestiscono le richieste HTTP e validano l'input.
 
-**Esempio: User Controller**
-
-```rust
-// server/src/controllers/user_controller.rs
-use axum::{extract::State, Json};
-use crate::models::{RegisterReq, LoginReq, LoginResp};
-use crate::services::user_service::UserService;
-use crate::state::AppState;
-use crate::error::AppError;
-
-pub async fn register(
-    State(state): State<AppState>,
-    Json(req): Json<RegisterReq>,
-) -> Result<Json<IdResp>, AppError> {
-    let user_id = UserService::register(&state.db, &req).await?;
-    Ok(Json(IdResp { id: user_id }))
-}
-
-pub async fn login(
-    State(state): State<AppState>,
-    Json(req): Json<LoginReq>,
-) -> Result<Json<LoginResp>, AppError> {
-    let resp = UserService::login(&state.db, &req).await?;
-    Ok(Json(resp))
-}
-```
-
-#### Services (Business Logic Layer)
-
-Contengono la logica di business e orchestrano le operazioni.
-
-**Esempio: User Service**
-
-```rust
-// server/src/services/user_service.rs
-use sqlx::SqlitePool;
-use uuid::Uuid;
-use argon2::{Argon2, PasswordHash, PasswordVerifier, PasswordHasher};
-use argon2::password_hash::SaltString;
-use crate::models::{RegisterReq, LoginReq, LoginResp};
-use crate::auth::jwt::create_token;
-use crate::repositories::user_repo::UserRepo;
-use crate::error::AppError;
-
-pub struct UserService;
-
-impl UserService {
-    pub async fn register(db: &SqlitePool, req: &RegisterReq) -> Result<Uuid, AppError> {
-        // Validation
-        if req.username.is_empty() || req.password.len() < 4 {
-            return Err(AppError::BadRequest("Invalid input".into()));
-        }
-
-        // Check if username exists
-        if UserRepo::find_by_username(db, &req.username).await?.is_some() {
-            return Err(AppError::Conflict("Username already exists".into()));
-        }
-
-        // Hash password
-        let salt = SaltString::generate(&mut rand::thread_rng());
-        let argon2 = Argon2::default();
-        let pass_hash = argon2.hash_password(req.password.as_bytes(), &salt)
-            .map_err(|_| AppError::InternalServerError)?
-            .to_string();
-
-        // Create user
-        let user_id = Uuid::new_v4();
-        UserRepo::create(db, user_id, &req.username, &pass_hash).await?;
-
-        Ok(user_id)
-    }
-
-    pub async fn login(db: &SqlitePool, req: &LoginReq) -> Result<LoginResp, AppError> {
-        // Find user
-        let user = UserRepo::find_by_username(db, &req.username).await?
-            .ok_or(AppError::Unauthorized)?;
-
-        // Verify password
-        let parsed_hash = PasswordHash::new(&user.pass_hash)
-            .map_err(|_| AppError::InternalServerError)?;
-        Argon2::default()
-            .verify_password(req.password.as_bytes(), &parsed_hash)
-            .map_err(|_| AppError::Unauthorized)?;
-
-        // Generate JWT
-        let token = create_token(&user.username, user.id)?;
-
-        // Get user sequence
-        let last_sequence = UserRepo::get_user_sequence(db, user.id).await?;
-
-        Ok(LoginResp {
-            token,
-            user_id: user.id,
-            username: user.username,
-            last_sequence,
-        })
-    }
-}
-```
-
 #### Repositories (Data Access Layer)
 
 Gestiscono le query al database.
-
-**Esempio: User Repository**
-
-```rust
-// server/src/repositories/user_repo.rs
-use sqlx::{SqlitePool, query_as, query};
-use uuid::Uuid;
-use crate::models::User;
-use crate::error::AppError;
-
-pub struct UserRepo;
-
-impl UserRepo {
-    pub async fn find_by_username(
-        db: &SqlitePool,
-        username: &str
-    ) -> Result<Option<User>, AppError> {
-        let user = query_as!(
-            User,
-            "SELECT id as \"id: Uuid\", username, pass_hash, created_at
-             FROM users WHERE username = ?",
-            username
-        )
-        .fetch_optional(db)
-        .await?;
-
-        Ok(user)
-    }
-
-    pub async fn create(
-        db: &SqlitePool,
-        id: Uuid,
-        username: &str,
-        pass_hash: &str,
-    ) -> Result<(), AppError> {
-        let id_str = id.to_string();
-        let now = chrono::Utc::now().timestamp();
-
-        query!(
-            "INSERT INTO users (id, username, pass_hash, created_at)
-             VALUES (?, ?, ?, ?)",
-            id_str, username, pass_hash, now
-        )
-        .execute(db)
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn delete(db: &SqlitePool, user_id: Uuid) -> Result<(), AppError> {
-        let id_str = user_id.to_string();
-        query!("DELETE FROM users WHERE id = ?", id_str)
-            .execute(db)
-            .await?;
-        Ok(())
-    }
-}
-```
 
 ### Database Schema
 
@@ -622,27 +371,6 @@ Quando un utente elimina il proprio account:
 
 #### Password Hashing con Argon2
 
-```rust
-use argon2::{
-    Argon2,
-    PasswordHash,
-    PasswordHasher,
-    PasswordVerifier,
-    password_hash::SaltString,
-};
-
-// Hashing during registration
-let salt = SaltString::generate(&mut rand::thread_rng());
-let argon2 = Argon2::default();  // Argon2id, m=65536, t=3, p=4
-let pass_hash = argon2
-    .hash_password(password.as_bytes(), &salt)?
-    .to_string();
-
-// Verification during login
-let parsed_hash = PasswordHash::new(&stored_hash)?;
-Argon2::default().verify_password(password.as_bytes(), &parsed_hash)?;
-```
-
 **Parametri Argon2**:
 - **Algorithm**: Argon2id (hybrid mode)
 - **Memory**: 64 MB (m=65536 KiB)
@@ -651,58 +379,6 @@ Argon2::default().verify_password(password.as_bytes(), &parsed_hash)?;
 
 #### JWT Authentication
 
-**Token Generation:**
-
-```rust
-// server/src/auth/jwt.rs
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    pub sub: String,      // username
-    pub uid: String,      // user_id (UUID)
-    pub exp: i64,         // expiry timestamp
-}
-
-pub fn create_token(username: &str, user_id: Uuid) -> Result<String, AppError> {
-    let secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "default-secret-key-change-in-production".to_string());
-
-    let expiry = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::hours(24))
-        .unwrap()
-        .timestamp();
-
-    let claims = Claims {
-        sub: username.to_string(),
-        uid: user_id.to_string(),
-        exp: expiry,
-    };
-
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )?;
-
-    Ok(token)
-}
-
-pub fn verify_token(token: &str) -> Result<Claims, AppError> {
-    let secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "default-secret-key-change-in-production".to_string());
-
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::new(Algorithm::HS256),
-    )?;
-
-    Ok(token_data.claims)
-}
-```
 
 **Token Structure:**
 
@@ -721,72 +397,6 @@ pub fn verify_token(token: &str) -> Result<Claims, AppError> {
 }
 ```
 
-**AuthUser Extractor:**
-
-```rust
-// server/src/auth/extractor.rs
-use axum::{
-    extract::FromRequestParts,
-    http::request::Parts,
-};
-
-pub struct AuthUser {
-    pub id: Uuid,
-    pub username: String,
-}
-
-#[async_trait]
-impl<S> FromRequestParts<S> for AuthUser
-where
-    S: Send + Sync,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        // Extract Authorization header
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(AppError::Unauthorized)?;
-
-        // Parse "Bearer <token>"
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or(AppError::Unauthorized)?;
-
-        // Verify JWT
-        let claims = verify_token(token)?;
-
-        // Parse UUID
-        let user_id = Uuid::parse_str(&claims.uid)
-            .map_err(|_| AppError::Unauthorized)?;
-
-        // Verify user exists in database
-        let app_state = State::<AppState>::from_request_parts(parts, state).await?;
-        let user = UserRepo::find_by_id(&app_state.db, user_id).await?
-            .ok_or(AppError::Unauthorized)?;
-
-        Ok(AuthUser {
-            id: user.id,
-            username: user.username,
-        })
-    }
-}
-```
-
-**Usage in Controllers:**
-
-```rust
-pub async fn delete_account(
-    user: AuthUser,  // Automatically validated
-    State(state): State<AppState>,
-) -> Result<StatusCode, AppError> {
-    UserService::delete_user(&state.db, user.id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-```
-
 ### WebSocket e Real-Time
 
 #### WebSocket Connection Flow
@@ -794,8 +404,23 @@ pub async fn delete_account(
 ```
 CLIENT                           SERVER
   │                                 │
-  │  GET /ws?session_id=uuid        │
-  │  Authorization: Bearer <token>  │
+  │  POST /api/users/login          │
+  │  Content-Type: application/json │
+  │  {"username":"alice",           │
+  │   "password":"password123"}     │
+  ├────────────────────────────────>│
+  │                                 │
+  │            200 OK               │
+  │  {                              │
+  │    "token":"<jwt>",             │
+  │    "user_id":"<uuid>",          │
+  │    "username":"alice",          │
+  │    "last_sequence":42           │
+  │  }                              │
+  │<────────────────────────────────┤
+  │                                 │
+  │  GET /ws?session_id=<uuid>      │
+  │  Authorization: Bearer <jwt>    │
   ├────────────────────────────────>│
   │                                 │
   │         <Upgrade to WS>         │
@@ -826,100 +451,11 @@ CLIENT                           SERVER
 
 Ogni connessione WebSocket ha un `ConnectionActor` dedicato che gestisce:
 
-```rust
-// server/src/web_socket/actor.rs
-pub struct ConnectionActor {
-    pub user_id: Uuid,
-    pub username: String,
-    pub session_id: Uuid,
-    pub sender: Sender<ServerMessage>,     // To send to client
-    pub state: Arc<AppState>,
-    pub last_ping_sequence: i64,
-}
 
-impl ConnectionActor {
-    pub async fn run(
-        self,
-        socket: WebSocket,
-        db: SqlitePool,
-    ) {
-        let (ws_sender, ws_receiver) = socket.split();
-
-        // Register in active connections
-        self.state.connections.write().await
-            .insert(self.user_id, self.sender.clone());
-
-        // Spawn reader task
-        let reader_handle = tokio::spawn(read_messages(
-            ws_receiver,
-            self.sender.clone(),
-        ));
-
-        // Spawn writer task
-        let writer_handle = tokio::spawn(write_messages(
-            ws_sender,
-            self.receiver,
-        ));
-
-        // Handle incoming messages
-        while let Some(msg) = self.receiver.recv().await {
-            self.handle_message(msg).await;
-        }
-
-        // Cleanup on disconnect
-        self.state.connections.write().await.remove(&self.user_id);
-    }
-
-    async fn handle_message(&mut self, msg: ClientMessage) {
-        match msg {
-            ClientMessage::ChatMessage { cid, content, client_msg_id } => {
-                handlers::message::handle_chat_message(
-                    &self.state,
-                    self.user_id,
-                    &self.username,
-                    cid,
-                    content,
-                    client_msg_id,
-                ).await;
-            }
-            ClientMessage::Ping { user_sequence } => {
-                self.last_ping_sequence = user_sequence;
-                handlers::user::handle_ping(&self.state, self.user_id, user_sequence).await;
-            }
-            // ... other message types
-        }
-    }
-}
-```
 
 #### Broadcasting
 
-```rust
-// server/src/web_socket/broadcast.rs
-pub async fn broadcast_to_conversation(
-    state: &AppState,
-    conversation_id: Uuid,
-    message: ServerMessage,
-    exclude_user: Option<Uuid>,
-) -> Result<(), AppError> {
-    // Get all participants
-    let participants = ConversationRepo::get_participants(&state.db, conversation_id).await?;
 
-    let connections = state.connections.read().await;
-
-    for participant in participants {
-        if Some(participant.user_id) == exclude_user {
-            continue;
-        }
-
-        if let Some(sender) = connections.get(&participant.user_id) {
-            let _ = sender.send(message.clone()).await;
-        }
-    }
-
-    Ok(())
-}
-```
 
 #### Message Types
 
@@ -972,35 +508,6 @@ Il sistema implementa un **dual sequencing** pattern per garantire consistenza e
 
 Ogni utente ha una sequenza incrementale di eventi:
 
-```rust
-// Insert user event
-pub async fn insert_user_event(
-    db: &SqlitePool,
-    user_id: Uuid,
-    event_type: &str,
-    event_data: serde_json::Value,
-    conversation_id: Option<Uuid>,
-) -> Result<i64, AppError> {
-    // Get next sequence number
-    let seq = increment_user_sequence(db, user_id).await?;
-
-    let user_id_str = user_id.to_string();
-    let conv_id_str = conversation_id.map(|id| id.to_string());
-    let event_data_str = event_data.to_string();
-    let now = chrono::Utc::now().timestamp();
-
-    query!(
-        "INSERT INTO user_events
-         (user_id, sequence_num, event_type, event_data, conversation_id, created_at, delivered)
-         VALUES (?, ?, ?, ?, ?, ?, 0)",
-        user_id_str, seq, event_type, event_data_str, conv_id_str, now
-    )
-    .execute(db)
-    .await?;
-
-    Ok(seq)
-}
-```
 
 **Event Types:**
 
@@ -1018,136 +525,17 @@ pub async fn insert_user_event(
 
 Ogni conversazione ha una sequenza incrementale per i messaggi:
 
-```rust
-pub async fn post_message(
-    db: &SqlitePool,
-    conversation_id: Uuid,
-    author_id: Uuid,
-    content: String,
-) -> Result<(Uuid, i64), AppError> {
-    let msg_id = Uuid::new_v4();
 
-    // Get next sequence number for this conversation
-    let seq_num = increment_message_sequence(db, conversation_id).await?;
-
-    let msg_id_str = msg_id.to_string();
-    let conv_id_str = conversation_id.to_string();
-    let author_id_str = author_id.to_string();
-    let now = chrono::Utc::now().timestamp();
-
-    query!(
-        "INSERT INTO messages
-         (id, conversation_id, author_id, content, created_at, sequence_num)
-         VALUES (?, ?, ?, ?, ?, ?)",
-        msg_id_str, conv_id_str, author_id_str, content, now, seq_num
-    )
-    .execute(db)
-    .await?;
-
-    Ok((msg_id, seq_num))
-}
-
-async fn increment_message_sequence(
-    db: &SqlitePool,
-    conversation_id: Uuid,
-) -> Result<i64, AppError> {
-    let conv_id_str = conversation_id.to_string();
-    let now = chrono::Utc::now().timestamp();
-
-    query!(
-        "INSERT INTO message_sequences (conversation_id, current_sequence, last_updated)
-         VALUES (?, 1, ?)
-         ON CONFLICT(conversation_id) DO UPDATE SET
-             current_sequence = current_sequence + 1,
-             last_updated = ?
-         RETURNING current_sequence",
-        conv_id_str, now, now
-    )
-    .fetch_one(db)
-    .await
-    .map(|r| r.current_sequence)
-    .map_err(Into::into)
-}
-```
 
 #### Gap Detection e Recovery
 
-```rust
-// Client sends Ping with last known sequence
-ClientMessage::Ping { user_sequence: 42 }
 
-// Server compares with current sequence
-let current_seq = get_user_sequence(db, user_id).await?; // Returns 150
-
-if user_sequence < current_seq {
-    // Gap detected
-    ServerMessage::PongReceived {
-        server_sequence: current_seq,
-        gaps_detected: true,
-    }
-} else {
-    ServerMessage::PongReceived {
-        server_sequence: current_seq,
-        gaps_detected: false,
-    }
-}
-
-// Client requests missing events
-ClientMessage::RequestUserResume {
-    from_sequence: 42,
-    limit: 100,
-}
-
-// Server returns events
-let events = query_as!(
-    UserEvent,
-    "SELECT * FROM user_events
-     WHERE user_id = ? AND sequence_num > ?
-     ORDER BY sequence_num ASC
-     LIMIT ?",
-    user_id_str, from_sequence, limit
-)
-.fetch_all(db)
-.await?;
-
-ServerMessage::UserEventsResume { events }
-```
 
 #### Cleanup Task
 
 Per evitare che la tabella `user_events` cresca all'infinito:
 
-```rust
-pub async fn spawn_cleanup_task(db: SqlitePool) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(86400)); // 24 hours
 
-        loop {
-            interval.tick().await;
-
-            let retention_days = 30;
-            let cutoff = chrono::Utc::now()
-                .checked_sub_signed(chrono::Duration::days(retention_days))
-                .unwrap()
-                .timestamp();
-
-            // Delete old delivered events
-            let result = query!(
-                "DELETE FROM user_events
-                 WHERE delivered = 1 AND created_at < ?",
-                cutoff
-            )
-            .execute(&db)
-            .await;
-
-            match result {
-                Ok(r) => tracing::info!("Cleaned up {} old user events", r.rows_affected()),
-                Err(e) => tracing::error!("Failed to cleanup user events: {}", e),
-            }
-        }
-    });
-}
-```
 
 ---
 
@@ -1243,55 +631,7 @@ Il `ConnectionActor` è il cuore del sistema WebSocket. Implementa l'**Actor Mod
 4. Error tracking (consecutive failures)
 5. Graceful shutdown
 
-**Implementazione chiave:**
 
-```rust
-let mut writer: JoinHandle<()> = tokio::spawn(async move {
-    // Heartbeat con jitter (30s + 0-5s random)
-    let heartbeat_base = Duration::from_secs(30);
-    let jitter = Duration::from_millis(fastrand::u64(0..5000));
-    let mut heartbeat_interval = interval(heartbeat_base + jitter);
-
-    let mut consecutive_failures = 0u32;
-    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
-
-    loop {
-        select! {
-            // Shutdown signal
-            _ = stop_rx.changed() => {
-                let close_result = timeout(
-                    Duration::from_secs(5),
-                    ws_tx.send(Message::Close(None))
-                ).await;
-                break;
-            }
-
-            // Messaggio da inviare con timeout
-            maybe_msg = out_rx.recv() => {
-                let send_result = timeout(
-                    Duration::from_secs(10),
-                    ws_tx.send(msg)
-                ).await;
-
-                match send_result {
-                    Ok(Ok(_)) => consecutive_failures = 0,
-                    _ => {
-                        consecutive_failures += 1;
-                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Heartbeat periodico
-            _ = heartbeat_interval.tick() => {
-                // Invia server_heartbeat
-            }
-        }
-    }
-});
-```
 
 **Timeout Strategy:**
 - `send()`: 10 secondi
@@ -1338,43 +678,10 @@ Il sistema di broadcast gestisce la distribuzione real-time dei messaggi attrave
 
 **Scopo**: Distribuire messaggi real-time a tutti i partecipanti online di una conversazione.
 
-```rust
-// Creazione lazy del canale
-pub async fn get_or_create_broadcast_tx(
-    &self,
-    conversation_id: Uuid,
-) -> broadcast::Sender<Value> {
-    // Fast path: read lock
-    {
-        let channels = self.broadcast_channels.read().await;
-        if let Some(tx) = channels.get(&conversation_id) {
-            return tx.clone();
-        }
-    }
 
-    // Slow path: write lock
-    let mut channels = self.broadcast_channels.write().await;
-    channels.entry(conversation_id)
-        .or_insert_with(|| {
-            let (tx, _rx) = broadcast::channel(1024);
-            tx
-        })
-        .clone()
-}
-```
 
 **Broadcasting:**
-```rust
-match tx.send(payload) {
-    Ok(receiver_count) => {
-        info!("Delivered to {} receivers", receiver_count);
-    }
-    Err(_) => {
-        // Non è errore! Il messaggio è già in user_events
-        warn!("No active receivers (will deliver via user_events)");
-    }
-}
-```
+
 
 #### 2. User Notification Channels
 
@@ -1384,12 +691,7 @@ match tx.send(payload) {
 - Eventi di modifica conversazioni
 
 **Auto-Subscription** all'avvio della connessione:
-```rust
-// CRITICO: Auto-subscribe al proprio canale
-let _user_tx = state
-    .get_or_create_user_notification_channel(user_id)
-    .await;
-```
+
 
 #### Doppio Delivery Garantito
 
@@ -1417,46 +719,6 @@ Alice: "✓ Saved"          All: Real-time delivery    Recovery at reconnect
 
 **Garanzia**: Anche se il broadcast fallisce (0 receivers) o il sender si disconnette, il messaggio è persistito in DB e `user_events` garantisce la delivery al reconnect.
 
-### Graceful Shutdown
-
-**Coordinamento tramite watch::channel:**
-```rust
-let (stop_tx, stop_rx) = watch::channel(false);
-
-// Trigger shutdown
-let _ = stop_tx.send(true);
-
-// Task ricevono segnale
-_ = stop_rx.changed() => {
-    info!("Received stop signal");
-    // Cleanup e exit
-}
-```
-
-**Orchestrazione con select!:**
-```rust
-let result = select! {
-    r = &mut reader_task => {
-        stop_tx.send(true);
-        recv_task.abort();
-        writer.abort();
-        r
-    }
-    // Altri branch...
-};
-```
-
-**Cleanup con Grace Period (5 minuti):**
-```rust
-tokio::spawn(async move {
-    tokio::time::sleep(Duration::from_secs(300)).await;
-    cleanup_empty_channels(&state, user_id).await;
-});
-```
-
-Questo permette reconnect rapide riutilizzando risorse esistenti.
-
----
 
 ## Sistema Dual-Sequence
 
@@ -1465,7 +727,7 @@ Il sistema di sequenze duali garantisce **ordering** e **recovery** attraverso d
 ### Architettura Doppia Sequenza
 
 ```
-┌─────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────┐
 │            USER SEQUENCE (Global)                │
 │  Per ogni utente, incrementale su TUTTI eventi   │
 │                                                  │
@@ -1506,15 +768,7 @@ Il sistema di sequenze duali garantisce **ordering** e **recovery** attraverso d
 **Scopo**: Garantire che ogni utente riceva TUTTI gli eventi che lo riguardano in ordine garantito.
 
 **Generazione atomica:**
-```rust
-async fn get_next_user_sequence(&self, user_id: Uuid) -> Result<u64> {
-    let counters = self.user_sequence_counters.read().await;
-    let counter = counters.entry(user_id)
-        .or_insert_with(|| AtomicU64::new(0));
 
-    Ok(counter.fetch_add(1, Ordering::SeqCst))
-}
-```
 
 **Atomicità**: `AtomicU64::fetch_add()` garantisce incremento thread-safe senza lock.
 
@@ -1551,157 +805,39 @@ async fn get_next_user_sequence(&self, user_id: Uuid) -> Result<u64> {
 **Scopo**: Ordinamento garantito dei messaggi all'interno di una conversazione.
 
 **Generazione:**
-```rust
-async fn get_next_message_sequence(
-    &self,
-    conversation_id: Uuid,
-) -> Result<u64> {
-    let counters = self.conversation_sequence_counters.read().await;
-    let counter = counters.entry(conversation_id)
-        .or_insert_with(|| AtomicU64::new(0));
 
-    Ok(counter.fetch_add(1, Ordering::SeqCst))
-}
-
-// Salvataggio in DB
-sqlx::query(
-    "INSERT INTO messages
-     (id, conversation_id, sequence_num, author_id, content, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)"
-)
-.bind(msg_id.to_string())
-.bind(conversation_id.to_string())
-.bind(sequence as i64)  // ← Sequence
-.bind(user_id.to_string())
-.bind(content)
-.bind(Utc::now().timestamp())
-.execute(&state.pool)
-.await?;
-```
 
 ### last_read_sequence
 
 Ogni partecipante traccia fino a dove ha letto:
 
-```sql
-CREATE TABLE participants (
-    conversation_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    last_read_sequence INTEGER NOT NULL DEFAULT 0,
-    ...
-);
-```
+
 
 **Update on Mark Read:**
-```rust
-sqlx::query(
-    "UPDATE participants
-     SET last_read_sequence = ?
-     WHERE conversation_id = ? AND user_id = ?"
-)
-.bind(sequence_num)
-.bind(conversation_id.to_string())
-.bind(user_id.to_string())
-.execute(pool)
-.await?;
-```
+
 
 **Calcolo Unread:**
-```typescript
-function getUnreadCount(conv: Conversation): number {
-  return conv.last_msg_seq - conv.last_read_sequence;
-}
-```
+
 
 ### Recovery dopo Disconnessione
 
 **Client Request:**
-```json
-{
-  "type": "user_events_resume",
-  "from_sequence": 150,
-  "limit": 100
-}
-```
+
 
 **Server Query:**
-```rust
-let rows = sqlx::query(
-    "SELECT sequence_num, event_type, event_data, conversation_id, created_at
-     FROM user_events
-     WHERE user_id = ? AND sequence_num >= ?
-     ORDER BY sequence_num ASC
-     LIMIT ?"
-)
-.bind(user_id.to_string())
-.bind(from_sequence as i64)
-.bind(limit)
-.fetch_all(&state.pool)
-.await?;
-```
+
 
 **Server Response:**
-```json
-{
-  "type": "user_resume_batch",
-  "events": [
-    {"sequence": 150, "event_type": "new_message", ...},
-    {"sequence": 151, "event_type": "conversation_confirmation", ...},
-    {"sequence": 152, "event_type": "new_conversation", ...}
-  ],
-  "from_sequence": 150,
-  "to_sequence": 152
-}
-```
+
 
 ### Gap Detection (Client-Side)
 
-```typescript
-class UserSequenceTracker {
-  private expectedSequence: number = 0;
 
-  onEvent(event: UserEvent) {
-    if (event.sequence !== this.expectedSequence) {
-      console.warn(
-        `Gap detected: expected ${this.expectedSequence}, got ${event.sequence}`
-      );
-
-      // Request missing events
-      this.requestResume(this.expectedSequence);
-    }
-
-    this.expectedSequence = event.sequence + 1;
-    this.processEvent(event);
-  }
-}
-```
 
 ### Initial State Loading
 
 All'avvio della connessione, il server invia lo stato completo:
 
-```json
-{
-  "type": "initial_state",
-  "user_sequence": 150,
-  "conversations": [
-    {
-      "id": "conv-uuid",
-      "kind": "dm",
-      "title": "bob",
-      "message_count": 42,
-      "last_read_sequence": 40,
-      "last_message": {
-        "id": "msg-uuid",
-        "sequence_num": 42,
-        "content": "Last message",
-        "author_username": "bob"
-      }
-    }
-  ],
-  "members_by_conversation": {...}
-}
-```
 
 ### Consistency Guarantees
 
@@ -1748,19 +884,7 @@ Il sistema è costruito su **Tokio async runtime** con pattern di concorrenza ba
 
 ### Tokio Async Runtime
 
-**Task Spawning:**
-```rust
-// Spawning un task indipendente
-let handle = tokio::spawn(async move {
-    // Task logic
-});
 
-// Await del risultato
-let result = handle.await?;
-
-// Abort del task
-handle.abort();
-```
 
 **Caratteristiche:**
 - Ogni task è M:N green thread
@@ -1769,31 +893,7 @@ handle.abort();
 
 ### select! Macro
 
-```rust
-use tokio::select;
 
-loop {
-    select! {
-        // Branch 1
-        _ = stop_rx.changed() => {
-            info!("Shutdown signal");
-            break;
-        }
-
-        // Branch 2
-        maybe_msg = out_rx.recv() => {
-            if let Some(msg) = maybe_msg {
-                ws_tx.send(msg).await?;
-            }
-        }
-
-        // Branch 3
-        _ = heartbeat_interval.tick() => {
-            send_heartbeat().await?;
-        }
-    }
-}
-```
 
 **Semantica:**
 - Valuta tutti i branch concorrentemente
@@ -1937,14 +1037,7 @@ some_async_operation().await; // Deadlock risk!
 
 #### AtomicU64
 
-```rust
-use std::sync::atomic::{AtomicU64, Ordering};
 
-let counter = AtomicU64::new(0);
-
-// Atomic increment
-let sequence = counter.fetch_add(1, Ordering::SeqCst);
-```
 
 **Ordering Semantics:**
 - `Relaxed`: No ordering guarantees (fastest)
@@ -1977,30 +1070,7 @@ map.entry("key".to_string())
 
 ### Graceful Shutdown Pattern
 
-```rust
-struct Application {
-    stop_tx: watch::Sender<bool>,
-    tasks: Vec<JoinHandle<()>>,
-}
 
-impl Application {
-    pub async fn shutdown(self) {
-        // 1. Signal all tasks
-        let _ = self.stop_tx.send(true);
-
-        // 2. Wait for graceful completion (with timeout)
-        let shutdown = async {
-            for task in self.tasks {
-                let _ = task.await;
-            }
-        };
-
-        if timeout(Duration::from_secs(30), shutdown).await.is_err() {
-            warn!("Graceful shutdown timeout, forcing exit");
-        }
-    }
-}
-```
 
 ### Performance Considerations
 
@@ -2062,35 +1132,7 @@ Level 4: Handler Errors
 
 ### Connection-Level Errors
 
-#### Timeout Management
 
-```rust
-// Send con timeout (10s)
-let send_result = timeout(
-    Duration::from_secs(10),
-    ws_tx.send(message)
-).await;
-
-match send_result {
-    Ok(Ok(_)) => {
-        consecutive_failures = 0; // Reset on success
-    }
-    Ok(Err(e)) => {
-        consecutive_failures += 1;
-        if consecutive_failures >= 3 {
-            error!("Too many failures, closing connection");
-            break;
-        }
-    }
-    Err(_) => {
-        consecutive_failures += 1;
-        if consecutive_failures >= 3 {
-            error!("Too many timeouts, closing connection");
-            break;
-        }
-    }
-}
-```
 
 **Timeouts applicati:**
 - `ws_tx.send()`: 10 secondi
@@ -2099,133 +1141,31 @@ match send_result {
 
 #### Consecutive Failures Tracking
 
-```rust
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
-let mut consecutive_failures = 0u32;
 
-// Su ogni errore
-consecutive_failures += 1;
-if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-    break; // Chiudi connessione
-}
-
-// Su successo
-consecutive_failures = 0; // Reset
-```
 
 **Filosofia**: Tollera errori temporanei, ma chiude se persistenti.
 
 ### Broadcast Errors
 
-#### No Active Receivers
 
-```rust
-match tx.send(payload) {
-    Ok(n) => {
-        info!("Delivered to {} receivers", n);
-    }
-    Err(_) => {
-        // NON è errore critico!
-        warn!("No active receivers, message in user_events");
-        // Messaggio già salvato in DB
-    }
-}
-```
 
 **Comportamento**: Channel dropped è normale se tutti disconnessi.
 
 **Recovery**: Messaggi salvati in `user_events` → delivery garantita.
 
-#### Lagged Receivers
-
-```rust
-match rx.recv().await {
-    Ok(msg) => {
-        // Forward normally
-    }
-    Err(RecvError::Lagged(n)) => {
-        warn!("Receiver lagged by {} messages", n);
-
-        // Client deve fare recovery
-        send_recovery_request_to_client(n);
-    }
-    Err(RecvError::Closed) => {
-        remove_from_stream_manager();
-    }
-}
-```
-
-**Causa**: Receiver troppo lento, buffer broadcast pieno (1024 slot).
 
 **Recovery Client-Side:**
-```typescript
-onLaggedEvent(lagCount: number) {
-  fetch(`/api/conversations/${convId}/messages?limit=${lagCount}`)
-    .then(msgs => msgs.forEach(msg => this.processMessage(msg)));
-}
-```
+
 
 ### Database Errors
 
 #### Transaction Rollback
 
-```rust
-async fn create_conversation_atomic(
-    pool: &SqlitePool,
-    conversation_id: Uuid,
-    participants: Vec<Uuid>,
-) -> Result<()> {
-    let mut tx = pool.begin().await?;
-
-    // Step 1: Insert conversation
-    sqlx::query("INSERT INTO conversations ...")
-        .execute(&mut *tx)
-        .await?;
-
-    // Step 2: Insert participants
-    for participant_id in participants {
-        sqlx::query("INSERT INTO participants ...")
-            .execute(&mut *tx)
-            .await?;
-    }
-
-    // Commit or rollback atomically
-    tx.commit().await?;
-
-    Ok(())
-}
-```
 
 **Su errore**: Rollback automatico, stato DB consistente.
 
 #### Retry with Backoff
 
-```rust
-async fn with_retry<F, T>(
-    operation: F,
-    max_retries: u32,
-) -> Result<T>
-where
-    F: Fn() -> BoxFuture<'static, Result<T>>,
-{
-    let mut retries = 0;
-    let mut delay = Duration::from_millis(100);
-
-    loop {
-        match operation().await {
-            Ok(result) => return Ok(result),
-            Err(e) if retries < max_retries => {
-                retries += 1;
-                warn!("Retry #{}/{}", retries, max_retries);
-
-                tokio::time::sleep(delay).await;
-                delay *= 2; // Exponential backoff
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-```
 
 ### Handler Errors
 
@@ -2372,7 +1312,7 @@ Il client segue il pattern **Model-View-ViewModel** (MVVM):
 │  │          UI Components (egui)                    │  │
 │  │  - Pages (Auth, Chat)                            │  │
 │  │  - Layout (Header, Sidebar)                      │  │
-│  │  - Modals (Create DM, Create Group, etc.)       │  │
+│  │  - Modals (Create DM, Create Group, etc.)        │  │
 │  └─────────────────┬────────────────────────────────┘  │
 └────────────────────┼───────────────────────────────────┘
                      │ read state, dispatch events
@@ -2413,347 +1353,26 @@ Il client segue il pattern **Model-View-ViewModel** (MVVM):
 
 #### AppState (Core State)
 
-```rust
-// client/src/state/core.rs
-#[derive(Default)]
-pub struct AppState {
-    // Authentication
-    pub token: Option<String>,
-    pub user_id: Option<Uuid>,
-    pub username: Option<String>,
-    pub user_sequence: i64,
 
-    // Data
-    pub conversations: HashMap<Uuid, ConversationDto>,
-    pub messages: HashMap<Uuid, Vec<MessageDto>>,  // cid → messages
-    pub users: HashMap<Uuid, UserDto>,             // user_id → user
-
-    // WebSocket
-    pub ws_connected: bool,
-    pub ws_sender: Option<WsSender>,
-
-    // Channels
-    pub ui_event_sender: Sender<UiEvent>,
-    pub ui_event_receiver: Receiver<UiEvent>,
-}
-
-impl AppState {
-    pub fn new() -> Self {
-        let (tx, rx) = channel::unbounded();
-        Self {
-            ui_event_sender: tx,
-            ui_event_receiver: rx,
-            ..Default::default()
-        }
-    }
-
-    pub fn get_conversation(&self, cid: Uuid) -> Option<&ConversationDto> {
-        self.conversations.get(&cid)
-    }
-
-    pub fn get_messages(&self, cid: Uuid) -> Vec<MessageDto> {
-        self.messages.get(&cid).cloned().unwrap_or_default()
-    }
-
-    pub fn add_message(&mut self, cid: Uuid, msg: MessageDto) {
-        self.messages.entry(cid).or_default().push(msg);
-    }
-
-    pub fn is_authenticated(&self) -> bool {
-        self.token.is_some() && self.user_id.is_some()
-    }
-}
-```
 
 #### UIState
 
-```rust
-// client/src/state/ui.rs
-#[derive(Default)]
-pub struct UIState {
-    pub current_page: Page,
-    pub selected_conversation_id: Option<Uuid>,
-
-    // Modals
-    pub show_account_modal: bool,
-    pub show_create_dm_modal: bool,
-    pub show_create_group_modal: bool,
-    pub show_invite_modal: bool,
-    pub show_delete_account_modal: bool,
-
-    // Input fields
-    pub login_username: String,
-    pub login_password: String,
-    pub register_username: String,
-    pub register_password: String,
-    pub message_input: String,
-
-    // Toasts (notifications)
-    pub toasts: Vec<Toast>,
-
-    // Loading states
-    pub is_loading: bool,
-    // Note: typing_users definito ma non utilizzato (feature non implementata)
-}
-
-#[derive(PartialEq)]
-pub enum Page {
-    Auth,
-    Chat,
-}
-
-pub struct Toast {
-    pub message: String,
-    pub level: ToastLevel,
-    pub created_at: Instant,
-}
-
-pub enum ToastLevel {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-```
 
 ### WebSocket Manager
 
 Gestisce il lifecycle della connessione WebSocket.
 
-```rust
-// client/src/app/ws_manager/ws_manager.rs
-pub struct WebSocketManager {
-    state: Arc<RwLock<WsState>>,
-    health_monitor: HealthMonitor,
-    rate_limiter: RateLimiter,
-    message_processor: MessageProcessor,
-}
-
-enum WsState {
-    Disconnected,
-    Connecting,
-    Connected {
-        sender: WsSender,
-        receiver: WsReceiver,
-    },
-    Reconnecting {
-        attempt: u32,
-    },
-}
-
-impl WebSocketManager {
-    pub async fn connect(
-        &mut self,
-        token: &str,
-        user_id: Uuid,
-    ) -> Result<(), AppError> {
-        *self.state.write().await = WsState::Connecting;
-
-        let url = format!("ws://localhost:8080/ws?session_id={}", Uuid::new_v4());
-
-        let request = url.into_client_request()?;
-        let (ws_stream, _) = connect_async(request).await?;
-
-        let (sender, receiver) = ws_stream.split();
-
-        *self.state.write().await = WsState::Connected {
-            sender: Arc::new(Mutex::new(sender)),
-            receiver: Arc::new(Mutex::new(receiver)),
-        };
-
-        // Start health monitor
-        self.health_monitor.start(self.state.clone()).await;
-
-        Ok(())
-    }
-
-    pub async fn send(&self, message: ClientMessage) -> Result<(), AppError> {
-        // Rate limiting
-        self.rate_limiter.check().await?;
-
-        let state = self.state.read().await;
-        if let WsState::Connected { sender, .. } = &*state {
-            let json = serde_json::to_string(&message)?;
-            sender.lock().await.send(Message::Text(json)).await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn receive(&self) -> Option<ServerMessage> {
-        let state = self.state.read().await;
-        if let WsState::Connected { receiver, .. } = &*state {
-            match receiver.lock().await.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    serde_json::from_str(&text).ok()
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-}
-```
 
 #### Health Monitor
 
-```rust
-// client/src/app/ws_manager/health_monitor.rs
-pub struct HealthMonitor {
-    last_ping: Arc<RwLock<Instant>>,
-    ping_interval: Duration,
-}
-
-impl HealthMonitor {
-    pub async fn start(&self, ws_state: Arc<RwLock<WsState>>) {
-        let last_ping = self.last_ping.clone();
-        let interval = self.ping_interval;
-
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-
-            loop {
-                ticker.tick().await;
-
-                // Check if last ping was too long ago
-                let elapsed = last_ping.read().await.elapsed();
-                if elapsed > Duration::from_secs(60) {
-                    tracing::warn!("WebSocket connection unhealthy, reconnecting...");
-                    // Trigger reconnection
-                }
-
-                // Send ping
-                // (implementation depends on ws_state access)
-            }
-        });
-    }
-}
-```
 
 ### Event Dispatching
 
 Il sistema usa un **event bus** per gestire gli aggiornamenti dello stato.
 
-```rust
-// client/src/app/events/dispatcher.rs
-pub enum UiEvent {
-    // Auth events
-    LoginSuccess { token: String, user_id: Uuid, username: String, last_sequence: i64 },
-    LoginError { message: String },
-    LogoutRequested,
 
-    // Message events
-    MessageReceived { conversation_id: Uuid, message: MessageDto },
-    MessageSent { conversation_id: Uuid, client_msg_id: Uuid },
-    MessageConfirmed { client_msg_id: Uuid, server_msg_id: Uuid, sequence: i64 },
-    MessageDeleted { message_id: Uuid, conversation_id: Uuid },
 
-    // Conversation events
-    ConversationCreated { conversation: ConversationDto },
-    ConversationDeleted { conversation_id: Uuid },
-    UserJoined { conversation_id: Uuid, user_id: Uuid, username: String },
-    UserLeft { conversation_id: Uuid, user_id: Uuid },
 
-    // WebSocket events
-    WebSocketConnected,
-    WebSocketDisconnected,
-    WebSocketError { message: String },
-
-    // Sequence events
-    GapDetected { server_sequence: i64 },
-    UserEventsResumed { events: Vec<UserEvent> },
-}
-
-pub struct EventDispatcher {
-    handlers: Vec<Box<dyn EventHandler>>,
-}
-
-#[async_trait]
-pub trait EventHandler: Send + Sync {
-    async fn handle(&self, event: &UiEvent, state: &mut AppState, ui_state: &mut UIState);
-}
-
-impl EventDispatcher {
-    pub fn new() -> Self {
-        Self {
-            handlers: vec![
-                Box::new(AuthHandler),
-                Box::new(MessageHandler),
-                Box::new(ConversationHandler),
-                Box::new(SequenceHandler),
-                Box::new(WebSocketHandler),
-            ],
-        }
-    }
-
-    pub async fn dispatch(
-        &self,
-        event: UiEvent,
-        state: &mut AppState,
-        ui_state: &mut UIState,
-    ) {
-        for handler in &self.handlers {
-            handler.handle(&event, state, ui_state).await;
-        }
-    }
-}
-```
-
-**Example Handler:**
-
-```rust
-// client/src/app/events/message_handler.rs
-pub struct MessageHandler;
-
-#[async_trait]
-impl EventHandler for MessageHandler {
-    async fn handle(&self, event: &UiEvent, state: &mut AppState, ui_state: &mut UIState) {
-        match event {
-            UiEvent::MessageReceived { conversation_id, message } => {
-                // Add to messages
-                state.add_message(*conversation_id, message.clone());
-
-                // Update last_activity in conversation
-                if let Some(conv) = state.conversations.get_mut(conversation_id) {
-                    conv.last_activity = Some(message.created_at);
-                }
-
-                // Show toast if not current conversation
-                if ui_state.selected_conversation_id != Some(*conversation_id) {
-                    ui_state.toasts.push(Toast {
-                        message: format!("New message in {}", conversation_id),
-                        level: ToastLevel::Info,
-                        created_at: Instant::now(),
-                    });
-                }
-            }
-
-            UiEvent::MessageConfirmed { client_msg_id, server_msg_id, sequence } => {
-                // Find and update optimistic message
-                for msgs in state.messages.values_mut() {
-                    if let Some(msg) = msgs.iter_mut().find(|m| m.id == *client_msg_id) {
-                        msg.id = *server_msg_id;
-                        msg.sequence_num = Some(*sequence);
-                        msg.is_confirmed = true;
-                    }
-                }
-            }
-
-            UiEvent::MessageDeleted { message_id, conversation_id } => {
-                // Remove from messages
-                if let Some(msgs) = state.messages.get_mut(conversation_id) {
-                    msgs.retain(|m| m.id != *message_id);
-                }
-            }
-
-            _ => {}
-        }
-    }
-}
-```
-
----
 
 ## Flussi di Dati Principali
 
@@ -3021,282 +1640,24 @@ Logout (stateless, client elimina token).
   "message": "Logged out successfully"
 }
 ```
-
 ---
 
-#### DELETE /api/users/deleteMe
+#### GET /ws?session_id=\<uuid\>
 
-Elimina l'account corrente (richiede autenticazione).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (204):**
-No content
-
-**Errors:**
-- 401: Unauthorized
-
----
-
-### Conversation Endpoints
-
-#### GET /api/conversations
-
-Ottiene tutte le conversazioni dell'utente autenticato.
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (200):**
-```json
-[
-  {
-    "id": "conv-uuid-1",
-    "kind": "dm",
-    "title": null,
-    "owner_id": null,
-    "created_at": 1704067350,
-    "last_read_sequence": 42,
-    "last_activity": 1704067400,
-    "last_msg_seq": 50
-  },
-  {
-    "id": "conv-uuid-2",
-    "kind": "group",
-    "title": "Team Alpha",
-    "owner_id": "user-uuid",
-    "created_at": 1704067350,
-    "last_read_sequence": 10,
-    "last_activity": 1704067500,
-    "last_msg_seq": 15
-  }
-]
-```
-
----
-
-#### GET /api/conversations/:id/with-messages
-
-Ottiene una conversazione con messaggi e membri.
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (200):**
-```json
-{
-  "conversation": {
-    "id": "conv-uuid",
-    "kind": "group",
-    "title": "Team Alpha",
-    "owner_id": "user-uuid",
-    "created_at": 1704067350
-  },
-  "messages": [
-    {
-      "id": "msg-uuid-1",
-      "conversation_id": "conv-uuid",
-      "author_id": "user-uuid",
-      "author_username": "alice",
-      "content": "Hello!",
-      "created_at": 1704067400,
-      "sequence_num": 1
-    }
-  ],
-  "members": [
-    {
-      "user_id": "user-uuid-1",
-      "username": "alice",
-      "role": "owner"
-    },
-    {
-      "user_id": "user-uuid-2",
-      "username": "bob",
-      "role": "member"
-    }
-  ]
-}
-```
-
----
-
-#### POST /api/conversations/dm
-
-Crea o recupera una DM con un utente.
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
+Esegue l’handshake di upgrade e stabilisce una connessione WebSocket bidirezionale autenticata.
 
 **Request:**
-```json
-{
-  "user_username": "bob"
-}
-```
 
-**Response (200):**
-```json
-{
-  "id": "conv-uuid"
-}
-```
+no body
 
-**Errors:**
-- 404: User not found
+**Response (101):**
 
----
-
-#### POST /api/conversations/groups
-
-Crea un nuovo gruppo.
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Request:**
-```json
-{
-  "name": "Team Alpha"
-}
-```
-
-**Response (200):**
-```json
-{
-  "id": "conv-uuid"
-}
-```
-
----
-
-#### POST /api/conversations/:id/members
-
-Aggiunge un membro al gruppo (solo owner).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Request:**
-```json
-{
-  "member_id": "user-uuid"
-}
-```
-
-**Response (200):**
-```json
-{
-  "message": "Member added"
-}
-```
-
-**Errors:**
-- 403: Forbidden (not owner)
-- 400: User already a member
-
----
-
-#### DELETE /api/conversations/:id/members/:user_id
-
-Rimuove un membro dal gruppo (solo owner).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (200):**
-```json
-{
-  "message": "Member removed"
-}
-```
-
-**Errors:**
-- 403: Forbidden (not owner)
-
----
-
-### Message Endpoints
-
-#### GET /api/conversations/:cid/messages
-
-Ottiene messaggi di una conversazione (con paginazione).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Query Parameters:**
-- `before_sequence` (optional): Ottiene messaggi prima di questa sequenza
-- `limit` (optional, default=50): Numero di messaggi da recuperare
-
-**Response (200):**
-```json
-[
-  {
-    "id": "msg-uuid-1",
-    "conversation_id": "conv-uuid",
-    "author_id": "user-uuid",
-    "author_username": "alice",
-    "content": "Hello!",
-    "created_at": 1704067400,
-    "sequence_num": 1
-  },
-  {
-    "id": "msg-uuid-2",
-    "conversation_id": "conv-uuid",
-    "author_id": "user-uuid-2",
-    "author_username": "bob",
-    "content": "Hi!",
-    "created_at": 1704067450,
-    "sequence_num": 2
-  }
-]
-```
-
----
-
-#### DELETE /api/messages/:message_id
-
-Elimina un messaggio (solo autore).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (200):**
-```json
-{
-  "message": "Message deleted"
-}
-```
-
-**Errors:**
-- 403: Forbidden (not author)
-- 404: Message not found
+no body
 
 ---
 
 ### Aggiunta Membri ai Gruppi (WebSocket)
 
-> **NOTA IMPORTANTE**: L'aggiunta di membri ai gruppi NON usa token-based invites via HTTP API.
-> Il sistema funziona tramite **WebSocket** con il message type `InviteUser`.
 
 #### WebSocket: InviteUser (solo owner)
 
@@ -3350,170 +1711,7 @@ Aggiunge uno o più membri al gruppo tramite WebSocket.
 - Username non esiste
 - Utente già membro del gruppo
 
----
 
-### Sistema di Token-Based Invites (Opzionale - NON USATO per aggiunta membri)
-
-> **NOTA**: Questo sistema esiste nel codice ma NON è utilizzato nell'interfaccia utente principale.
-> È un'implementazione separata per inviti tramite link condivisibili.
-
-#### POST /api/conversations/:id/invite
-
-Genera un token di invito usa-e-getta (implementato ma non usato nell'UI).
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Response (200):**
-```json
-{
-  "token": "ABC123XYZ456"
-}
-```
-
-#### POST /api/conversations/join-by-token
-
-Unisciti tramite token (implementato ma non usato nell'UI).
-
-**Request:**
-```json
-{
-  "token": "ABC123XYZ456"
-}
-```
-
-**Response (200):**
-```json
-{
-  "id": "conv-uuid"
-}
-```
-
----
-
-## Deployment e Configurazione
-
-### Variabili d'Ambiente (Server)
-
-Creare un file `.env` in `server/`:
-
-```env
-# Database
-DATABASE_URL=sqlite://ruggine.sqlite
-# Oppure per in-memory (testing):
-# DATABASE_URL=:memory:
-
-# Server binding
-BIND=127.0.0.1:8080
-# Per esporre su rete locale:
-# BIND=0.0.0.0:8080
-
-# JWT Secret (MUST BE >= 32 chars in production)
-JWT_SECRET=your-secret-key-minimum-32-characters-long-change-in-production
-
-# Logging
-RUST_LOG=info,tower_http=debug
-# Per debug completo:
-# RUST_LOG=debug,sqlx=trace
-```
-
-### Build Release
-
-#### Server
-
-```bash
-cd server
-cargo build --release
-```
-
-Il binario sarà in `target/release/server` (o `server.exe` su Windows).
-
-#### Client
-
-```bash
-cd client
-cargo build --release
-```
-
-Il binario sarà in `target/release/client` (o `client.exe` su Windows).
-
-### Esecuzione
-
-```bash
-# Terminal 1: Server
-cd server
-./target/release/server
-
-# Terminal 2: Client
-cd client
-./target/release/client
-```
-
-### Docker Deployment (Esempio)
-
-**Dockerfile (Server):**
-
-```dockerfile
-FROM rust:1.75 as builder
-
-WORKDIR /app
-COPY server/Cargo.toml server/Cargo.lock ./
-COPY server/src ./src
-COPY server/migrations ./migrations
-
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    libsqlite3-0 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY --from=builder /app/target/release/server /app/server
-COPY --from=builder /app/migrations /app/migrations
-
-ENV DATABASE_URL=sqlite://ruggine.sqlite
-ENV BIND=0.0.0.0:8080
-ENV JWT_SECRET=change-me-in-production-minimum-32-characters
-
-EXPOSE 8080
-
-CMD ["/app/server"]
-```
-
-**docker-compose.yml:**
-
-```yaml
-version: '3.8'
-
-services:
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_URL=sqlite://ruggine.sqlite
-      - BIND=0.0.0.0:8080
-      - JWT_SECRET=${JWT_SECRET}
-      - RUST_LOG=info
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-```
-
-**Build e Run:**
-
-```bash
-docker-compose up -d
-```
-
----
 
 ## Performance e Scalabilità
 
@@ -3557,33 +1755,6 @@ PRAGMA cache_size = -64000;  -- 64MB cache
 - **In-Memory Connections**: `HashMap<Uuid, Sender>` in AppState
 - **Single Server**: Non supporta horizontal scaling
 
-#### Soluzione per Scale-Out
-
-Per supportare multiple istanze server:
-
-1. **Redis PubSub** per broadcasting:
-   ```rust
-   // Invece di broadcast_to_conversation() diretto
-   // Pubblica su Redis channel
-   redis.publish(
-       format!("conversation:{}", cid),
-       serde_json::to_string(&message)?
-   ).await?;
-
-   // Ogni server ascolta i channel
-   // E invia ai propri clients connessi
-   ```
-
-2. **Shared State** per active connections:
-   ```rust
-   // Invece di in-memory HashMap
-   // Usa Redis Set per tracciare user_id → server_instance
-   redis.sadd(
-       format!("user:{}:servers", user_id),
-       server_instance_id
-   ).await?;
-   ```
-
 ### Benchmarks
 
 Il progetto include benchmark in `server/benches/`:
@@ -3601,99 +1772,6 @@ user_event_insertion    time:   [189.45 µs 192.13 µs 195.28 µs]
 conversation_query      time:   [128.67 µs 131.24 µs 134.12 µs]
 ```
 
----
-
-## Testing
-
-### Unit Tests
-
-```bash
-# Server tests
-cd server
-cargo test
-
-# Client tests
-cd client
-cargo test
-```
-
-### Integration Tests
-
-```rust
-// server/tests/integration_test.rs
-#[tokio::test]
-async fn test_user_registration() {
-    let db = setup_test_db().await;
-
-    let req = RegisterReq {
-        username: "testuser".into(),
-        password: "testpass".into(),
-    };
-
-    let user_id = UserService::register(&db, &req).await.unwrap();
-    assert!(!user_id.is_nil());
-
-    // Verify user exists
-    let user = UserRepo::find_by_username(&db, "testuser").await.unwrap();
-    assert!(user.is_some());
-}
-
-#[tokio::test]
-async fn test_message_sequencing() {
-    let db = setup_test_db().await;
-
-    let conv_id = create_test_conversation(&db).await;
-    let user_id = create_test_user(&db).await;
-
-    // Post 3 messages
-    let (msg1_id, seq1) = MessageService::post(&db, conv_id, user_id, "Hello".into()).await.unwrap();
-    let (msg2_id, seq2) = MessageService::post(&db, conv_id, user_id, "World".into()).await.unwrap();
-    let (msg3_id, seq3) = MessageService::post(&db, conv_id, user_id, "!".into()).await.unwrap();
-
-    // Verify sequential
-    assert_eq!(seq1, 1);
-    assert_eq!(seq2, 2);
-    assert_eq!(seq3, 3);
-}
-```
-
-### Load Testing
-
-Usa **k6** o **wrk** per load testing:
-
-```javascript
-// load_test.js (k6)
-import http from 'k6/http';
-import { check } from 'k6';
-
-export let options = {
-  stages: [
-    { duration: '30s', target: 50 },
-    { duration: '1m', target: 100 },
-    { duration: '30s', target: 0 },
-  ],
-};
-
-export default function () {
-  let res = http.post('http://localhost:8080/api/users/login', JSON.stringify({
-    username: 'testuser',
-    password: 'testpass',
-  }), {
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  check(res, {
-    'status is 200': (r) => r.status === 200,
-    'has token': (r) => JSON.parse(r.body).token !== undefined,
-  });
-}
-```
-
-```bash
-k6 run load_test.js
-```
-
----
 
 
 ## Conclusioni
@@ -3716,9 +1794,3 @@ k6 run load_test.js
 - **Basic Features**: No file sharing, reactions, calls
 - **SQLite**: Non ideale per produzione ad alta scala (considera PostgreSQL)
 
----
-
-**Versione**: 1.0
-**Data**: Dicembre 2025
-**Autori**: Team PdS2425-C2
-**Licenza**: Consultare LICENSE nel repository

@@ -38,14 +38,14 @@
 ## Requisiti di Sistema
 
 ### Server
-- **Sistema Operativo**: Windows, Linux, macOS
-- **RAM**: Minimo 256 MB
+- **Sistema Operativo**: Windows, Linux
+- **RAM**: Minimo 2 GB
 - **Spazio Disco**: 50 MB per l'applicazione + database SQLite
 - **Network**: Porta 8080 disponibile (configurabile)
 
 ### Client
-- **Sistema Operativo**: Windows, Linux, macOS
-- **RAM**: Minimo 256 MB
+- **Sistema Operativo**: Windows, Linux
+- **RAM**: Minimo 2 GB
 - **GPU**: Supporto OpenGL per rendering GUI
 - **Network**: Connessione al server (default: localhost:8080)
 
