@@ -302,17 +302,14 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         .and_then(|s| s.as_i64())
                         .unwrap_or(0);
 
-                    let last_message_time = conv
-                        .get("last_message")
-                        .and_then(|msg| msg.get("created_at"))
+                    // ✅ Leggi last_activity dal server (già calcolato con priorità corretta)
+                    let last_activity = conv
+                        .get("last_activity")
                         .and_then(|t| t.as_i64())
-                        .unwrap_or(0);
-
-                    let last_activity = std::cmp::max(created_at, last_message_time);
+                        .unwrap_or(created_at);
 
                     let last_msg_seq = conv
-                        .get("last_message")
-                        .and_then(|msg| msg.get("sequence_num"))
+                        .get("last_msg_seq")
                         .and_then(|t| t.as_i64())
                         .unwrap_or(0);
 
@@ -358,10 +355,16 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                             let username = member.get("username")?.as_str()?.to_string();
                             let role = member.get("role")?.as_str()?.to_string();
 
+                            // ✅ Parsifica joined_at (può essere null per DM)
+                            let joined_at = member
+                                .get("joined_at")
+                                .and_then(|v| v.as_i64());
+
                             Some(ParticipantInfo {
                                 user_id,
                                 username,
                                 role,
+                                joined_at,
                             })
                         })
                         .collect::<Vec<_>>();

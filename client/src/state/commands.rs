@@ -233,23 +233,24 @@ impl AppState {
             .collect();
 
         info!(
-            "Creating group '{}' with {} participants via WebSocket: {:?}",
-            group_name,
-            participants.len(),
-            participants
-        );
+        "Creating group '{}' with {} participants via WebSocket: {:?}",
+        group_name,
+        participants.len(),
+        participants
+    );
 
         // Crea stub per il gruppo
         let stub_id = Uuid::new_v4();
+        let now = chrono::Utc::now().timestamp(); // ✅ Riusa questo timestamp
 
         let stub_conversation = ConversationDto {
             id: stub_id,
             kind: "group".to_string(),
             title: group_name.clone(),
             owner_id: self.user_id.unwrap_or(Uuid::nil()),
-            created_at: chrono::Utc::now().timestamp(),
+            created_at: now,
             last_read_sequence: 0,
-            last_activity: chrono::Utc::now().timestamp(),
+            last_activity: now,
             last_msg_seq: 0,
         };
 
@@ -271,6 +272,7 @@ impl AppState {
                 user_id,
                 username: self.username.clone(),
                 role: "owner".to_string(),
+                joined_at: Some(now), // ✅ Aggiungi joined_at per owner
             });
         }
 
@@ -280,15 +282,16 @@ impl AppState {
                 user_id: Uuid::nil(), // Placeholder - verrà aggiornato dal server
                 username: username.clone(),
                 role: "member".to_string(),
+                joined_at: Some(now), // ✅ Aggiungi joined_at per membri
             });
         }
 
         self.members_list.insert(stub_id, stub_members);
         info!(
-            "Added {} members to stub {} members_list",
-            participants.len() + 1,
-            stub_id
-        );
+        "Added {} members to stub {} members_list",
+        participants.len() + 1,
+        stub_id
+    );
 
         // Apri il gruppo stub
         self.cid = Some(stub_id);
