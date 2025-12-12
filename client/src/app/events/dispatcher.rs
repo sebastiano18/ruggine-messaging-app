@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
 use super::{
     auth_handler::AuthHandler, conversation_handler::ConversationHandler,
     message_handler::MessageHandler, sequence_handler::SequenceHandler,
     user_notification_handler::UserNotificationHandler, utils, websocket_handler::WebSocketHandler,
 };
+use std::collections::BTreeMap;
 
 use crate::models::*;
 use crate::state::core::AppState;
@@ -63,9 +63,9 @@ impl EventDispatcher {
                     // ✅ CASO 1: Conversazione NON esiste e NON è in fetch → triggera fetch
                     if !conversation_exists && !already_fetching {
                         tracing::info!(
-                "Message received for unloaded conversation {}, fetching...",
-                conv_id
-            );
+                            "Message received for unloaded conversation {}, fetching...",
+                            conv_id
+                        );
 
                         // Mark as fetching
                         state.fetching_conversations.insert(conv_id);
@@ -79,9 +79,10 @@ impl EventDispatcher {
                         if let Some(seq) = msg.sequence_num {
                             buffer_entry.insert(seq, msg.clone());
                             tracing::debug!(
-                    "Force-buffered WS message seq {} for unloaded conversation {}",
-                    seq, conv_id
-                );
+                                "Force-buffered WS message seq {} for unloaded conversation {}",
+                                seq,
+                                conv_id
+                            );
                         }
 
                         let base = state.base.clone();
@@ -89,13 +90,19 @@ impl EventDispatcher {
                         let tx = state.ui_tx.clone();
 
                         state.rt.spawn(async move {
-                            match crate::api::conversation::get_conversation(&base, &token, conv_id).await {
+                            match crate::api::conversation::get_conversation(&base, &token, conv_id)
+                                .await
+                            {
                                 Ok(summary) => {
                                     tracing::info!("Successfully fetched conversation {}", conv_id);
                                     let _ = tx.send(UiEvent::ConversationSummaryFetched(summary));
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to fetch conversation {}: {}", conv_id, e);
+                                    tracing::error!(
+                                        "Failed to fetch conversation {}: {}",
+                                        conv_id,
+                                        e
+                                    );
                                     let _ = tx.send(UiEvent::ConversationFetchFailed(conv_id));
                                 }
                             }
@@ -107,9 +114,9 @@ impl EventDispatcher {
                     // ✅ CASO 2: Conversazione NON esiste MA è già in fetch → buffera e aspetta
                     if !conversation_exists && already_fetching {
                         tracing::debug!(
-                "Message received for conversation {} being fetched, buffering",
-                conv_id
-            );
+                            "Message received for conversation {} being fetched, buffering",
+                            conv_id
+                        );
 
                         // ✅ FORCE-BUFFER anche qui
                         let buffer_entry = state
@@ -251,7 +258,7 @@ impl EventDispatcher {
                     .map(|summary| summary.conversation.clone())
                     .collect();
 
-                // Salva last_message, membri E INIZIALIZZA SEQUENCE
+                // Processa ogni conversazione per salvare dati e calcolare unread
                 for summary in &response.conversations {
                     let conv_id = summary.conversation.id;
 
@@ -272,19 +279,44 @@ impl EventDispatcher {
                             .or_insert_with(|| members.clone());
                     }
 
-                    // ✅ Inizializza conversation sequence
+                    // ✅ REGISTRA sequence della conversazione SENZA gap check
+                    // (queste sono conversazioni storiche dalla REST API, non eventi real-time)
                     if summary.conversation.last_msg_seq > 0 {
-                        use crate::app::events::sequence_handler::SequenceHandler;
-                        SequenceHandler::update_conversation_sequence(
-                            state,
+                        state.conversation_sequences.insert(
                             conv_id,
-                            summary.conversation.last_msg_seq as u64,
+                            summary.conversation.last_msg_seq as u64
                         );
                         tracing::debug!(
-                "Initialized sequence for conversation {} to {}",
+                "Conversation {} sequence set to {} (from pagination)",
                 conv_id,
                 summary.conversation.last_msg_seq
             );
+                    }
+
+                    // ✅ CALCOLA e aggiorna unread count per il badge
+                    let last_msg_seq = summary.conversation.last_msg_seq;
+                    let last_read_seq = summary.conversation.last_read_sequence;
+
+                    if last_msg_seq > 0 {
+                        let unread_count = if last_msg_seq > last_read_seq {
+                            last_msg_seq - last_read_seq
+                        } else {
+                            0
+                        };
+
+                        if unread_count > 0 {
+                            state.conversation_unread_counts.insert(conv_id, unread_count);
+                            tracing::debug!(
+                    "Conversation {} has {} unread messages (last_msg: {}, last_read: {})",
+                    conv_id,
+                    unread_count,
+                    last_msg_seq,
+                    last_read_seq
+                );
+                        } else {
+                            // Nessun messaggio non letto, rimuovi dalla mappa se presente
+                            state.conversation_unread_counts.remove(&conv_id);
+                        }
                     }
                 }
 
@@ -293,9 +325,7 @@ impl EventDispatcher {
                     // Filtra solo conversazioni NUOVE
                     let new_conversations: Vec<_> = conversations
                         .into_iter()
-                        .filter(|new_conv| {
-                            !existing.iter().any(|c| c.id == new_conv.id)
-                        })
+                        .filter(|new_conv| !existing.iter().any(|c| c.id == new_conv.id))
                         .collect();
 
                     let added_count = new_conversations.len();
@@ -354,10 +384,10 @@ impl EventDispatcher {
 
                 if !delivered.is_empty() {
                     tracing::info!(
-            "Delivered {} buffered messages for newly fetched conversation {}",
-            delivered.len(),
-            conv_id
-        );
+                        "Delivered {} buffered messages for newly fetched conversation {}",
+                        delivered.len(),
+                        conv_id
+                    );
 
                     // ✅ Processa ogni messaggio deliverizzato
                     for msg in delivered {
@@ -384,10 +414,10 @@ impl EventDispatcher {
                             cache.insert(pos, msg.clone());
 
                             tracing::debug!(
-                    "Inserted buffered message {} into cache for conversation {}",
-                    msg.id,
-                    conv_id
-                );
+                                "Inserted buffered message {} into cache for conversation {}",
+                                msg.id,
+                                conv_id
+                            );
                         }
 
                         // ✅ Aggiorna sequence (questo viene fatto automaticamente qui!)
@@ -410,10 +440,10 @@ impl EventDispatcher {
                                     .insert(conv_id, current_unread + 1);
 
                                 tracing::debug!(
-                        "Incremented unread count for conversation {} to {}",
-                        conv_id,
-                        current_unread + 1
-                    );
+                                    "Incremented unread count for conversation {} to {}",
+                                    conv_id,
+                                    current_unread + 1
+                                );
                             }
                         } else {
                             // Se è la conversazione corrente, aggiungi anche alla UI
@@ -445,10 +475,10 @@ impl EventDispatcher {
                             summary.conversation.last_msg_seq as u64,
                         );
                         tracing::info!(
-                "Initialized conversation {} sequence to {} (no buffered messages)",
-                conv_id,
-                summary.conversation.last_msg_seq
-            );
+                            "Initialized conversation {} sequence to {} (no buffered messages)",
+                            conv_id,
+                            summary.conversation.last_msg_seq
+                        );
                     }
                 }
 
@@ -463,19 +493,13 @@ impl EventDispatcher {
                     .unwrap_or(false);
 
                 if already_exists {
-                    tracing::debug!(
-            "Conversation {} already exists, skipping insert",
-            conv_id
-        );
+                    tracing::debug!("Conversation {} already exists, skipping insert", conv_id);
                 } else {
                     let conversation_dto = summary.conversation.clone();
 
                     if let Some(ref mut convs) = state.conversations {
                         convs.insert(0, conversation_dto);
-                        tracing::debug!(
-                "Inserted new conversation at top. Total: {}",
-                convs.len()
-            );
+                        tracing::debug!("Inserted new conversation at top. Total: {}", convs.len());
                     } else {
                         state.conversations = Some(vec![conversation_dto]);
                         tracing::debug!("Initialized conversations list with fetched conversation");

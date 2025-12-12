@@ -164,9 +164,53 @@ impl ConversationsSidebar {
                             .cloned()
                             .collect();
 
+                        // 🔍 RICERCA ATTIVA: se sto cercando ma non trovo risultati
                         if filtered.is_empty() && !self.search_query.is_empty() {
-                            self.show_no_search_results(ui);
+                            // ✨ Carica automaticamente più conversazioni se disponibili
+                            if !state.is_loading_more_conversations && state.has_more_conversations {
+                                state.is_loading_more_conversations = true;
+
+                                let cursor = conversations.last().map(|conv| conv.last_activity);
+                                let base = state.base.clone();
+                                let token = state.token.clone().unwrap_or_default();
+                                let tx = state.ui_tx.clone();
+
+                                state.rt.spawn(async move {
+                                    match crate::api::conversation::get_conversations_paginated(&base, &token, cursor, 20).await {
+                                        Ok(response) => {
+                                            let _ = tx.send(UiEvent::ConversationsAppended(response));
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to load more conversations during search: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+
+                            // Mostra stato durante la ricerca
+                            if state.is_loading_more_conversations {
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(50.0);
+                                    ui.spinner();
+                                    ui.add_space(12.0);
+                                    ui.label(
+                                        RichText::new(format!("Ricerca di '{}'...", self.search_query))
+                                            .size(14.0)
+                                            .color(ui.visuals().text_color())
+                                    );
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        RichText::new("Caricamento conversazioni...")
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color())
+                                    );
+                                });
+                            } else {
+                                // Non sta caricando e non ci sono più conversazioni = non trovata
+                                self.show_no_search_results(ui);
+                            }
                         } else {
+                            // ✅ Mostra i risultati trovati
                             for conv in &filtered {
                                 self.render_conversation_item(ui, state, conv);
                                 ui.add_space(3.0);
@@ -199,9 +243,12 @@ impl ConversationsSidebar {
                         }
                     }
                 }
+
+                // 🎯 Salva l'altezza totale del contenuto disegnato
+                ui.min_rect().height()
             });
 
-        // === 🔥 GESTIONE SCROLL PER TRIGGER FETCH (simile a chat.rs ma verso il BASSO) ===
+        // === 🔥 GESTIONE SCROLL PER TRIGGER FETCH ===
 
         // Detecta scroll verso il basso
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
@@ -211,12 +258,23 @@ impl ConversationsSidebar {
         // Salva l'offset corrente per il prossimo frame
         ui.data_mut(|d| d.insert_temp(last_offset_id, output.state.offset.y));
 
-        // Trigger: ha scrollato verso il basso E offset > soglia
+        // 🎯 Calcola la percentuale di scroll (trigger a 80%)
+        let total_height = output.inner; // Altezza totale del contenuto (ritornata dalla closure)
+        let visible_height = output.inner_rect.height();
+        let scroll_position = output.state.offset.y;
+        let scroll_percentage = if total_height > visible_height {
+            (scroll_position + visible_height) / total_height
+        } else {
+            0.0 // Non c'è scroll se il contenuto è più piccolo della viewport
+        };
+
+        // Trigger: ha scrollato verso il basso E sei all'80% o oltre
         let should_load_more = (scrolling_down_with_wheel || scrolled_down)
-            && output.state.offset.y > 100.0  // Attende almeno 100px di scroll
+            && scroll_percentage >= 0.8  // 🔥 Trigger a 8/10 (80%)
             && !state.is_loading_more_conversations
             && state.has_more_conversations
-            && state.conversations.as_ref().map_or(false, |c| !c.is_empty());
+            && state.conversations.as_ref().map_or(false, |c| !c.is_empty())
+            && self.search_query.is_empty(); // ⚠️ Non triggerare durante ricerca attiva
 
         if should_load_more {
             state.is_loading_more_conversations = true;
@@ -237,7 +295,6 @@ impl ConversationsSidebar {
                     }
                     Err(e) => {
                         error!("Failed to load more conversations: {}", e);
-                        // TODO: Resetta is_loading_more in caso di errore
                     }
                 }
             });
