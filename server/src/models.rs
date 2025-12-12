@@ -1,3 +1,4 @@
+// models.rs - COMPLETO
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -38,6 +39,14 @@ pub struct Message {
     pub sequence_num: Option<i64>,
 }
 
+// ✅ Struct per repository
+#[derive(Debug, Clone, Serialize)]
+pub struct ParticipantInfo {
+    pub user_id: Uuid,
+    pub username: String,
+    pub role: String,
+}
+
 /// Conversation with optional last message - returned by repository queries
 #[derive(Debug, Clone, Serialize)]
 pub struct ConversationWithLastMessage {
@@ -58,6 +67,45 @@ pub struct ConversationWithLastMessage {
     pub last_msg_content: Option<String>,
     pub last_msg_timestamp: Option<i64>,
     pub last_msg_sequence: Option<i64>,
+
+    // Members (for paginated queries)
+    pub members: Option<Vec<ParticipantInfo>>,
+}
+
+// ✅ NUOVE STRUCT DTO (per service e controller)
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationOut {
+    pub id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub owner_id: Uuid,
+    pub created_at: i64,
+    pub last_read_sequence: i64,
+    pub last_activity: i64,
+    pub last_msg_seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ParticipantOut {
+    pub user_id: Uuid,
+    pub username: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationSummary {
+    pub conversation: ConversationOut,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<ParticipantOut>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginatedConversationsResponse {
+    pub conversations: Vec<ConversationSummary>,
+    pub next_cursor: Option<i64>,
+    pub has_more: bool,
 }
 
 #[derive(FromRow, Debug, Clone, Serialize)]

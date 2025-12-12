@@ -9,6 +9,7 @@ pub struct ConversationRepo;
 
 impl ConversationRepo {
 
+    
     pub async fn get_conversations(
         pool: &sqlx::SqlitePool,
         user_id: Uuid,
@@ -19,97 +20,97 @@ impl ConversationRepo {
 
         let query = if let Some(_) = before {
             r#"
-            SELECT 
-                c.id,
-                c.kind,
-                CASE
-                    WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
-                    WHEN c.kind = 'dm' THEN (
-                        COALESCE(
-                            (SELECT u.username
-                             FROM participants p2
-                             JOIN users u ON p2.user_id = u.id
-                             WHERE p2.conversation_id = c.id AND p2.user_id != ?
-                             LIMIT 1),
-                            (SELECT u.username
-                             FROM messages m
-                             JOIN users u ON m.author_id = u.id
-                             WHERE m.conversation_id = c.id AND m.author_id != ?
-                             ORDER BY m.created_at DESC
-                             LIMIT 1),
-                            'Utente sconosciuto'
-                        )
+        SELECT 
+            c.id,
+            c.kind,
+            CASE
+                WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
+                WHEN c.kind = 'dm' THEN (
+                    COALESCE(
+                        (SELECT u.username
+                         FROM participants p2
+                         JOIN users u ON p2.user_id = u.id
+                         WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                         LIMIT 1),
+                        (SELECT u.username
+                         FROM messages m
+                         JOIN users u ON m.author_id = u.id
+                         WHERE m.conversation_id = c.id AND m.author_id != ?
+                         ORDER BY m.created_at DESC
+                         LIMIT 1),
+                        'Utente sconosciuto'
                     )
-                    ELSE 'Unknown'
-                END AS title,
-                c.owner_id,
-                c.created_at,
-                p.last_read_sequence,
-                COALESCE(ms.last_updated, c.created_at) as last_activity,
-                COALESCE(ms.current_sequence, 0) as last_msg_seq,
-                last_m.id as last_msg_id,
-                last_m.author_id as last_msg_author_id,
-                last_u.username as last_msg_author_username,
-                last_m.content as last_msg_content,
-                last_m.created_at as last_msg_timestamp,
-                last_m.sequence_num as last_msg_sequence
-            FROM conversations c
-            JOIN participants p ON c.id = p.conversation_id
-            LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
-            LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
-                AND last_m.sequence_num = ms.current_sequence
-            LEFT JOIN users last_u ON last_m.author_id = last_u.id
-            WHERE p.user_id = ?
-              AND COALESCE(ms.last_updated, c.created_at) < ?
-            ORDER BY last_activity DESC
-            LIMIT ?
-            "#
+                )
+                ELSE 'Unknown'
+            END AS title,
+            c.owner_id,
+            c.created_at,
+            p.last_read_sequence,
+            COALESCE(ms.last_updated, c.created_at) as last_activity,
+            COALESCE(ms.current_sequence, 0) as last_msg_seq,
+            last_m.id as last_msg_id,
+            last_m.author_id as last_msg_author_id,
+            last_u.username as last_msg_author_username,
+            last_m.content as last_msg_content,
+            last_m.created_at as last_msg_timestamp,
+            last_m.sequence_num as last_msg_sequence
+        FROM conversations c
+        JOIN participants p ON c.id = p.conversation_id
+        LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
+        LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
+            AND last_m.sequence_num = ms.current_sequence
+        LEFT JOIN users last_u ON last_m.author_id = last_u.id
+        WHERE p.user_id = ?
+          AND COALESCE(ms.last_updated, c.created_at) < ?
+        ORDER BY last_activity DESC
+        LIMIT ?
+        "#
         } else {
             r#"
-            SELECT 
-                c.id,
-                c.kind,
-                CASE
-                    WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
-                    WHEN c.kind = 'dm' THEN (
-                        COALESCE(
-                            (SELECT u.username
-                             FROM participants p2
-                             JOIN users u ON p2.user_id = u.id
-                             WHERE p2.conversation_id = c.id AND p2.user_id != ?
-                             LIMIT 1),
-                            (SELECT u.username
-                             FROM messages m
-                             JOIN users u ON m.author_id = u.id
-                             WHERE m.conversation_id = c.id AND m.author_id != ?
-                             ORDER BY m.created_at DESC
-                             LIMIT 1),
-                            'Utente sconosciuto'
-                        )
+        SELECT 
+            c.id,
+            c.kind,
+            CASE
+                WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
+                WHEN c.kind = 'dm' THEN (
+                    COALESCE(
+                        (SELECT u.username
+                         FROM participants p2
+                         JOIN users u ON p2.user_id = u.id
+                         WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                         LIMIT 1),
+                        (SELECT u.username
+                         FROM messages m
+                         JOIN users u ON m.author_id = u.id
+                         WHERE m.conversation_id = c.id AND m.author_id != ?
+                         ORDER BY m.created_at DESC
+                         LIMIT 1),
+                        'Utente sconosciuto'
                     )
-                    ELSE 'Unknown'
-                END AS title,
-                c.owner_id,
-                c.created_at,
-                p.last_read_sequence,
-                COALESCE(ms.last_updated, c.created_at) as last_activity,
-                COALESCE(ms.current_sequence, 0) as last_msg_seq,
-                last_m.id as last_msg_id,
-                last_m.author_id as last_msg_author_id,
-                last_u.username as last_msg_author_username,
-                last_m.content as last_msg_content,
-                last_m.created_at as last_msg_timestamp,
-                last_m.sequence_num as last_msg_sequence
-            FROM conversations c
-            JOIN participants p ON c.id = p.conversation_id
-            LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
-            LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
-                AND last_m.sequence_num = ms.current_sequence
-            LEFT JOIN users last_u ON last_m.author_id = last_u.id
-            WHERE p.user_id = ?
-            ORDER BY last_activity DESC
-            LIMIT ?
-            "#
+                )
+                ELSE 'Unknown'
+            END AS title,
+            c.owner_id,
+            c.created_at,
+            p.last_read_sequence,
+            COALESCE(ms.last_updated, c.created_at) as last_activity,
+            COALESCE(ms.current_sequence, 0) as last_msg_seq,
+            last_m.id as last_msg_id,
+            last_m.author_id as last_msg_author_id,
+            last_u.username as last_msg_author_username,
+            last_m.content as last_msg_content,
+            last_m.created_at as last_msg_timestamp,
+            last_m.sequence_num as last_msg_sequence
+        FROM conversations c
+        JOIN participants p ON c.id = p.conversation_id
+        LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
+        LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
+            AND last_m.sequence_num = ms.current_sequence
+        LEFT JOIN users last_u ON last_m.author_id = last_u.id
+        WHERE p.user_id = ?
+        ORDER BY last_activity DESC
+        LIMIT ?
+        "#
         };
 
         let rows = if let Some(before_ts) = before {
@@ -132,12 +133,17 @@ impl ConversationRepo {
         };
 
         let mut conversations = Vec::new();
+        let mut conversation_ids = Vec::new();
+
         for row in rows {
             let id_str: String = row.get("id");
+            let conv_id = Uuid::parse_str(&id_str).unwrap();
+            conversation_ids.push(id_str.clone());
+
             let owner_id_str: String = row.get("owner_id");
 
             conversations.push(ConversationWithLastMessage {
-                id: Uuid::parse_str(&id_str).unwrap(),
+                id: conv_id,
                 kind: row.get("kind"),
                 title: row.get("title"),
                 owner_id: Uuid::parse_str(&owner_id_str).unwrap(),
@@ -153,98 +159,194 @@ impl ConversationRepo {
                 last_msg_content: row.get("last_msg_content"),
                 last_msg_timestamp: row.get("last_msg_timestamp"),
                 last_msg_sequence: row.get("last_msg_sequence"),
+                members: None,
             });
+        }
+
+        if conversations.is_empty() {
+            return Ok(conversations);
+        }
+
+        // Batch load membri SOLO per gruppi
+        let placeholders = conversation_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let members_query = format!(
+            r#"
+        SELECT
+            p.conversation_id,
+            p.user_id,
+            u.username,
+            p.role
+        FROM participants p
+        INNER JOIN users u ON p.user_id = u.id
+        INNER JOIN conversations c ON p.conversation_id = c.id
+        WHERE p.conversation_id IN ({})
+          AND c.kind = 'group'
+        ORDER BY p.conversation_id, 
+                 CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
+                 u.username
+        "#,
+            placeholders
+        );
+
+        let mut query_builder = sqlx::query(&members_query);
+        for id in &conversation_ids {
+            query_builder = query_builder.bind(id);
+        }
+
+        let member_rows = query_builder.fetch_all(pool).await?;
+
+        let mut members_by_conv: std::collections::HashMap<Uuid, Vec<crate::models::ParticipantInfo>> =
+            std::collections::HashMap::new();
+
+        for row in member_rows {
+            let conv_id_str: String = row.get("conversation_id");
+            let conv_id = Uuid::parse_str(&conv_id_str).unwrap();
+
+            let user_id_str: String = row.get("user_id");
+            let user_id = Uuid::parse_str(&user_id_str).unwrap();
+
+            members_by_conv
+                .entry(conv_id)
+                .or_insert_with(Vec::new)
+                .push(crate::models::ParticipantInfo {
+                    user_id,
+                    username: row.get("username"),
+                    role: row.get("role"),
+                });
+        }
+
+        for conv in &mut conversations {
+            if let Some(members) = members_by_conv.remove(&conv.id) {
+                conv.members = Some(members);
+            }
         }
 
         Ok(conversations)
     }
 
     pub async fn get_single_conversation(
-        pool: &SqlitePool,
+        pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
-        user_id: Uuid,
+        user_id: Uuid
     ) -> Result<Option<ConversationWithLastMessage>> {
-        let row = sqlx::query(
-            r#"
-            SELECT
-                c.id,
-                c.kind,
-                CASE
-                    WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
-                    WHEN c.kind = 'dm' THEN (
-                        COALESCE(
-                            (SELECT u.username
-                             FROM participants p2
-                             JOIN users u ON p2.user_id = u.id
-                             WHERE p2.conversation_id = c.id AND p2.user_id != ?
-                             LIMIT 1),
-                            (SELECT u.username
-                             FROM messages m
-                             JOIN users u ON m.author_id = u.id
-                             WHERE m.conversation_id = c.id AND m.author_id != ?
-                             ORDER BY m.created_at DESC
-                             LIMIT 1),
-                            'Utente sconosciuto'
-                        )
+        let user_id_str = user_id.to_string();
+        let conv_id_str = conversation_id.to_string();
+
+        let query = r#"
+        SELECT 
+            c.id,
+            c.kind,
+            CASE
+                WHEN c.kind = 'group' THEN COALESCE(c.title, 'Gruppo')
+                WHEN c.kind = 'dm' THEN (
+                    COALESCE(
+                        (SELECT u.username
+                         FROM participants p2
+                         JOIN users u ON p2.user_id = u.id
+                         WHERE p2.conversation_id = c.id AND p2.user_id != ?
+                         LIMIT 1),
+                        'Utente sconosciuto'
                     )
-                    ELSE 'Unknown'
-                END AS title,
-                c.owner_id,
-                c.created_at,
-                COALESCE(p.last_read_sequence, 0) AS last_read_sequence,
-                COALESCE(ms.last_updated, c.created_at) AS last_activity,
-                COALESCE(ms.current_sequence, 0) AS last_msg_seq,
-                last_m.id as last_msg_id,
-                last_m.author_id as last_msg_author_id,
-                last_u.username as last_msg_author_username,
-                last_m.content as last_msg_content,
-                last_m.created_at as last_msg_timestamp,
-                last_m.sequence_num as last_msg_sequence
-            FROM conversations c
-            LEFT JOIN participants p ON c.id = p.conversation_id AND p.user_id = ?
-            LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
-            LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
-                AND last_m.sequence_num = ms.current_sequence
-            LEFT JOIN users last_u ON last_m.author_id = last_u.id
-            WHERE c.id = ?
-              AND (p.user_id = ? OR (c.kind = 'dm' AND EXISTS(
-                    SELECT 1 FROM messages m
-                    WHERE m.conversation_id = c.id AND m.author_id = ?
-              )))
-            "#,
-        )
-            .bind(user_id.to_string())
-            .bind(user_id.to_string())
-            .bind(user_id.to_string())
-            .bind(conversation_id.to_string())
-            .bind(user_id.to_string())
-            .bind(user_id.to_string())
+                )
+                ELSE 'Unknown'
+            END AS title,
+            c.owner_id,
+            c.created_at,
+            p.last_read_sequence,
+            COALESCE(ms.last_updated, c.created_at) as last_activity,
+            COALESCE(ms.current_sequence, 0) as last_msg_seq,
+            last_m.id as last_msg_id,
+            last_m.author_id as last_msg_author_id,
+            last_u.username as last_msg_author_username,
+            last_m.content as last_msg_content,
+            last_m.created_at as last_msg_timestamp,
+            last_m.sequence_num as last_msg_sequence
+        FROM conversations c
+        JOIN participants p ON c.id = p.conversation_id
+        LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
+        LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
+            AND last_m.sequence_num = ms.current_sequence
+        LEFT JOIN users last_u ON last_m.author_id = last_u.id
+        WHERE c.id = ?
+          AND p.user_id = ?
+    "#;
+
+        let row_opt = sqlx::query(query)
+            .bind(&user_id_str)
+            .bind(&conv_id_str)
+            .bind(&user_id_str)
             .fetch_optional(pool)
             .await?;
 
-        Ok(row.map(|r| {
-            let id_str: String = r.get("id");
-            let owner_id_str: String = r.get("owner_id");
+        let Some(row) = row_opt else {
+            return Ok(None);
+        };
 
-            ConversationWithLastMessage {
-                id: Uuid::parse_str(&id_str).unwrap(),
-                kind: r.get("kind"),
-                title: r.get("title"),
-                owner_id: Uuid::parse_str(&owner_id_str).unwrap(),
-                created_at: r.get("created_at"),
-                last_read_sequence: r.get("last_read_sequence"),
-                last_activity: r.get("last_activity"),
-                last_msg_seq: r.get("last_msg_seq"),
-                last_msg_id: r.get::<Option<String>, _>("last_msg_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                last_msg_author_id: r.get::<Option<String>, _>("last_msg_author_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                last_msg_author_username: r.get("last_msg_author_username"),
-                last_msg_content: r.get("last_msg_content"),
-                last_msg_timestamp: r.get("last_msg_timestamp"),
-                last_msg_sequence: r.get("last_msg_sequence"),
-            }
-        }))
+        let id_str: String = row.get("id");
+        let conv_id = Uuid::parse_str(&id_str).unwrap();
+        let owner_id_str: String = row.get("owner_id");
+        let kind: String = row.get("kind");
+
+        let mut conversation = ConversationWithLastMessage {
+            id: conv_id,
+            kind: kind.clone(),
+            title: row.get("title"),
+            owner_id: Uuid::parse_str(&owner_id_str).unwrap(),
+            created_at: row.get("created_at"),
+            last_read_sequence: row.get("last_read_sequence"),
+            last_activity: row.get("last_activity"),
+            last_msg_seq: row.get("last_msg_seq"),
+            last_msg_id: row.get::<Option<String>, _>("last_msg_id")
+                .and_then(|s| Uuid::parse_str(&s).ok()),
+            last_msg_author_id: row.get::<Option<String>, _>("last_msg_author_id")
+                .and_then(|s| Uuid::parse_str(&s).ok()),
+            last_msg_author_username: row.get("last_msg_author_username"),
+            last_msg_content: row.get("last_msg_content"),
+            last_msg_timestamp: row.get("last_msg_timestamp"),
+            last_msg_sequence: row.get("last_msg_sequence"),
+            members: None,
+        };
+
+        // ✅ Popola members se è un gruppo
+        if kind == "group" {
+            let members_query = r#"
+            SELECT
+                p.user_id,
+                u.username,
+                p.role
+            FROM participants p
+            INNER JOIN users u ON p.user_id = u.id
+            WHERE p.conversation_id = ?
+            ORDER BY CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
+                     u.username
+        "#;
+
+            let member_rows = sqlx::query(members_query)
+                .bind(&conv_id_str)
+                .fetch_all(pool)
+                .await?;
+
+            let members: Vec<crate::models::ParticipantInfo> = member_rows
+                .into_iter()
+                .map(|row| {
+                    let user_id_str: String = row.get("user_id");
+                    crate::models::ParticipantInfo {
+                        user_id: Uuid::parse_str(&user_id_str).unwrap(),
+                        username: row.get("username"),
+                        role: row.get("role"),
+                    }
+                })
+                .collect();
+
+            conversation.members = Some(members);
+        }
+
+        Ok(Some(conversation))
     }
     
     pub async fn get_conversation_kind(

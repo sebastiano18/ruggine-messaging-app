@@ -50,7 +50,8 @@ impl EventDispatcher {
                     let conv_id = msg.conversation_id;
 
                     // Check if conversation exists in loaded conversations
-                    let conversation_exists = state.conversations
+                    let conversation_exists = state
+                        .conversations
                         .as_ref()
                         .map(|convs| convs.iter().any(|c| c.id == conv_id))
                         .unwrap_or(false);
@@ -60,7 +61,10 @@ impl EventDispatcher {
 
                     if !conversation_exists && !already_fetching {
                         // Conversation not loaded yet and not being fetched - fetch it
-                        tracing::info!("Message received for unloaded conversation {}, fetching...", conv_id);
+                        tracing::info!(
+                            "Message received for unloaded conversation {}, fetching...",
+                            conv_id
+                        );
 
                         // Mark as fetching
                         state.fetching_conversations.insert(conv_id);
@@ -70,13 +74,19 @@ impl EventDispatcher {
                         let tx = state.ui_tx.clone();
 
                         state.rt.spawn(async move {
-                            match crate::api::conversation::get_conversation(&base, &token, conv_id).await {
+                            match crate::api::conversation::get_conversation(&base, &token, conv_id)
+                                .await
+                            {
                                 Ok(summary) => {
                                     tracing::info!("Successfully fetched conversation {}", conv_id);
                                     let _ = tx.send(UiEvent::ConversationSummaryFetched(summary));
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to fetch conversation {}: {}", conv_id, e);
+                                    tracing::error!(
+                                        "Failed to fetch conversation {}: {}",
+                                        conv_id,
+                                        e
+                                    );
                                     // Send error event to clean up fetching state
                                     let _ = tx.send(UiEvent::ConversationFetchFailed(conv_id));
                                 }
@@ -194,26 +204,56 @@ impl EventDispatcher {
             }
 
             UiEvent::ConversationsAppended(response) => {
-                // Estrai le conversazioni e i last_message
-                let conversations: Vec<_> = response.conversations.iter()
+                // Estrai le conversazioni
+                let conversations: Vec<_> = response
+                    .conversations
+                    .iter()
                     .map(|summary| summary.conversation.clone())
                     .collect();
 
-                // Salva i last_message in conversation_messages
+                // Salva i last_message e membri
                 for summary in &response.conversations {
+                    // ✅ Salva last_message se presente
                     if let Some(last_msg) = &summary.last_message {
-                        state.conversation_messages
+                        state
+                            .conversation_messages
                             .entry(summary.conversation.id)
                             .or_insert_with(Vec::new)
                             .push(last_msg.clone());
                     }
+
+                    // ✅ Salva membri se presenti (e se non esistono già)
+                    if let Some(members) = &summary.members {
+                        state
+                            .members_list
+                            .entry(summary.conversation.id)
+                            .or_insert_with(|| members.clone());
+                        // Nota: usa entry().or_insert per non sovrascrivere se già presenti
+                    }
                 }
 
-                // Appendi le conversazioni
+                // ✅ Appendi CON deduplicazione
                 if let Some(existing) = &mut state.conversations {
-                    existing.extend(conversations);
+                    // Filtra solo conversazioni NUOVE
+                    let new_conversations: Vec<_> = conversations
+                        .into_iter()
+                        .filter(|new_conv| {
+                            !existing.iter().any(|c| c.id == new_conv.id)
+                        })
+                        .collect();
+
+                    let added_count = new_conversations.len();
+                    existing.extend(new_conversations);
+
+                    tracing::debug!(
+            "Appended {} new conversations (filtered {} duplicates). Total: {}",
+            added_count,
+            response.conversations.len() - added_count,
+            existing.len()
+        );
                 } else {
                     state.conversations = Some(conversations);
+                    tracing::debug!("Created conversations list with {} items", response.conversations.len());
                 }
 
                 state.has_more_conversations = response.has_more;
@@ -221,67 +261,113 @@ impl EventDispatcher {
                 state.is_loading_more_conversations = false;
 
                 tracing::debug!(
-                    "Appended conversations. Total: {}, Has more: {}",
-                    state.conversations.as_ref().map(|c| c.len()).unwrap_or(0),
-                    response.has_more
-                );
+        "Conversations total: {}, Has more: {}, Next cursor: {:?}",
+        state.conversations.as_ref().map(|c| c.len()).unwrap_or(0),
+        response.has_more,
+        response.next_cursor
+    );
             }
 
             UiEvent::ConversationSummaryFetched(summary) => {
-                tracing::info!("Adding fetched conversation {} to list", summary.conversation.id);
+                let conv_id = summary.conversation.id;
 
-                // Remove from fetching set
-                state.fetching_conversations.remove(&summary.conversation.id);
+                tracing::info!("Processing fetched conversation {}", conv_id);
 
-                // Estrai conversazione e last_message
+                // ✅ Remove from fetching set
+                state.fetching_conversations.remove(&conv_id);
+
                 let conversation = summary.conversation.clone();
-                let conv_id = conversation.id;
 
-                // Update conversation sequence BEFORE processing messages
-                if conversation.last_msg_seq > 0 {
-                    use crate::app::events::sequence_handler::SequenceHandler;
-                    SequenceHandler::update_conversation_sequence(state, conv_id, conversation.last_msg_seq as u64);
-                    tracing::info!(
-                        "Initialized conversation {} sequence to {} from fetched data",
-                        conv_id,
-                        conversation.last_msg_seq
-                    );
+                // ✅ Verifica se esiste GIÀ (può succedere con race conditions)
+                let already_exists = state
+                    .conversations
+                    .as_ref()
+                    .map(|convs| convs.iter().any(|c| c.id == conv_id))
+                    .unwrap_or(false);
+
+                if already_exists {
+                    tracing::debug!(
+            "Conversation {} already exists, skipping insert but updating data",
+            conv_id
+        );
+
+                    // Aggiorna comunque sequence e membri se necessario
+                    if conversation.last_msg_seq > 0 {
+                        use crate::app::events::sequence_handler::SequenceHandler;
+                        SequenceHandler::update_conversation_sequence(
+                            state,
+                            conv_id,
+                            conversation.last_msg_seq as u64,
+                        );
+                    }
+
+                    // Aggiorna membri se presenti
+                    if let Some(members) = &summary.members {
+                        state.members_list.insert(conv_id, members.clone());
+                    }
+
+                    // Try deliver buffered messages
+                    use crate::app::events::buffer_handler::BufferHandler;
+                    BufferHandler::try_deliver_buffered_messages(state, conv_id);
+
+                    return; // ✅ Exit early, non inserire duplicato
                 }
 
-                // Salva last_message se presente
+                // ✅ Update conversation sequence BEFORE processing messages
+                if conversation.last_msg_seq > 0 {
+                    use crate::app::events::sequence_handler::SequenceHandler;
+                    SequenceHandler::update_conversation_sequence(
+                        state,
+                        conv_id,
+                        conversation.last_msg_seq as u64,
+                    );
+                    tracing::info!(
+            "Initialized conversation {} sequence to {}",
+            conv_id,
+            conversation.last_msg_seq
+        );
+                }
+
+                // ✅ Salva last_message se presente
                 if let Some(last_msg) = &summary.last_message {
-                    state.conversation_messages
-                        .entry(conversation.id)
+                    state
+                        .conversation_messages
+                        .entry(conv_id)
                         .or_insert_with(Vec::new)
                         .push(last_msg.clone());
                 }
 
-                // Aggiungi conversazione in CIMA alla lista (ha ricevuto un nuovo messaggio)
+                // ✅ Salva membri se presenti
+                if let Some(members) = &summary.members {
+                    state.members_list.insert(conv_id, members.clone());
+                }
+
+                // ✅ Aggiungi conversazione in CIMA alla lista
                 if let Some(convs) = &mut state.conversations {
-                    // Verifica che non sia già presente
-                    if !convs.iter().any(|c| c.id == conversation.id) {
-                        convs.insert(0, conversation);
-                        tracing::debug!("Inserted new conversation at top. Total: {}", convs.len());
-                    }
+                    convs.insert(0, conversation);
+                    tracing::debug!("Inserted new conversation at top. Total: {}", convs.len());
                 } else {
                     state.conversations = Some(vec![conversation]);
                     tracing::debug!("Created conversations list with fetched conversation");
                 }
 
-                // Try to deliver any buffered messages for this conversation
+                // ✅ Try to deliver any buffered messages
                 use crate::app::events::buffer_handler::BufferHandler;
                 let delivered = BufferHandler::try_deliver_buffered_messages(state, conv_id);
                 if !delivered.is_empty() {
                     tracing::info!(
-                        "Delivered {} buffered messages for newly fetched conversation {}",
-                        delivered.len(),
-                        conv_id
-                    );
+            "Delivered {} buffered messages for newly fetched conversation {}",
+            delivered.len(),
+            conv_id
+        );
                 }
             }
 
             UiEvent::ConversationFetchFailed(conv_id) => {
-                tracing::warn!("Failed to fetch conversation {}, cleaning up state", conv_id);
+                tracing::warn!(
+                    "Failed to fetch conversation {}, cleaning up state",
+                    conv_id
+                );
                 // Remove from fetching set to allow retry
                 state.fetching_conversations.remove(&conv_id);
             }

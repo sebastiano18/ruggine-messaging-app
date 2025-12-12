@@ -1,8 +1,9 @@
 use serde_json::json;
+use sqlx::Row;
 use tracing::{info, warn};
 use uuid::Uuid;
 use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
-use crate::models::Message;
+use crate::models::{ConversationOut, ConversationSummary, ConversationWithLastMessage, Message, PaginatedConversationsResponse, ParticipantInfo, ParticipantOut};
 use crate::web_socket::utils::send_event_to_multiple_users;
 
 #[derive(Debug, Clone)]
@@ -12,23 +13,16 @@ impl ConversationService {
     pub async fn create_group(pool: &sqlx::SqlitePool, name: &str, owner_id: Uuid) -> Result<Uuid> {
         ConversationRepo::create_group(pool, name, owner_id).await
     }
-
-    pub async fn create_dm(pool: &sqlx::SqlitePool, user1_id: Uuid, user2_id: Uuid) -> Result<Uuid> {
-        ConversationRepo::create_dm(pool, user1_id, user2_id).await
-    }
-
-    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
-        ConversationRepo::by_user(pool, user_id).await
-    }
+    
 
     pub async fn get_conversation(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
         user_id: Uuid
-    ) -> Result<Option<((Uuid, String, String, Uuid, i64, i64, i64, i64), Option<Message>)>> {
-        let result = ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await?;
+    ) -> Result<Option<ConversationSummary>> {
+        let conv_opt = ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await?;
 
-        Ok(result.map(|conv| {
+        Ok(conv_opt.map(|conv| {
             let last_message = if let (Some(msg_id), Some(author_id), Some(author_username), Some(content), Some(timestamp)) =
                 (conv.last_msg_id, conv.last_msg_author_id, conv.last_msg_author_username,
                  conv.last_msg_content, conv.last_msg_timestamp)
@@ -46,11 +40,30 @@ impl ConversationService {
                 None
             };
 
-            (
-                (conv.id, conv.kind, conv.title, conv.owner_id,
-                 conv.created_at, conv.last_read_sequence, conv.last_activity, conv.last_msg_seq),
-                last_message
-            )
+            let members = conv.members.as_ref().map(|m| {
+                m.iter()
+                    .map(|p| ParticipantOut {
+                        user_id: p.user_id,
+                        username: p.username.clone(),
+                        role: p.role.clone(),
+                    })
+                    .collect()
+            });
+
+            ConversationSummary {
+                conversation: ConversationOut {
+                    id: conv.id,
+                    kind: conv.kind.clone(),
+                    title: conv.title.clone(),
+                    owner_id: conv.owner_id,
+                    created_at: conv.created_at,
+                    last_read_sequence: conv.last_read_sequence,
+                    last_activity: conv.last_activity,
+                    last_msg_seq: conv.last_msg_seq,
+                },
+                last_message,
+                members,
+            }
         }))
     }
 
@@ -66,14 +79,7 @@ impl ConversationService {
 
         ConversationRepo::add_member(pool, conversation_id, member_id).await
     }
-
-    pub async fn can_access(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        user_id: Uuid
-    ) -> Result<bool> {
-        ConversationRepo::is_participant(pool, conversation_id, user_id).await
-    }
+    
 
     pub async fn delete_conversation(
         pool: &sqlx::SqlitePool,
@@ -143,18 +149,7 @@ impl ConversationService {
     ) -> Result<Vec<Uuid>> {
         ConversationRepo::list_participant_ids(pool, conversation_id).await
     }
-
-    pub async fn get_members(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        requester_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        if !ConversationRepo::is_participant(pool, conversation_id, requester_id).await? {
-            return Err(crate::error::AppError::Unauthorized);
-        }
-
-        ConversationRepo::get_members(pool, conversation_id).await
-    }
+    
 
     pub async fn broadcast_message_deleted(
         st: &AppState,
@@ -220,27 +215,7 @@ impl ConversationService {
             );
         }
     }
-
-    pub async fn kick_member(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        requester_id: Uuid,
-        user_id_to_kick: Uuid,
-    ) -> Result<()> {
-        if !ConversationRepo::is_owner(pool, conversation_id, requester_id).await? {
-            return Err(crate::error::AppError::Unauthorized);
-        }
-
-        if requester_id == user_id_to_kick {
-            return Err(crate::error::AppError::BadRequest("Non puoi espellere te stesso".to_string()));
-        }
-
-        if ConversationRepo::is_owner(pool, conversation_id, user_id_to_kick).await? {
-            return Err(crate::error::AppError::BadRequest("Non puoi espellere il proprietario".to_string()));
-        }
-
-        ConversationRepo::remove_member(pool, conversation_id, user_id_to_kick).await
-    }
+    
 
     pub async fn notify_user_left_group(
         state: &AppState,
@@ -368,15 +343,15 @@ impl ConversationService {
         user_id: Uuid,
         limit: i32,
         before: Option<i64>
-    ) -> Result<Vec<((Uuid, String, String, Uuid, i64, i64, i64, i64), Option<Message>)>> {
+    ) -> Result<PaginatedConversationsResponse> {
         let conversations = ConversationRepo::get_conversations(pool, user_id, limit, before).await?;
 
-        Ok(conversations
-            .into_iter()
+        let summaries: Vec<ConversationSummary> = conversations
+            .iter()
             .map(|conv| {
                 let last_message = if let (Some(msg_id), Some(author_id), Some(author_username), Some(content), Some(timestamp)) =
-                    (conv.last_msg_id, conv.last_msg_author_id, conv.last_msg_author_username,
-                     conv.last_msg_content, conv.last_msg_timestamp)
+                    (conv.last_msg_id, conv.last_msg_author_id, conv.last_msg_author_username.clone(),
+                     conv.last_msg_content.clone(), conv.last_msg_timestamp)
                 {
                     Some(Message {
                         id: msg_id,
@@ -391,12 +366,40 @@ impl ConversationService {
                     None
                 };
 
-                (
-                    (conv.id, conv.kind, conv.title, conv.owner_id,
-                     conv.created_at, conv.last_read_sequence, conv.last_activity, conv.last_msg_seq),
-                    last_message
-                )
+                let members = conv.members.as_ref().map(|m| {
+                    m.iter()
+                        .map(|p| ParticipantOut {
+                            user_id: p.user_id,
+                            username: p.username.clone(),
+                            role: p.role.clone(),
+                        })
+                        .collect()
+                });
+
+                ConversationSummary {
+                    conversation: ConversationOut {
+                        id: conv.id,
+                        kind: conv.kind.clone(),
+                        title: conv.title.clone(),
+                        owner_id: conv.owner_id,
+                        created_at: conv.created_at,
+                        last_read_sequence: conv.last_read_sequence,
+                        last_activity: conv.last_activity,
+                        last_msg_seq: conv.last_msg_seq,
+                    },
+                    last_message,
+                    members,
+                }
             })
-            .collect())
+            .collect();
+
+        let next_cursor = summaries.last().map(|s| s.conversation.last_activity);
+        let has_more = summaries.len() == limit as usize;
+
+        Ok(PaginatedConversationsResponse {
+            conversations: summaries,
+            next_cursor,
+            has_more,
+        })
     }
 }
