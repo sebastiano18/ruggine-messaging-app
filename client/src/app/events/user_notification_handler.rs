@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use serde_json::Value;
 use crate::app::events::helpers;
 use crate::models::*;
@@ -20,20 +22,22 @@ impl UserNotificationHandler {
     ) {
         let expected = state.user_sequence_confirmed + 1;
 
-        // ✅ Skip tutti i check se è recovery - gli eventi sono garantiti validi
         if !recovery {
             if sequence > expected {
-                warn!(
-                "User event seq {} out of order (expected {}), buffering",
-                sequence, expected
-            );
-                BufferHandler::buffer_user_event_for_reorder(state, sequence, event_data);
+                warn!("User event seq {} out of order (expected {}), buffering", sequence, expected);
+
+                // ✅ Buffera evento completo con metadata
+                let full_event = serde_json::json!({
+                "sequence": sequence,
+                "event_type": event_type,
+                "event_data": event_data,
+                "conversation_id": conversation_id,
+            });
+
+                BufferHandler::buffer_user_event_for_reorder(state, sequence, full_event);
                 return;
             } else if sequence < expected && sequence > 0 {
-                debug!(
-                "User event seq {} already processed (expected {}), skipping",
-                sequence, expected
-            );
+                debug!("User event seq {} already processed (expected {}), skipping", sequence, expected);
                 return;
             }
         }
@@ -69,7 +73,13 @@ impl UserNotificationHandler {
                         .and_then(|id| id.as_str())
                         .and_then(|s| Uuid::parse_str(s).ok());
 
-                    Self::process_user_notification(state, event_seq, evt_type, buffered_event.clone(), conv_id, false);
+                    // ✅ Estrai event_data dal buffered_event
+                    let evt_data = buffered_event
+                        .get("event_data")
+                        .cloned()
+                        .unwrap_or(buffered_event.clone());
+
+                    Self::process_user_notification(state, event_seq, evt_type, evt_data, conv_id, false);
                 }
             }
         }
@@ -243,80 +253,175 @@ impl UserNotificationHandler {
     }
 
     fn handle_new_message(state: &mut AppState, event_data: serde_json::Value) {
-        let conversation_sequence = event_data
-            .get("conversation_sequence")
-            .and_then(|v| v.as_u64())
-            .map(|seq| seq as u64);
-
-        let message_data = event_data.get("message").unwrap_or(&event_data);
-
-        if let Ok(mut msg) = serde_json::from_value::<MessageDto>(message_data.clone()) {
-            // Check if conversation exists in loaded conversations
-            let conversation_exists = state.conversations
-                .as_ref()
-                .map(|convs| convs.iter().any(|c| c.id == msg.conversation_id))
-                .unwrap_or(false);
-
-            // Check if already fetching this conversation
-            let already_fetching = state.fetching_conversations.contains(&msg.conversation_id);
-
-            if !conversation_exists && !already_fetching {
-                // Conversation not loaded yet and not being fetched - fetch it
-                info!("Message received via user event for unloaded conversation {}, fetching...", msg.conversation_id);
-
-                // Mark as fetching
-                state.fetching_conversations.insert(msg.conversation_id);
-
-                let base = state.base.clone();
-                let token = state.token.clone().unwrap_or_default();
-                let tx = state.ui_tx.clone();
-                let conv_id = msg.conversation_id;
-
-                state.rt.spawn(async move {
-                    match crate::api::conversation::get_conversation(&base, &token, conv_id).await {
-                        Ok(summary) => {
-                            info!("Successfully fetched conversation {}", conv_id);
-                            let _ = tx.send(UiEvent::ConversationSummaryFetched(summary));
-                        }
-                        Err(e) => {
-                            error!("Failed to fetch conversation {}: {}", conv_id, e);
-                            // Send error event to clean up fetching state
-                            let _ = tx.send(UiEvent::ConversationFetchFailed(conv_id));
-                        }
-                    }
-                });
+        // ✅ Parsa il messaggio
+        let msg: MessageDto = match serde_json::from_value(event_data) {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to parse message from new_message event: {}", e);
+                return;
             }
+        };
 
-            if let Some(conv_seq) = conversation_sequence {
-                msg.sequence_num = Some(conv_seq);
-            }
+        let conv_id = msg.conversation_id;
 
-            let already_in_cache = state
-                .conversation_messages
-                .get(&msg.conversation_id)
-                .map(|cache| cache.iter().any(|m| m.id == msg.id))
-                .unwrap_or(false);
+        debug!(
+        "Processing new_message: conv={}, msg_seq={:?}, author={}",
+        conv_id,
+        msg.sequence_num,
+        msg.author_username
+    );
 
-            if already_in_cache {
+        // Check se conversazione esiste
+        let conversation_exists = state
+            .conversations
+            .as_ref()
+            .map(|convs| convs.iter().any(|c| c.id == conv_id))
+            .unwrap_or(false);
+
+        let already_fetching = state.fetching_conversations.contains(&conv_id);
+
+        // ✅ Se conversazione non esiste E non stiamo già fetchando
+        if !conversation_exists && !already_fetching {
+            info!(
+        "Message received via user event for unloaded conversation {}, fetching...",
+        conv_id
+    );
+
+            state.fetching_conversations.insert(conv_id);
+
+            // ✅ BUFFERA FORZATAMENTE (bypass gap check)
+            let buffer_entry = state
+                .message_reorder_buffer
+                .entry(conv_id)
+                .or_insert_with(BTreeMap::new);
+
+            if let Some(seq) = msg.sequence_num {
+                buffer_entry.insert(seq, msg.clone());
                 debug!(
-                "Message {} already in cache, skipping",
-                msg.id
+            "Force-buffered message seq {} for unloaded conversation {}",
+            seq, conv_id
+        );
+            }
+
+            // Spawn fetch task
+            let ui_tx = state.ui_tx.clone();
+            let base_url = state.base.clone();
+            let token = state.token.clone().unwrap_or_default();
+
+            state.rt.spawn(async move {  // ✅ USA state.rt.spawn, NON tokio::spawn!
+                use crate::api::conversation::get_conversation;
+
+                match get_conversation(&base_url, &token, conv_id).await {
+                    Ok(summary) => {
+                        let _ = ui_tx.send(UiEvent::ConversationSummaryFetched(summary));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to fetch conversation {}: {}", conv_id, e);
+                        let _ = ui_tx.send(UiEvent::ConversationFetchFailed(conv_id));
+                    }
+                }
+            });
+
+            return;
+        }
+
+        // ✅ Se stiamo già fetchando, buffera e basta
+        if already_fetching {
+            let buffer_entry = state
+                .message_reorder_buffer
+                .entry(conv_id)
+                .or_insert_with(BTreeMap::new);
+
+            if let Some(seq) = msg.sequence_num {
+                buffer_entry.insert(seq, msg.clone());
+                debug!(
+                "Buffered message seq {} for conversation {} (fetch in progress)",
+                seq, conv_id
             );
+            }
+            return;
+        }
+
+        // ✅ Gap detection per messaggi normali
+        if let Some(msg_seq) = msg.sequence_num {
+            let expected = state
+                .conversation_sequences_confirmed
+                .get(&conv_id)
+                .map(|&seq| seq + 1)
+                .unwrap_or(1);
+
+            if msg_seq > expected {
+                warn!(
+                "Message gap detected for conversation {}: expected {}, got {}",
+                conv_id, expected, msg_seq
+            );
+
+                use super::buffer_handler::BufferHandler;
+                BufferHandler::buffer_message_for_reorder(state, msg.clone());
+
+                use super::sequence_handler::SequenceHandler;
+                SequenceHandler::request_messages_resume(state, conv_id, expected);
+
                 return;
             }
 
-            if let Some(conv_seq) = msg.sequence_num {
-                use super::sequence_handler::SequenceHandler;
-                SequenceHandler::update_conversation_sequence(state, msg.conversation_id, conv_seq);
+            if msg_seq < expected {
+                debug!(
+                "Message seq {} is old (expected {}), skipping duplicate",
+                msg_seq, expected
+            );
+                return;
             }
+        }
 
-            let cache = state
-                .conversation_messages
-                .entry(msg.conversation_id)
-                .or_insert_with(Vec::new);
+        // ✅ Processa messaggio normalmente
+        Self::process_confirmed_message(state, msg);
+    }
 
-            let cache_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
-                cache
+    fn process_confirmed_message(state: &mut AppState, msg: MessageDto) {
+        let conv_id = msg.conversation_id;
+
+        // Aggiorna sequence
+        if let Some(seq) = msg.sequence_num {
+            use super::sequence_handler::SequenceHandler;
+            SequenceHandler::update_conversation_sequence(state, conv_id, seq);
+        }
+
+        // Inserisci in cache se non già presente
+        let already_in_cache = state
+            .conversation_messages
+            .get(&conv_id)
+            .map(|cache| cache.iter().any(|m| m.id == msg.id))
+            .unwrap_or(false);
+
+        if already_in_cache {
+            return;
+        }
+
+        let cache = state
+            .conversation_messages
+            .entry(conv_id)
+            .or_insert_with(Vec::new);
+
+        let cache_insert_pos = cache
+            .binary_search_by(|existing| {
+                match (existing.sequence_num, msg.sequence_num) {
+                    (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
+                    _ => existing.created_at.cmp(&msg.created_at)
+                        .then_with(|| existing.id.cmp(&msg.id)),
+                }
+            })
+            .unwrap_or_else(|pos| pos);
+
+        cache.insert(cache_insert_pos, msg.clone());
+
+        // Se conversazione corrente, aggiorna UI
+        if Some(conv_id) == state.cid {
+            let already_in_ui = state.messages.iter().any(|m| m.id == msg.id);
+
+            if !already_in_ui {
+                let ui_insert_pos = state
+                    .messages
                     .binary_search_by(|existing| {
                         match (existing.sequence_num, msg.sequence_num) {
                             (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
@@ -324,69 +429,29 @@ impl UserNotificationHandler {
                                 .then_with(|| existing.id.cmp(&msg.id)),
                         }
                     })
-                    .unwrap_or_else(|pos| pos)
-            } else {
-                cache
-                    .binary_search_by(|existing| {
-                        existing.created_at.cmp(&msg.created_at)
-                            .then_with(|| existing.id.cmp(&msg.id))
-                    })
-                    .unwrap_or_else(|pos| pos)
-            };
+                    .unwrap_or_else(|pos| pos);
 
-            cache.insert(cache_insert_pos, msg.clone());
-
-            if Some(msg.conversation_id) == state.cid {
-                let already_in_ui = state.messages.iter().any(|m| m.id == msg.id);
-
-                if !already_in_ui {
-                    let ui_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
-                        state
-                            .messages
-                            .binary_search_by(|existing| {
-                                match (existing.sequence_num, msg.sequence_num) {
-                                    (Some(e_seq), Some(m_seq)) => e_seq.cmp(&m_seq),
-                                    _ => existing.created_at.cmp(&msg.created_at)
-                                        .then_with(|| existing.id.cmp(&msg.id)),
-                                }
-                            })
-                            .unwrap_or_else(|pos| pos)
-                    } else {
-                        state
-                            .messages
-                            .binary_search_by(|existing| {
-                                existing.created_at.cmp(&msg.created_at)
-                                    .then_with(|| existing.id.cmp(&msg.id))
-                            })
-                            .unwrap_or_else(|pos| pos)
-                    };
-
-                    state.messages.insert(ui_insert_pos, msg.clone());
-                    debug!(
-                    "Message {} added to UI (seq: {:?})",
-                    msg.id, msg.sequence_num
-                );
-                } else {
-                    debug!("Message {} already in UI, skipping", msg.id);
-                }
-            } else {
-                // Messaggio per conversazione non corrente - gestisci unread count
-                if Some(msg.author_id) != state.user_id {
-                    let current_unread = state
-                        .conversation_unread_counts
-                        .get(&msg.conversation_id)
-                        .copied()
-                        .unwrap_or(0);
-
-                    state
-                        .conversation_unread_counts
-                        .insert(msg.conversation_id, current_unread + 1);
-                }
+                state.messages.insert(ui_insert_pos, msg);
             }
-
-            super::utils::move_conversation_to_top(state, msg.conversation_id);
         } else {
-            error!("Failed to parse MessageDto from event_data");
+            // ✅ AGGIUNGI: Gestisci unread count per conversazioni non correnti
+            if Some(msg.author_id) != state.user_id {
+                let current_unread = state
+                    .conversation_unread_counts
+                    .get(&conv_id)
+                    .copied()
+                    .unwrap_or(0);
+
+                state
+                    .conversation_unread_counts
+                    .insert(conv_id, current_unread + 1);
+
+                debug!(
+                "Incremented unread count for conversation {} to {}",
+                conv_id,
+                current_unread + 1
+            );
+            }
         }
     }
 
