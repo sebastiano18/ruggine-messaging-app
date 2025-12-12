@@ -45,6 +45,7 @@ pub struct ParticipantInfo {
     pub user_id: Uuid,
     pub username: String,
     pub role: String,
+    pub joined_at: Option<i64>
 }
 
 /// Conversation with optional last message - returned by repository queries

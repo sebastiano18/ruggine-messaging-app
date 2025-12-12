@@ -2,7 +2,7 @@ use crate::models::MessageDto;
 use crate::state::AppState;
 use eframe::egui::{self, Frame, RichText, TextEdit};
 use uuid::Uuid;
-use tracing::info;
+use tracing::{debug, info};
 
 use chrono::{DateTime, Local, Datelike, NaiveDate};
 use crate::app::events::utils::move_conversation_to_top;
@@ -610,9 +610,21 @@ fn send_message(s: &mut AppState, cid: Uuid) {
         // Aggiungi alla UI
         s.messages.push(optimistic_msg.clone());
 
-        // Aggiungi alla cache
-        if let Some(msgs) = s.conversation_messages.get_mut(&cid) {
-            msgs.push(optimistic_msg);
+        // ✅ FIX: Aggiungi alla cache usando entry().or_insert_with()
+        s.conversation_messages
+            .entry(cid)
+            .or_insert_with(Vec::new)
+            .push(optimistic_msg.clone());
+
+        // ✅ NUOVO: Aggiorna ConversationDto ottimisticamente
+        if let Some(ref mut convs) = s.conversations {
+            if let Some(conv) = convs.iter_mut().find(|c| c.id == cid) {
+                conv.last_activity = optimistic_msg.created_at;
+                debug!(
+                    "Optimistically updated conversation {} last_activity",
+                    cid
+                );
+            }
         }
     }
 

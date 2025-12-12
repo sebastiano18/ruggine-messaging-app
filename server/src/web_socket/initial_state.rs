@@ -17,7 +17,7 @@ pub async fn get_initial_state(
     user_id: Uuid,
 ) -> Result<InitialState, Box<dyn std::error::Error + Send + Sync>> {
     let user_id_str = user_id.to_string();
-    
+
     let query = r#"
         SELECT
             c.id as conv_id,
@@ -27,8 +27,8 @@ pub async fn get_initial_state(
             c.created_at as conv_created_at,
             p.last_read_sequence,
             
-            -- Da message_sequences (velocissimo, PK lookup)
-            COALESCE(ms.last_updated, c.created_at) as last_activity,
+            -- Priorità: 1) ultimo messaggio, 2) joined_at, 3) created_at
+            COALESCE(ms.last_updated, p.joined_at, c.created_at) as last_activity,
             COALESCE(ms.current_sequence, 0) as last_msg_seq,
             
             -- Ultimo messaggio via JOIN (1 volta sola, non 6!)
@@ -174,7 +174,8 @@ pub async fn get_initial_state(
                 p.conversation_id,
                 p.user_id,
                 u.username,
-                p.role
+                p.role,
+                p.joined_at
             FROM participants p
             INNER JOIN users u ON p.user_id = u.id
             INNER JOIN conversations c ON p.conversation_id = c.id
@@ -200,11 +201,13 @@ pub async fn get_initial_state(
             let member_user_id: String = row.try_get("user_id").unwrap_or_default();
             let username: String = row.try_get("username").unwrap_or_default();
             let role: String = row.try_get("role").unwrap_or_default();
+            let joined_at = row.try_get::<Option<i64>, _>("joined_at").ok().flatten();
 
             let member = json!({
                 "user_id": member_user_id,
                 "username": username,
-                "role": role
+                "role": role,
+                "joined_at": joined_at
             });
 
             members_by_conversation

@@ -138,6 +138,7 @@ impl EventDispatcher {
                     // ✅ CASO 3: Conversazione ESISTE → processa normalmente
                     WebSocketHandler::handle(state, event);
                     utils::move_conversation_to_top(state, conv_id);
+
                 } else {
                     WebSocketHandler::handle(state, event);
                 }
@@ -264,11 +265,15 @@ impl EventDispatcher {
 
                     // ✅ Salva last_message se presente
                     if let Some(last_msg) = &summary.last_message {
+                        let mut confirmed_msg = last_msg.clone();
+                        // ✅ CRITICO: Marca come confermato (viene dal server!)
+                        confirmed_msg.is_confirmed = Some(true);
+
                         state
                             .conversation_messages
                             .entry(conv_id)
                             .or_insert_with(Vec::new)
-                            .push(last_msg.clone());
+                            .push(confirmed_msg);
                     }
 
                     // ✅ Salva membri se presenti (non sovrascrive se già esistono)
@@ -333,24 +338,30 @@ impl EventDispatcher {
 
                     existing.extend(new_conversations);
 
+                    // ✅ RIORDINA TUTTA LA LISTA per last_activity dopo l'append
+                    existing.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
                     if duplicates_count > 0 {
                         tracing::debug!(
-                "Appended {} new conversations (filtered {} duplicates). Total: {}",
+                "Appended {} new conversations (filtered {} duplicates), sorted by last_activity. Total: {}",
                 added_count,
                 duplicates_count,
                 existing.len()
             );
                     } else {
                         tracing::debug!(
-                "Appended {} new conversations. Total: {}",
+                "Appended {} new conversations, sorted by last_activity. Total: {}",
                 added_count,
                 existing.len()
             );
                     }
                 } else {
-                    state.conversations = Some(conversations);
+                    // Prima volta: crea la lista e ordinala
+                    let mut new_list = conversations;
+                    new_list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+                    state.conversations = Some(new_list);
                     tracing::debug!(
-            "Created conversations list with {} items",
+            "Created conversations list with {} items, sorted by last_activity",
             response.conversations.len()
         );
                 }
@@ -378,16 +389,58 @@ impl EventDispatcher {
                     state.members_list.insert(conv_id, members.clone());
                 }
 
-                // ✅ Try to deliver buffered messages PRIMA di inizializzare sequence
+                // ✅ NUOVO: Salva last_message nella cache (come fa ConversationsAppended)
+                if let Some(last_msg) = &summary.last_message {
+                    let mut confirmed_msg = last_msg.clone();
+                    // ✅ CRITICO: Marca come confermato (viene dal server!)
+                    confirmed_msg.is_confirmed = Some(true);
+
+                    state
+                        .conversation_messages
+                        .entry(conv_id)
+                        .or_insert_with(Vec::new)
+                        .push(confirmed_msg);
+
+                    tracing::debug!(
+            "Saved last_message (seq: {:?}) from server to cache for conversation {}",
+            last_msg.sequence_num,
+            conv_id
+        );
+                }
+
+                // ✅ CRITICO: Inizializza sequence PRIMA di deliverare buffer
+                // Per conversazioni appena fetchate, NON fare gap detection - accetta il valore del server
+                if summary.conversation.last_msg_seq > 0 {
+                    let seq = summary.conversation.last_msg_seq as u64;
+
+                    // ✅ Setta direttamente senza gap detection (conversazione appena fetchata)
+                    state.conversation_sequences.insert(conv_id, seq);
+                    state.conversation_sequences_confirmed.insert(conv_id, seq);
+
+                    tracing::info!(
+            "Initialized conversation {} sequence to {} (newly fetched, no gap check)",
+            conv_id,
+            seq
+        );
+                }
+
+                // ✅ Try to deliver buffered messages DOPO aver inizializzato sequence
                 use crate::app::events::buffer_handler::BufferHandler;
                 let delivered = BufferHandler::try_deliver_buffered_messages(state, conv_id);
 
+                // ✅ Traccia la sequence massima tra i messaggi deliverizzati
+                let mut max_delivered_seq: Option<u64> = if summary.conversation.last_msg_seq > 0 {
+                    Some(summary.conversation.last_msg_seq as u64)
+                } else {
+                    None
+                };
+
                 if !delivered.is_empty() {
                     tracing::info!(
-                        "Delivered {} buffered messages for newly fetched conversation {}",
-                        delivered.len(),
-                        conv_id
-                    );
+            "Delivered {} buffered messages for newly fetched conversation {}",
+            delivered.len(),
+            conv_id
+        );
 
                     // ✅ Processa ogni messaggio deliverizzato
                     for msg in delivered {
@@ -414,39 +467,28 @@ impl EventDispatcher {
                             cache.insert(pos, msg.clone());
 
                             tracing::debug!(
-                                "Inserted buffered message {} into cache for conversation {}",
-                                msg.id,
-                                conv_id
-                            );
+                    "Inserted buffered message {} into cache for conversation {}",
+                    msg.id,
+                    conv_id
+                );
                         }
 
-                        // ✅ Aggiorna sequence (questo viene fatto automaticamente qui!)
+                        // ✅ Aggiorna sequence E traccia la massima
                         if let Some(seq) = msg.sequence_num {
                             use crate::app::events::sequence_handler::SequenceHandler;
                             SequenceHandler::update_conversation_sequence(state, conv_id, seq);
+
+                            // Traccia la sequence massima
+                            max_delivered_seq = Some(max_delivered_seq.unwrap_or(0).max(seq));
+
+                            tracing::debug!(
+                    "Updated conversation {} sequence to {} from buffered message",
+                    conv_id, seq
+                );
                         }
 
-                        // ✅ Incrementa unread se non è la conversazione corrente
-                        if Some(conv_id) != state.cid {
-                            if Some(msg.author_id) != state.user_id {
-                                let current_unread = state
-                                    .conversation_unread_counts
-                                    .get(&conv_id)
-                                    .copied()
-                                    .unwrap_or(0);
-
-                                state
-                                    .conversation_unread_counts
-                                    .insert(conv_id, current_unread + 1);
-
-                                tracing::debug!(
-                                    "Incremented unread count for conversation {} to {}",
-                                    conv_id,
-                                    current_unread + 1
-                                );
-                            }
-                        } else {
-                            // Se è la conversazione corrente, aggiungi anche alla UI
+                        // ✅ Se è la conversazione corrente, aggiungi anche alla UI
+                        if Some(conv_id) == state.cid {
                             if !state.messages.iter().any(|m| m.id == msg.id) {
                                 let ui_pos = state
                                     .messages
@@ -465,21 +507,40 @@ impl EventDispatcher {
                             }
                         }
                     }
-                } else {
-                    // ✅ SOLO se buffer vuoto, inizializza sequence da last_msg_seq
-                    if summary.conversation.last_msg_seq > 0 {
-                        use crate::app::events::sequence_handler::SequenceHandler;
-                        SequenceHandler::update_conversation_sequence(
-                            state,
-                            conv_id,
-                            summary.conversation.last_msg_seq as u64,
-                        );
+
+                    tracing::info!(
+            "Conversation {} final sequence after buffer delivery: {}",
+            conv_id,
+            max_delivered_seq.unwrap_or(0)
+        );
+                }
+
+                // ✅ CALCOLA UNREAD COUNT CORRETTAMENTE (dopo aver processato i messaggi bufferati)
+                // Solo se NON è la conversazione corrente
+                if Some(conv_id) != state.cid {
+                    let last_msg_seq = max_delivered_seq.unwrap_or(0) as i64;
+                    let last_read_seq = summary.conversation.last_read_sequence;
+
+                    if last_msg_seq > last_read_seq {
+                        let unread_count = last_msg_seq - last_read_seq;
+                        state.conversation_unread_counts.insert(conv_id, unread_count);
+
                         tracing::info!(
-                            "Initialized conversation {} sequence to {} (no buffered messages)",
-                            conv_id,
-                            summary.conversation.last_msg_seq
-                        );
+                "Conversation {} unread count: {} (last_msg: {}, last_read: {})",
+                conv_id,
+                unread_count,
+                last_msg_seq,
+                last_read_seq
+            );
+                    } else {
+                        // Nessun messaggio non letto
+                        state.conversation_unread_counts.remove(&conv_id);
+                        tracing::debug!("Conversation {} has no unread messages", conv_id);
                     }
+                } else {
+                    // È la conversazione corrente, non ci sono unread
+                    state.conversation_unread_counts.remove(&conv_id);
+                    tracing::debug!("Conversation {} is current, no unread", conv_id);
                 }
 
                 // Rimuovi da fetching set
@@ -495,11 +556,25 @@ impl EventDispatcher {
                 if already_exists {
                     tracing::debug!("Conversation {} already exists, skipping insert", conv_id);
                 } else {
-                    let conversation_dto = summary.conversation.clone();
+                    let mut conversation_dto = summary.conversation.clone();
+
+                    // ✅ CRITICO: Aggiorna last_msg_seq con la sequence massima finale
+                    if let Some(max_seq) = max_delivered_seq {
+                        conversation_dto.last_msg_seq = max_seq as i64;
+                        tracing::info!(
+                "Updated conversation {} last_msg_seq to {}",
+                conv_id,
+                max_seq
+            );
+                    }
 
                     if let Some(ref mut convs) = state.conversations {
                         convs.insert(0, conversation_dto);
-                        tracing::debug!("Inserted new conversation at top. Total: {}", convs.len());
+
+                        // ✅ ORDINA la lista dopo l'inserimento
+                        convs.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
+                        tracing::debug!("Inserted new conversation and sorted. Total: {}", convs.len());
                     } else {
                         state.conversations = Some(vec![conversation_dto]);
                         tracing::debug!("Initialized conversations list with fetched conversation");

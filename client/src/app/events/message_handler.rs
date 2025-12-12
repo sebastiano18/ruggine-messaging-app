@@ -74,9 +74,9 @@ impl MessageHandler {
             }
 
             info!(
-                "Message {} already received via resume, cleaned optimistic",
-                server_msg_id
-            );
+            "Message {} already received via resume, cleaned optimistic",
+            server_msg_id
+        );
             return;
         }
 
@@ -98,9 +98,9 @@ impl MessageHandler {
 
             if !updated {
                 debug!(
-                    "Message {} not found in UI, likely processed via resume",
-                    client_msg_id
-                );
+                "Message {} not found in UI, likely processed via resume",
+                client_msg_id
+            );
                 return;
             }
 
@@ -126,15 +126,34 @@ impl MessageHandler {
                 SequenceHandler::update_conversation_sequence(state, conversation_id, seq);
             }
 
+            // ✅ NUOVO: Aggiorna ConversationDto con dati confermati
+            if let Some(ref mut convs) = state.conversations {
+                if let Some(conv) = convs.iter_mut().find(|c| c.id == conversation_id) {
+                    if let Some(seq) = sequence {
+                        conv.last_msg_seq = seq as i64;
+                    }
+                    // Usa created_at del messaggio confermato (se disponibile)
+                    if let Some(confirmed_msg) = state.messages.iter().find(|m| m.id == server_msg_id) {
+                        conv.last_activity = confirmed_msg.created_at;
+                    }
+                    debug!(
+                    "Updated conversation {} metadata after confirmation: last_msg_seq={}, last_activity={}",
+                    conversation_id,
+                    conv.last_msg_seq,
+                    conv.last_activity
+                );
+                }
+            }
+
             info!(
-                "Message confirmed: {} -> {} (seq: {:?})",
-                client_msg_id, server_msg_id, sequence
-            );
+            "Message confirmed: {} -> {} (seq: {:?})",
+            client_msg_id, server_msg_id, sequence
+        );
         } else {
             warn!(
-                "Received confirmation for unknown message: {}",
-                client_msg_id
-            );
+            "Received confirmation for unknown message: {}",
+            client_msg_id
+        );
         }
     }
 

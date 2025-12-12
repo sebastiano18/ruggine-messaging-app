@@ -431,10 +431,10 @@ impl UserNotificationHandler {
                     })
                     .unwrap_or_else(|pos| pos);
 
-                state.messages.insert(ui_insert_pos, msg);
+                state.messages.insert(ui_insert_pos, msg.clone());
             }
         } else {
-            // ✅ AGGIUNGI: Gestisci unread count per conversazioni non correnti
+            // Gestisci unread count per conversazioni non correnti
             if Some(msg.author_id) != state.user_id {
                 let current_unread = state
                     .conversation_unread_counts
@@ -450,6 +450,26 @@ impl UserNotificationHandler {
                 "Incremented unread count for conversation {} to {}",
                 conv_id,
                 current_unread + 1
+            );
+            }
+        }
+
+        // ✅ CRITICO: Aggiorna ConversationDto nella lista
+        if let Some(ref mut convs) = state.conversations {
+            if let Some(conv) = convs.iter_mut().find(|c| c.id == conv_id) {
+                // Aggiorna last_msg_seq
+                if let Some(seq) = msg.sequence_num {
+                    conv.last_msg_seq = seq as i64;
+                }
+
+                // Aggiorna last_activity (per ordinamento)
+                conv.last_activity = msg.created_at;
+
+                debug!(
+                "Updated conversation {} metadata: last_msg_seq={}, last_activity={}",
+                conv_id,
+                conv.last_msg_seq,
+                conv.last_activity
             );
             }
         }
@@ -1322,9 +1342,14 @@ impl UserNotificationHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown");
 
+        // ✅ Estrai il timestamp (quando l'utente si è unito)
+        let joined_at = event_data
+            .get("timestamp")
+            .and_then(|v| v.as_i64());
+
         info!(
-        "User {} ({}) added to group {}",
-        added_username, added_user_id, conversation_id
+        "User {} ({}) added to group {} at timestamp {:?}",
+        added_username, added_user_id, conversation_id, joined_at
     );
 
         // 1. Aggiungi il membro alla lista membri
@@ -1345,6 +1370,7 @@ impl UserNotificationHandler {
                 user_id: added_user_id,
                 username: added_username.to_string(),
                 role: "member".to_string(),
+                joined_at,  // ✅ Aggiungi il campo
             };
 
             members.push(new_member);
