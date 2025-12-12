@@ -83,6 +83,13 @@ impl AuthHandler {
         state.conversation_unread_counts.clear();
         state.members_list.clear();                          // ← Pulisci lista membri gruppi
         state.is_loading_members = false;
+
+        // Reset pagination state
+        state.is_loading_more_conversations = false;
+        state.has_more_conversations = true;
+        state.next_cursor = None;
+        state.fetching_conversations.clear();
+
         state.login_state = LoginState::Idle;
         state.ws_status = WsStatus::Disconnected;
         state.dm_stubs.clear();

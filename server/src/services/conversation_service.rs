@@ -1,38 +1,72 @@
 use serde_json::json;
-use tracing::{error, info, warn};
+use sqlx::Row;
+use tracing::{info, warn};
 use uuid::Uuid;
 use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
+use crate::models::{ConversationOut, ConversationSummary, ConversationWithLastMessage, Message, PaginatedConversationsResponse, ParticipantInfo, ParticipantOut};
 use crate::web_socket::utils::send_event_to_multiple_users;
 
 #[derive(Debug, Clone)]
 pub struct ConversationService;
 
 impl ConversationService {
-    // Crea un nuovo gruppo
     pub async fn create_group(pool: &sqlx::SqlitePool, name: &str, owner_id: Uuid) -> Result<Uuid> {
         ConversationRepo::create_group(pool, name, owner_id).await
     }
+    
 
-    // Crea o trova una DM
-    pub async fn create_dm(pool: &sqlx::SqlitePool, user1_id: Uuid, user2_id: Uuid) -> Result<Uuid> {
-        ConversationRepo::create_dm(pool, user1_id, user2_id).await
-    }
-
-    // Ottieni le conversazioni di un utente con tutti i campi necessari
-    pub async fn mine(pool: &sqlx::SqlitePool, user_id: Uuid) -> Result<Vec<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
-        ConversationRepo::by_user(pool, user_id).await
-    }
-
-    // NUOVO: Ottieni singola conversazione
     pub async fn get_conversation(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
         user_id: Uuid
-    ) -> Result<Option<(Uuid, String, String, Uuid, i64, i64, i64, i64)>> {
-        ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await
+    ) -> Result<Option<ConversationSummary>> {
+        let conv_opt = ConversationRepo::get_single_conversation(pool, conversation_id, user_id).await?;
+
+        Ok(conv_opt.map(|conv| {
+            let last_message = if let (Some(msg_id), Some(author_id), Some(author_username), Some(content), Some(timestamp)) =
+                (conv.last_msg_id, conv.last_msg_author_id, conv.last_msg_author_username,
+                 conv.last_msg_content, conv.last_msg_timestamp)
+            {
+                Some(Message {
+                    id: msg_id,
+                    author_id,
+                    conversation_id: conv.id,
+                    author_username,
+                    content,
+                    created_at: timestamp,
+                    sequence_num: conv.last_msg_sequence,
+                })
+            } else {
+                None
+            };
+
+            let members = conv.members.as_ref().map(|m| {
+                m.iter()
+                    .map(|p| ParticipantOut {
+                        user_id: p.user_id,
+                        username: p.username.clone(),
+                        role: p.role.clone(),
+                    })
+                    .collect()
+            });
+
+            ConversationSummary {
+                conversation: ConversationOut {
+                    id: conv.id,
+                    kind: conv.kind.clone(),
+                    title: conv.title.clone(),
+                    owner_id: conv.owner_id,
+                    created_at: conv.created_at,
+                    last_read_sequence: conv.last_read_sequence,
+                    last_activity: conv.last_activity,
+                    last_msg_seq: conv.last_msg_seq,
+                },
+                last_message,
+                members,
+            }
+        }))
     }
 
-    // Aggiungi membro (solo per gruppi e solo se sei owner)
     pub async fn add_member(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
@@ -45,19 +79,8 @@ impl ConversationService {
 
         ConversationRepo::add_member(pool, conversation_id, member_id).await
     }
+    
 
-    // Verifica se un utente può accedere a una conversazione
-    pub async fn can_access(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        user_id: Uuid
-    ) -> Result<bool> {
-        ConversationRepo::is_participant(pool, conversation_id, user_id).await
-    }
-
-    /// Elimina una conversazione (DM o Gruppo).
-    /// - Gruppo: solo l'owner
-    /// - DM: partecipante o autore di almeno un messaggio
     pub async fn delete_conversation(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
@@ -91,9 +114,6 @@ impl ConversationService {
         Ok(())
     }
 
-    /// Permette a un partecipante di uscire da un gruppo
-    /// - Solo per gruppi (non DM)
-    /// - L'owner non può uscire (deve eliminare il gruppo)
     pub async fn leave_group(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
@@ -129,21 +149,8 @@ impl ConversationService {
     ) -> Result<Vec<Uuid>> {
         ConversationRepo::list_participant_ids(pool, conversation_id).await
     }
+    
 
-    // Ottieni i membri di una conversazione con i loro dettagli
-    pub async fn get_members(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        requester_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        if !ConversationRepo::is_participant(pool, conversation_id, requester_id).await? {
-            return Err(crate::error::AppError::Unauthorized);
-        }
-
-        ConversationRepo::get_members(pool, conversation_id).await
-    }
-
-    // ✅ OTTIMIZZATO: Usa helper per batch
     pub async fn broadcast_message_deleted(
         st: &AppState,
         conversation_id: Uuid,
@@ -159,7 +166,6 @@ impl ConversationService {
             "message_id": message_id,
             "conversation_id": conversation_id,
         });
-        
 
         if let Err(e) = send_event_to_multiple_users(
             st,
@@ -172,7 +178,6 @@ impl ConversationService {
         }
     }
 
-    // ✅ OTTIMIZZATO: Usa helper per batch
     pub async fn broadcast_conversation_deleted(
         st: &AppState,
         conversation_id: Uuid,
@@ -197,8 +202,6 @@ impl ConversationService {
             "timestamp": chrono::Utc::now().timestamp()
         });
 
-
-
         if let Err(e) = send_event_to_multiple_users(
             st,
             &recipients,
@@ -212,30 +215,8 @@ impl ConversationService {
             );
         }
     }
+    
 
-    // Espelli un membro da una conversazione
-    pub async fn kick_member(
-        pool: &sqlx::SqlitePool,
-        conversation_id: Uuid,
-        requester_id: Uuid,
-        user_id_to_kick: Uuid,
-    ) -> Result<()> {
-        if !ConversationRepo::is_owner(pool, conversation_id, requester_id).await? {
-            return Err(crate::error::AppError::Unauthorized);
-        }
-
-        if requester_id == user_id_to_kick {
-            return Err(crate::error::AppError::BadRequest("Non puoi espellere te stesso".to_string()));
-        }
-
-        if ConversationRepo::is_owner(pool, conversation_id, user_id_to_kick).await? {
-            return Err(crate::error::AppError::BadRequest("Non puoi espellere il proprietario".to_string()));
-        }
-
-        ConversationRepo::remove_member(pool, conversation_id, user_id_to_kick).await
-    }
-
-    // ✅ OTTIMIZZATO: Usa helper per batch
     pub async fn notify_user_left_group(
         state: &AppState,
         conversation_id: Uuid,
@@ -266,8 +247,6 @@ impl ConversationService {
             "timestamp": chrono::Utc::now().timestamp()
         });
 
-
-
         if let Err(e) = send_event_to_multiple_users(
             state,
             &participants,
@@ -281,7 +260,6 @@ impl ConversationService {
         Ok(())
     }
 
-    // ✅ OTTIMIZZATO: Usa helper per batch
     pub async fn notify_user_deleted_account(
         state: &AppState,
         conversation_id: Uuid,
@@ -310,7 +288,6 @@ impl ConversationService {
             "deleted_user_id": deleted_user_id,
             "deleted_username": deleted_username,
         });
-        
 
         if let Err(e) = send_event_to_multiple_users(
             state,
@@ -325,7 +302,6 @@ impl ConversationService {
         Ok(())
     }
 
-    // ✅ OTTIMIZZATO: Usa helper per batch
     pub async fn notify_conversation_deleted(
         state: &AppState,
         conversation_id: Uuid,
@@ -349,8 +325,6 @@ impl ConversationService {
             "deleted_user_id": deleted_user_id.to_string(),
         });
 
-
-
         if let Err(e) = send_event_to_multiple_users(
             state,
             &participants,
@@ -362,5 +336,70 @@ impl ConversationService {
         }
 
         Ok(())
+    }
+
+    pub async fn get_conversations(
+        pool: &sqlx::SqlitePool,
+        user_id: Uuid,
+        limit: i32,
+        before: Option<i64>
+    ) -> Result<PaginatedConversationsResponse> {
+        let conversations = ConversationRepo::get_conversations(pool, user_id, limit, before).await?;
+
+        let summaries: Vec<ConversationSummary> = conversations
+            .iter()
+            .map(|conv| {
+                let last_message = if let (Some(msg_id), Some(author_id), Some(author_username), Some(content), Some(timestamp)) =
+                    (conv.last_msg_id, conv.last_msg_author_id, conv.last_msg_author_username.clone(),
+                     conv.last_msg_content.clone(), conv.last_msg_timestamp)
+                {
+                    Some(Message {
+                        id: msg_id,
+                        author_id,
+                        conversation_id: conv.id,
+                        author_username,
+                        content,
+                        created_at: timestamp,
+                        sequence_num: conv.last_msg_sequence,
+                    })
+                } else {
+                    None
+                };
+
+                let members = conv.members.as_ref().map(|m| {
+                    m.iter()
+                        .map(|p| ParticipantOut {
+                            user_id: p.user_id,
+                            username: p.username.clone(),
+                            role: p.role.clone(),
+                        })
+                        .collect()
+                });
+
+                ConversationSummary {
+                    conversation: ConversationOut {
+                        id: conv.id,
+                        kind: conv.kind.clone(),
+                        title: conv.title.clone(),
+                        owner_id: conv.owner_id,
+                        created_at: conv.created_at,
+                        last_read_sequence: conv.last_read_sequence,
+                        last_activity: conv.last_activity,
+                        last_msg_seq: conv.last_msg_seq,
+                    },
+                    last_message,
+                    members,
+                }
+            })
+            .collect();
+
+        let next_cursor = summaries.last().map(|s| s.conversation.last_activity);
+        let has_more = summaries.len() == limit as usize;
+
+        Ok(PaginatedConversationsResponse {
+            conversations: summaries,
+            next_cursor,
+            has_more,
+        })
     }
 }

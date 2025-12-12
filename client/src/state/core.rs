@@ -8,10 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;
 
-/// Timeout per gli stub (gruppi e DM)
 pub const STUB_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Timeout per la verifica utente
 pub const USER_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default)]
@@ -82,82 +79,69 @@ pub struct AppState {
     pub user_id: Option<Uuid>,
     pub page: Page,
 
-    // Chat state
     pub cid: Option<Uuid>,
     pub conv_title: String,
     pub input: String,
     pub messages: Vec<MessageDto>,
 
-    // Conversations
     pub conversations: Option<Vec<ConversationDto>>,
     pub request_conversations_refresh: bool,
     pub pending_deletion: Option<PendingDeletion>,
+    pub is_loading_more_conversations: bool,
+    pub has_more_conversations: bool,
+    pub next_cursor: Option<i64>,
+    pub fetching_conversations: HashSet<Uuid>,
 
-    // Group management
     pub group_name: String,
     pub dm_user_username_input: String,
     pub last_invite_token: Option<String>,
     pub invite_conversation_id: String,
     pub last_created_invite: Option<String>,
 
-    // WebSocket
     pub ws_status: WsStatus,
     pub request_ws_reconnect: bool,
     pub ws_ctrl: Option<WsControl>,
 
-    // Login state
     pub login_state: LoginState,
 
-    // Event handling
     pub ui_tx: mpsc::UnboundedSender<UiEvent>,
     pub ui_rx: mpsc::UnboundedReceiver<UiEvent>,
 
-    // WebSocket bidirectional communication
     pub ui_to_net_tx: mpsc::Sender<Outgoing>,
     pub ui_to_net_rx: mpsc::Receiver<Outgoing>,
 
-    // Data caching
     pub conversation_messages: HashMap<Uuid, Vec<MessageDto>>,
     pub is_initial_load_complete: bool,
     pub is_loading: bool,
 
-    // Stub tracking
     pub dm_stubs: HashMap<Uuid, (String, Instant)>,
     pub group_stubs: HashMap<Uuid, (String, Instant)>,
 
-    // Message confirmation tracking
     pub pending_confirmations: HashMap<String, MessageDto>,
     pub confirmation_timeout: Duration,
     pub last_confirmation_cleanup: Instant,
 
-    // Dual sequence system
     pub user_sequence_confirmed: u64,
     pub user_sequence_received: u64,
     pub conversation_sequences: HashMap<Uuid, u64>,
     pub conversation_sequences_confirmed: HashMap<Uuid, u64>,
 
-    // Shared state per ping task indipendente
     pub user_sequence_shared: Arc<AtomicU64>,
 
-    // Waker per svegliare egui da thread esterni (WebSocket)
     pub egui_waker: Arc<dyn Fn() + Send + Sync>,
 
-    // Ping/Pong management
     pub ping_interval: Duration,
     pub last_ping_time: Instant,
     pub missed_pings: u32,
     pub max_missed_pings: u32,
     pub ping_timeout: Duration,
 
-    // Connection timeout tracking (separate from ping timer)
     pub connection_attempt_start: Option<Instant>,
 
-    // Recovery state
     pub is_recovering_user_events: bool,
     pub is_recovering_messages: HashMap<Uuid, bool>,
     pub pending_resume_requests: u32,
 
-    // Statistics
     pub sequence_stats: SequenceStats,
 
     pub is_loading_more: bool,
@@ -166,25 +150,19 @@ pub struct AppState {
     #[allow(dead_code)]
     pub pending_conversations: HashMap<String, ConversationDto>,
 
-    // User Management
     pub confirm_delete_account: bool,
 
-    // UI Modals
     pub show_account_modal: bool,
 
-    // UI Messages
     pub toasts: Vec<Toast>,
     pub auth_message: Option<String>,
     pub auth_message_is_error: bool,
 
-    // Reorder Buffers
     pub message_reorder_buffer: BTreeMap<Uuid, BTreeMap<u64, MessageDto>>,
     pub user_event_reorder_buffer: BTreeMap<u64, Vec<serde_json::Value>>,
 
-    // Unread counter
     pub conversation_unread_counts: HashMap<Uuid, i64>,
 
-    // Popups state
     pub show_invite_popup: bool,
     pub invite_popup: InvitePopupState,
     pub show_group_info_popup: bool,
@@ -193,19 +171,15 @@ pub struct AppState {
     pub show_create_group_modal: bool,
     pub create_group_popup: CreateGroupPopupState,
 
-    // DM management
     pub dm_username: String,
 
-    // Confirmations
     pub pending_message_deletion: Option<Uuid>,
     pub pending_member_kick: Option<(Uuid, Uuid, String)>,
 
-    // User check state
     pub pending_user_check: Option<String>,
     pub user_check_request_id: Option<String>,
     pub user_check_timestamp: Option<Instant>,
 
-    // WebSocket session tracking
     pub current_session_id: Option<Uuid>,
 }
 
@@ -234,6 +208,11 @@ impl AppState {
             conversations: None,
             request_conversations_refresh: false,
             pending_deletion: None,
+            is_loading_more_conversations: false,
+            has_more_conversations: true,
+            next_cursor: None,
+            fetching_conversations: HashSet::new(),
+
             group_name: String::new(),
             dm_user_username_input: String::new(),
             last_invite_token: None,
@@ -322,7 +301,6 @@ impl AppState {
     }
 }
 
-// === Toast models ===
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     Info,
