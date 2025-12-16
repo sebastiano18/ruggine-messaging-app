@@ -1,8 +1,6 @@
-// repositories/user_repo.rs
 use crate::error::{Result, AppError};
-use sqlx::{Row, SqlitePool, Transaction};
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
-use sqlx::Sqlite;
 
 #[derive(Debug, Clone)]
 pub struct UserRepo;

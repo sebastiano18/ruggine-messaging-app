@@ -1,6 +1,6 @@
 use crate::{controllers::message_controller as c, state::AppState};
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get},
     Router,
 };
 

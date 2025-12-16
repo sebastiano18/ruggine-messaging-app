@@ -1,4 +1,3 @@
-// services/user_service.rs
 use crate::{
     error::{AppError, Result},
     repositories::{user_repo::UserRepo, conversation_repo::ConversationRepo},
@@ -8,7 +7,6 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier, password_hash::{PasswordH
 use chrono::Duration;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde::Serialize;
-use serde_json::json;
 use uuid::Uuid;
 use tracing::{info, error, warn};
 

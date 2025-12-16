@@ -1,9 +1,8 @@
 use chrono::Utc;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
-use std::collections::HashMap;
 
 use crate::{
     error::{AppError, Result},
@@ -146,7 +145,7 @@ pub async fn handle_chat_message(
             .collect();
 
         if !recipients.is_empty() {
-            // 1️⃣ Salva notification LEGGERA nel DB (per recovery offline users)
+            // Salva notification LEGGERA nel DB (per recovery offline users)
             let notification_payload = json!({
                 "message_id": msg_id,
                 "message_sequence": message_sequence,
@@ -168,7 +167,7 @@ pub async fn handle_chat_message(
                         msg_id
                     );
 
-                    // 2️⃣ Costruisci messaggio COMPLETO (hai già tutti i dati qui!)
+                    // Costruisci messaggio COMPLETO (hai già tutti i dati qui!)
                     let mut message_data = json!({
                         "id": msg_id,
                         "conversation_id": conversation_id,
@@ -190,7 +189,7 @@ pub async fn handle_chat_message(
                         "message": message_data
                     });
 
-                    // 3️⃣ Invia messaggio COMPLETO agli utenti online (via user_notification_channel)
+                    // Invia messaggio COMPLETO agli utenti online (via user_notification_channel)
                     let channels = state.user_notification_channels.read().await;
                     for (recipient_id, user_seq) in recipients.iter().zip(&user_sequences) {
                         if let Some(tx) = channels.get(recipient_id) {
@@ -207,7 +206,7 @@ pub async fn handle_chat_message(
         }
     }
 
-    // 4️⃣ Broadcast alla conversazione
+    // Broadcast alla conversazione
     let mut broadcast_msg = json!({
         "type": "chat_message",
         "id": msg_id,

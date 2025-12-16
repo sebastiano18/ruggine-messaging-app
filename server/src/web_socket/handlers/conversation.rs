@@ -2,14 +2,13 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::Row;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
     error::{AppError, Result},
     state::AppState,
     services::conversation_service::ConversationService,
-    services::message_service::MessageService,
 };
 use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::{broadcast_to_conversation, send_conversation_created_events, send_message_confirmation};

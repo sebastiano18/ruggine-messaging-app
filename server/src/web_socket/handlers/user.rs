@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::{
@@ -83,7 +83,7 @@ pub async fn handle_user_events_resume_request(
         .unwrap_or(100)
         .min(1000);
 
-    // ✅ USA LA NUOVA FUNZIONE che arricchisce automaticamente
+    // USA LA NUOVA FUNZIONE che arricchisce automaticamente
     match state
         .get_user_events_since_enriched(user_id, from_sequence, limit)
         .await

@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::{actor::OutboundMsg};
-use crate::{error::AppError, error::Result, state::AppState};
+use crate::{error::Result, state::AppState};
 use crate::web_socket::broadcast::handle_user_notification;
 
 // Messaggi interni per gestire i stream dinamici

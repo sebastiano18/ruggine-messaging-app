@@ -1,9 +1,8 @@
 use serde_json::json;
-use sqlx::Row;
 use tracing::{info, warn};
 use uuid::Uuid;
 use crate::{error::Result, repositories::conversation_repo::ConversationRepo, state::AppState};
-use crate::models::{ConversationOut, ConversationSummary, ConversationWithLastMessage, Message, PaginatedConversationsResponse, ParticipantInfo, ParticipantOut};
+use crate::models::{ConversationOut, ConversationSummary, Message, PaginatedConversationsResponse, ParticipantOut};
 use crate::web_socket::utils::send_event_to_multiple_users;
 
 #[derive(Debug, Clone)]
@@ -14,7 +13,6 @@ impl ConversationService {
         ConversationRepo::create_group(pool, name, owner_id).await
     }
     
-
     pub async fn get_conversation(
         pool: &sqlx::SqlitePool,
         conversation_id: Uuid,
