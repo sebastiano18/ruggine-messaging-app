@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use crate::error::Result;
-use crate::models::{ConversationWithLastMessage, Message};
-use chrono::{TimeZone, Utc};
+use crate::models::{ConversationWithLastMessage};
+use chrono::{Utc};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
@@ -321,7 +321,7 @@ WHERE c.id = ?
             members: None,
         };
 
-        // ✅ Popola members se è un gruppo
+        // Popola members se è un gruppo
         if kind == "group" {
             let members_query = r#"
     SELECT
@@ -398,62 +398,6 @@ WHERE c.id = ?
             .bind(ts) // ← Usa lo stesso timestamp
             .execute(pool)
             .await?;
-
-        Ok(conversation_id)
-    }
-
-    pub async fn create_dm(pool: &SqlitePool, user1_id: Uuid, user2_id: Uuid) -> Result<Uuid> {
-        let u1_str = user1_id.to_string();
-        let u2_str = user2_id.to_string();
-
-        let existing: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT c.id
-            FROM conversations c
-            JOIN participants p1 ON c.id = p1.conversation_id
-            JOIN participants p2 ON c.id = p2.conversation_id
-            WHERE c.kind = 'dm'
-              AND p1.user_id = ?
-              AND p2.user_id = ?
-            LIMIT 1
-            "#,
-        )
-        .bind(&u1_str)
-        .bind(&u2_str)
-        .fetch_optional(pool)
-        .await?;
-
-        if let Some(cid_str) = existing {
-            return Ok(Uuid::parse_str(&cid_str).unwrap());
-        }
-
-        let conversation_id = Uuid::new_v4();
-        let cid_str = conversation_id.to_string();
-
-        sqlx::query(
-            "INSERT INTO conversations (id, kind, owner_id, created_at) VALUES (?, 'dm', ?, ?)",
-        )
-        .bind(&cid_str)
-        .bind(&u1_str)
-        .bind(chrono::Utc::now().timestamp())
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO participants (conversation_id, user_id, role) VALUES (?, ?, 'member')",
-        )
-        .bind(&cid_str)
-        .bind(&u1_str)
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO participants (conversation_id, user_id, role) VALUES (?, ?, 'member')",
-        )
-        .bind(&cid_str)
-        .bind(&u2_str)
-        .execute(pool)
-        .await?;
 
         Ok(conversation_id)
     }
@@ -651,54 +595,6 @@ WHERE c.id = ?
         }
 
         Ok(ids)
-    }
-
-    pub async fn get_members(
-        pool: &SqlitePool,
-        conversation_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, String, i64)>> {
-        tracing::info!("Getting members for conversation: {}", conversation_id);
-
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                p.user_id,
-                u.username,
-                p.role,
-                0 as joined_at
-            FROM participants p
-            JOIN users u ON p.user_id = u.id
-            WHERE p.conversation_id = ?
-            ORDER BY u.username ASC
-            "#,
-        )
-        .bind(conversation_id.to_string())
-        .fetch_all(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error in get_members: {:?}", e);
-            e
-        })?;
-
-        tracing::info!("Found {} members", rows.len());
-
-        let members: Vec<(Uuid, String, String, i64)> = rows
-            .into_iter()
-            .map(|r| {
-                let user_id_str: String = r.get("user_id");
-                let username: String = r.get("username");
-                let role: String = r.get("role");
-                let joined_at: i64 = r.get("joined_at");
-                (
-                    Uuid::parse_str(&user_id_str).expect("DB must store valid UUIDs"),
-                    username,
-                    role,
-                    joined_at,
-                )
-            })
-            .collect();
-
-        Ok(members)
     }
 
     pub async fn remove_member(

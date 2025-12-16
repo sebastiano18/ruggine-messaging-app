@@ -1,7 +1,3 @@
-// controllers/users_controller.rs
-// controllers/users_controller.rs
-// controllers/users_controller.rs
-// controllers/users_controller.rs
 use crate::{error::Result, services::user_service::UserService, state::AppState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -22,13 +18,13 @@ pub struct LoginReq {
     pub password: String,
 }
 
-// UPDATED: Added last_sequence field
+// Added last_sequence field
 #[derive(Serialize)]
 pub struct LoginResp {
     pub token: String,
     pub user_id: Uuid,
     pub username: String,
-    pub last_sequence: u64,  // NUOVO: Include sequenza corrente dell'utente
+    pub last_sequence: u64,  // Include sequenza corrente dell'utente
 }
 
 #[derive(Serialize)]
@@ -58,7 +54,7 @@ pub async fn login(
     let (token, user_id) =
         UserService::login(&st.pool, &st.jwt_secret, &req.username, &req.password).await?;
 
-    // NUOVO: Get user's current sequence
+    // Get user's current sequence
     let last_sequence = match st.get_current_user_sequence(user_id).await {
         Ok(seq) => {
             debug!("Retrieved sequence {} for user {}", seq, user_id);

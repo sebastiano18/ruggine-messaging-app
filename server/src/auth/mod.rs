@@ -1,4 +1,3 @@
-// auth/mod.rs
 use crate::{error::{AppError, Result}, state::AppState};
 use axum::{async_trait, extract::{FromRequestParts, State}, http::{HeaderMap, request::Parts}};
 use axum::extract::FromRef;
@@ -56,6 +55,4 @@ where
         Ok(AuthUser { id: data.claims.uid, username: data.claims.sub })
     }
 }
-
-
 // And remember to add `FromRef` implementation for your AppState
