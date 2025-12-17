@@ -1,6 +1,5 @@
 // events/message_handler.rs - Gestione messaggi
 use super::sequence_handler::SequenceHandler;
-use crate::models::*;
 use crate::state::core::AppState;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -55,7 +54,7 @@ impl MessageHandler {
         client_msg_id: String,
         server_msg_id: Uuid,
         sequence: Option<u64>,
-        status: String,
+        _status: String,
     ) {
         info!("Processing confirmation for msg {}", client_msg_id);
 
@@ -154,26 +153,6 @@ impl MessageHandler {
             "Received confirmation for unknown message: {}",
             client_msg_id
         );
-        }
-    }
-
-    pub fn request_conversation_messages(state: &mut AppState, conversation_id: Uuid) {
-        debug!(
-            "Requesting messages for conversation {} via WebSocket",
-            conversation_id
-        );
-
-        let request = serde_json::json!({
-            "type": "open_conversation",
-            "conversation_id": conversation_id.to_string()
-        });
-
-        if let Some(ref ws_ctrl) = state.ws_ctrl {
-            if let Ok(json_str) = serde_json::to_string(&request) {
-                let _ = ws_ctrl.outgoing_tx.send(json_str);
-            }
-        } else {
-            warn!("Cannot request messages: WebSocket not connected");
         }
     }
 

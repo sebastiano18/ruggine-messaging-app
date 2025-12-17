@@ -14,10 +14,3 @@ pub fn move_conversation_to_top(state: &mut AppState, conversation_id: Uuid) {
         }
     }
 }
-
-pub fn sort_conversations_by_last_activity(state: &mut AppState) {
-    if let Some(ref mut conversations) = state.conversations {
-        conversations.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-        debug!("Conversations sorted by last_activity");
-    }
-}

@@ -1,6 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
-use serde_json::Value;
 use crate::app::events::helpers;
 use crate::models::*;
 use crate::state::core::AppState;
@@ -768,7 +766,7 @@ impl UserNotificationHandler {
                     .to_string()
             };
 
-            let last_read_sequence = conv_obj
+            let _last_read_sequence = conv_obj
                 .get("last_read_sequence")
                 .and_then(|s| s.as_i64())
                 .unwrap_or(0);
@@ -975,7 +973,7 @@ impl UserNotificationHandler {
         state: &mut AppState,
         event_data: serde_json::Value,
     ) {
-        use crate::models::{ConversationDto, MessageDto};
+        use crate::models::{ConversationDto};
         use uuid::Uuid;
 
         debug!("Parsing conversation_confirmation from event_data...");

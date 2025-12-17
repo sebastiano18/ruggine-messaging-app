@@ -5,8 +5,6 @@ use tracing::{debug, error, info};
 
 #[derive(Debug, Default)]
 pub struct ConnectionStats {
-    pub total_messages_sent: u64,
-    pub total_messages_received: u64,
     pub connection_attempts: u32,
     pub successful_connections: u32,
     pub disconnections: u32,
@@ -292,22 +290,6 @@ impl ConnectionManager {
         &self.stats
     }
 
-    pub fn reset_stats(&mut self) {
-        self.stats = ConnectionStats::default();
-    }
-
-    pub fn mark_message_sent(&mut self) {
-        self.stats.total_messages_sent += 1;
-    }
-
-    pub fn mark_message_received(&mut self) {
-        self.stats.total_messages_received += 1;
-    }
-
-    pub fn mark_send_error(&mut self, error: String) {
-        self.stats.last_error = Some(error);
-    }
-
     /// Incrementa il backoff dopo un fallimento
     /// Ritorna true se deve eseguire il logout (troppi fallimenti)
     pub fn increment_backoff(&mut self) -> bool {
@@ -355,42 +337,5 @@ impl ConnectionManager {
         self.stats.uptime_start = Some(Instant::now());
     }
 
-    /// Ottiene informazioni sul prossimo retry
-    pub fn get_retry_info(&self) -> Option<(u32, Duration)> {
-        if self.consecutive_failures > 0 {
-            let remaining = if let Some(last) = self.last_attempt {
-                self.next_retry_delay.saturating_sub(last.elapsed())
-            } else {
-                Duration::from_secs(0)
-            };
-            Some((self.consecutive_failures, remaining))
-        } else {
-            None
-        }
-    }
-
-    /// Gestisce evento di connessione riuscita
-    pub fn handle_connected(&mut self) {
-        self.reset_backoff();
-    }
-
-    /// Gestisce evento di disconnessione/errore
-    /// Ritorna true se deve eseguire il logout
-    pub fn handle_disconnected(&mut self) -> bool {
-        self.increment_backoff()
-    }
 }
 
-impl ConnectionStats {
-    pub fn connection_success_rate(&self) -> f64 {
-        if self.connection_attempts == 0 {
-            0.0
-        } else {
-            self.successful_connections as f64 / self.connection_attempts as f64
-        }
-    }
-
-    pub fn current_uptime(&self) -> Option<Duration> {
-        self.uptime_start.map(|start| start.elapsed())
-    }
-}

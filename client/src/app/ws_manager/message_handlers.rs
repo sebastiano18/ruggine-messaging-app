@@ -1,6 +1,5 @@
 use crate::models::{ConversationDto, ErrorType, GapInfo, MessageDto, ParticipantInfo, UiEvent, UserEventData};
 use serde_json::Value;
-use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -545,7 +544,7 @@ fn parse_gap_info(value: &Value) -> Option<GapInfo> {
     })
 }
 
-fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+fn handle_server_heartbeat(_tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let user_id = value
         .get("user_id")
         .and_then(|u| u.as_str())
@@ -559,7 +558,7 @@ fn handle_server_heartbeat(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, val
     );
 }
 
-fn handle_user_channel_ready(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+fn handle_user_channel_ready(_tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let user_id = value
         .get("user_id")
         .and_then(|u| u.as_str())
@@ -841,7 +840,7 @@ fn handle_server_error(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: 
     let _ = tx.send(UiEvent::Error(error_type));
 }
 
-fn handle_message_ack(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
+fn handle_message_ack(_tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     if let Some(client_msg_id) = value.get("client_msg_id") {
         debug!("Message acknowledged by server: {:?}", client_msg_id);
     }

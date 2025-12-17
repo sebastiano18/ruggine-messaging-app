@@ -19,7 +19,7 @@ impl ToastRenderer {
         const TOAST_SPACING: f32 = 8.0;
         const MAX_WIDTH: f32 = 200.0;
 
-        let screen_rect = ctx.screen_rect();
+        let _screen_rect = ctx.screen_rect();
         let is_dark = ctx.style().visuals.dark_mode;
 
         let mut y_offset: f32 = 0.0;
@@ -73,7 +73,7 @@ impl ToastRenderer {
             let ttl = toast.created.elapsed().as_secs_f32();
 
             // Animazione slide-in con easing
-            let slide_t = ((ttl / SLIDE_IN_DURATION).clamp(0.0, 1.0));
+            let slide_t = (ttl / SLIDE_IN_DURATION).clamp(0.0, 1.0);
             let slide_t = 1.0 - (1.0 - slide_t).powi(3); // ease-out cubic
             let slide_offset = SLIDE_IN_OFFSET * (1.0 - slide_t);
             let pos_y = TOP_MARGIN + y_offset - slide_offset;

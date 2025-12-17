@@ -4,7 +4,7 @@ use eframe::egui::{self, Frame, RichText, TextEdit};
 use uuid::Uuid;
 use tracing::{debug, info};
 
-use chrono::{DateTime, Local, Datelike, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate};
 use crate::app::events::utils::move_conversation_to_top;
 use crate::ui::modals::conversation_popups;
 

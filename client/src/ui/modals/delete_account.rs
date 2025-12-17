@@ -1,5 +1,4 @@
 use eframe::egui;
-use crate::models::UiEvent;
 use crate::state::AppState;
 
 /// Modal per la conferma eliminazione account (design originale)

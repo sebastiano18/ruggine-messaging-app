@@ -1,7 +1,6 @@
 use anyhow::Result;
 use reqwest::Client;
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
+use serde::{Serialize};
 use crate::models::LoginResp;
 
 #[derive(Serialize)]
@@ -54,12 +53,3 @@ pub async fn logout(base: &str, token: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn delete_account(base: &str, token: &str) -> Result<()> {
-    Client::new()
-        .delete(format!("{base}/api/users/deleteMe"))
-        .bearer_auth(token)
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
-}

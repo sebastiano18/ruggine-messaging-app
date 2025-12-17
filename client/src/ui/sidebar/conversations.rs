@@ -78,7 +78,7 @@ impl ConversationsSidebar {
         }
     }
 
-    fn show_header(&mut self, ui: &mut egui::Ui, state: &mut AppState, token: &str) {
+    fn show_header(&mut self, ui: &mut egui::Ui, _state: &mut AppState, _token: &str) {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
 
@@ -370,7 +370,7 @@ impl ConversationsSidebar {
         });
 
         // Menu contestuale al click destro sulla conversazione
-        if ((conv.kind == "group" && (is_owner || is_participant)) || conv.kind != "group") {
+        if (conv.kind == "group" && (is_owner || is_participant)) || conv.kind != "group" {
             response.context_menu(|ui| {
                 let label = if conv.kind == "group" {
                     if is_owner {

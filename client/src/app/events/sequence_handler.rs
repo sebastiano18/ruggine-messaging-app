@@ -1,6 +1,6 @@
 use crate::models::*;
 use crate::state::core::AppState;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 pub struct SequenceHandler;
@@ -122,19 +122,6 @@ impl SequenceHandler {
     }
 
 
-    /// Conferma esplicitamente una conversation sequence (quando viene processata)
-    pub fn confirm_conversation_sequence(state: &mut AppState, conversation_id: Uuid, sequence: u64) {
-        let current_confirmed = state
-            .conversation_sequences_confirmed
-            .get(&conversation_id)
-            .copied()
-            .unwrap_or(0);
-
-        if sequence > current_confirmed {
-            state.conversation_sequences_confirmed.insert(conversation_id, sequence);
-            debug!("Conversation {} sequence {} explicitly confirmed", conversation_id, sequence);
-        }
-    }
 
     pub fn handle_pong(
         state: &mut AppState,
@@ -491,52 +478,6 @@ impl SequenceHandler {
         );
     }
 
-    /// Verifica se ci sono gap nelle sequence
-    pub fn check_for_gaps(state: &AppState) -> (bool, bool) {
-        let user_gap = state.user_sequence_received > state.user_sequence_confirmed;
-
-        let conversation_gap = if let Some(cid) = state.cid {
-            let received = state.conversation_sequences.get(&cid).copied().unwrap_or(0);
-            let confirmed = state
-                .conversation_sequences_confirmed
-                .get(&cid)
-                .copied()
-                .unwrap_or(0);
-            received > confirmed
-        } else {
-            false
-        };
-
-        (user_gap, conversation_gap)
-    }
-
-    /// Verifica se è il momento di inviare un ping
-    pub fn should_send_ping(state: &AppState) -> bool {
-        state.ws_status == WsStatus::Connected && state.last_ping_time.elapsed() >= state.ping_interval
-    }
-
-    /// Aggiorna il timestamp dell'ultimo ping
-    pub fn update_ping_time(state: &mut AppState) {
-        state.last_ping_time = std::time::Instant::now();
-    }
-
-    /// Gestisce timeout del pong
-    pub fn handle_pong_timeout(state: &mut AppState) {
-        state.missed_pings += 1;
-        warn!(
-            "Pong timeout! Missed pings: {}/{}",
-            state.missed_pings, state.max_missed_pings
-        );
-
-        if state.missed_pings >= state.max_missed_pings {
-            error!(
-                "Too many missed pongs ({}), forcing reconnection",
-                state.missed_pings
-            );
-            state.request_ws_reconnect = true;
-            state.missed_pings = 0;
-        }
-    }
 
     /// Reset completo del sistema di sequenze
     pub fn reset_sequence_system(state: &mut AppState) {

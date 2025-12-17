@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use eframe::egui;
-use egui::{Align2, RichText};
+use egui::{RichText};
 
 /// Mostra il popup di conferma eliminazione/uscita conversazione
 pub fn show_delete_confirmation_popup(ctx: &egui::Context, state: &mut AppState) {

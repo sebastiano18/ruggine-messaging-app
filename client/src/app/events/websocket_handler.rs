@@ -351,7 +351,7 @@ impl WebSocketHandler {
         }
 
         // Inserimento ordinato per sequence o timestamp
-        let insert_pos = if let Some(msg_seq) = msg.sequence_num {
+        let insert_pos = if let Some(_msg_seq) = msg.sequence_num {
             conversation_cache
                 .binary_search_by(|existing| {
                     match (existing.sequence_num, msg.sequence_num) {
@@ -398,7 +398,7 @@ impl WebSocketHandler {
             return;
         }
 
-        let ui_insert_pos = if let Some(msg_seq) = msg.sequence_num {
+        let ui_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
             state
                 .messages
                 .binary_search_by(|existing| {

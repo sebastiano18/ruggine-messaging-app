@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use eframe::egui;
-use egui::{Align2, RichText, Stroke, TextEdit};
+use egui::{ RichText, Stroke, TextEdit};
 
 pub fn show_create_group_popup(ctx: &egui::Context, state: &mut AppState) {
     if !state.show_create_group_modal {
