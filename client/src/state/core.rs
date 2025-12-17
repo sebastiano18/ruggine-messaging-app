@@ -130,11 +130,9 @@ pub struct AppState {
 
     pub egui_waker: Arc<dyn Fn() + Send + Sync>,
 
-    pub ping_interval: Duration,
     pub last_ping_time: Instant,
     pub missed_pings: u32,
     pub max_missed_pings: u32,
-    pub ping_timeout: Duration,
 
     pub connection_attempt_start: Option<Instant>,
 
@@ -256,11 +254,10 @@ impl AppState {
 
             egui_waker: waker,
 
-            ping_interval: Duration::from_secs(30),
             last_ping_time: Instant::now(),
             missed_pings: 0,
             max_missed_pings: 3,
-            ping_timeout: Duration::from_secs(15),
+           
 
             connection_attempt_start: None,
 
