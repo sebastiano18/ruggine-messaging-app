@@ -164,9 +164,9 @@ impl ConversationsSidebar {
                             .cloned()
                             .collect();
 
-                        // 🔍 RICERCA ATTIVA: se sto cercando ma non trovo risultati
+                        // RICERCA ATTIVA: se sto cercando ma non trovo risultati
                         if filtered.is_empty() && !self.search_query.is_empty() {
-                            // ✨ Carica automaticamente più conversazioni se disponibili
+                            // Carica automaticamente più conversazioni se disponibili
                             if !state.is_loading_more_conversations && state.has_more_conversations {
                                 state.is_loading_more_conversations = true;
 
@@ -210,13 +210,13 @@ impl ConversationsSidebar {
                                 self.show_no_search_results(ui);
                             }
                         } else {
-                            // ✅ Mostra i risultati trovati
+                            // Mostra i risultati trovati
                             for conv in &filtered {
                                 self.render_conversation_item(ui, state, conv);
                                 ui.add_space(3.0);
                             }
 
-                            // ✨ Indicatore di caricamento quando si sta caricando più conversazioni
+                            // Indicatore di caricamento quando si sta caricando più conversazioni
                             if state.is_loading_more_conversations {
                                 ui.add_space(10.0);
                                 ui.vertical_centered(|ui| {
@@ -244,11 +244,11 @@ impl ConversationsSidebar {
                     }
                 }
 
-                // 🎯 Salva l'altezza totale del contenuto disegnato
+                // Salva l'altezza totale del contenuto disegnato
                 ui.min_rect().height()
             });
 
-        // === 🔥 GESTIONE SCROLL PER TRIGGER FETCH ===
+        // === GESTIONE SCROLL PER TRIGGER FETCH ===
 
         // Detecta scroll verso il basso
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
@@ -258,7 +258,7 @@ impl ConversationsSidebar {
         // Salva l'offset corrente per il prossimo frame
         ui.data_mut(|d| d.insert_temp(last_offset_id, output.state.offset.y));
 
-        // 🎯 Calcola la percentuale di scroll (trigger a 80%)
+        //  Calcola la percentuale di scroll (trigger a 80%)
         let total_height = output.inner; // Altezza totale del contenuto (ritornata dalla closure)
         let visible_height = output.inner_rect.height();
         let scroll_position = output.state.offset.y;

@@ -249,7 +249,7 @@ fn parse_message_from_json(value: &Value, conversation_id: Uuid) -> Option<Messa
         .or_else(|| value.get("sequence")) // Supporta entrambi i nomi
         .and_then(|s| s.as_u64());
 
-    // IMPORTANTE: Estrai client_msg_id se presente
+    // Estrai client_msg_id se presente
     let client_msg_id = value
         .get("client_msg_id")
         .and_then(|v| v.as_str())
@@ -301,7 +301,7 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                         .and_then(|s| s.as_i64())
                         .unwrap_or(0);
 
-                    // ✅ Leggi last_activity dal server (già calcolato con priorità corretta)
+                    //  Leggi last_activity dal server (già calcolato con priorità corretta)
                     let last_activity = conv
                         .get("last_activity")
                         .and_then(|t| t.as_i64())
@@ -354,7 +354,7 @@ fn handle_initial_state(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value:
                             let username = member.get("username")?.as_str()?.to_string();
                             let role = member.get("role")?.as_str()?.to_string();
 
-                            // ✅ Parsifica joined_at (può essere null per DM)
+                            //  Parsifica joined_at (può essere null per DM)
                             let joined_at = member
                                 .get("joined_at")
                                 .and_then(|v| v.as_i64());

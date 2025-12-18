@@ -9,7 +9,6 @@ impl DeleteAccountModal {
         Self
     }
 
-    /// Mostra il modal di conferma eliminazione account
     pub fn show_modal(&mut self, ctx: &egui::Context, state: &mut AppState) {
         if !state.confirm_delete_account {
             return;

@@ -125,7 +125,7 @@ impl MessageHandler {
                 SequenceHandler::update_conversation_sequence(state, conversation_id, seq);
             }
 
-            // ✅ NUOVO: Aggiorna ConversationDto con dati confermati
+            //  Aggiorna ConversationDto con dati confermati
             if let Some(ref mut convs) = state.conversations {
                 if let Some(conv) = convs.iter_mut().find(|c| c.id == conversation_id) {
                     if let Some(seq) = sequence {

@@ -3,7 +3,7 @@ use reqwest::Client;
 use uuid::Uuid;
 use crate::models::{MessageDto, MessageResponse};
 
-// NUOVA FUNZIONE: Get messages con paginazione
+// Get messages con paginazione
 pub async fn get_messages_paginated(
     base: &str,
     token: &str,

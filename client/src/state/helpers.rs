@@ -96,13 +96,13 @@ impl AppState {
         if let Some(pending) = &self.create_group_popup.pending_user_verification {
             if pending.to_lowercase() == username.to_lowercase() {
                 if exists {
-                    // ✅ Utente esiste! Aggiungilo alla lista partecipanti
+                    //  Utente esiste! Aggiungilo alla lista partecipanti
                     self.create_group_popup
                         .selected_participants
                         .insert(username.clone());
                     info!("User '{}' verified and added to group creation", username);
                 } else {
-                    // ❌ Utente non esiste, mostra errore
+                    //  Utente non esiste, mostra errore
                     let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
                         format!("Utente '{}' non trovato", username),
                     )));
@@ -120,11 +120,11 @@ impl AppState {
         if let Some(pending) = &self.invite_popup.pending_user_verification {
             if pending.to_lowercase() == username.to_lowercase() {
                 if exists {
-                    // ✅ Utente esiste! Aggiungilo alla lista utenti da invitare
+                    //  Utente esiste! Aggiungilo alla lista utenti da invitare
                     self.invite_popup.selected_users.insert(username.clone());
                     info!("User '{}' verified and added to invite list", username);
                 } else {
-                    // ❌ Utente non esiste, mostra errore
+                    //  Utente non esiste, mostra errore
                     let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
                         format!("Utente '{}' non trovato", username),
                     )));

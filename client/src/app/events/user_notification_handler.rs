@@ -24,7 +24,7 @@ impl UserNotificationHandler {
             if sequence > expected {
                 warn!("User event seq {} out of order (expected {}), buffering", sequence, expected);
 
-                // ✅ Buffera evento completo con metadata
+                //  Buffera evento completo con metadata
                 let full_event = serde_json::json!({
                 "sequence": sequence,
                 "event_type": event_type,
@@ -71,7 +71,7 @@ impl UserNotificationHandler {
                         .and_then(|id| id.as_str())
                         .and_then(|s| Uuid::parse_str(s).ok());
 
-                    // ✅ Estrai event_data dal buffered_event
+                    //  Estrai event_data dal buffered_event
                     let evt_data = buffered_event
                         .get("event_data")
                         .cloned()
@@ -213,7 +213,7 @@ impl UserNotificationHandler {
 
         if should_mark_read {
             if let Some(conv_id) = conversation_id {
-                // ✅ Verifica che la conversazione esista ancora
+                //  Verifica che la conversazione esista ancora
                 let conversation_exists = state
                     .conversations
                     .as_ref()
@@ -251,7 +251,7 @@ impl UserNotificationHandler {
     }
 
     fn handle_new_message(state: &mut AppState, event_data: serde_json::Value) {
-        // ✅ Parsa il messaggio
+        //  Parsa il messaggio
         let msg: MessageDto = match serde_json::from_value(event_data) {
             Ok(m) => m,
             Err(e) => {
@@ -278,7 +278,7 @@ impl UserNotificationHandler {
 
         let already_fetching = state.fetching_conversations.contains(&conv_id);
 
-        // ✅ Se conversazione non esiste E non stiamo già fetchando
+        //  Se conversazione non esiste E non stiamo già fetchando
         if !conversation_exists && !already_fetching {
             info!(
         "Message received via user event for unloaded conversation {}, fetching...",
@@ -287,7 +287,7 @@ impl UserNotificationHandler {
 
             state.fetching_conversations.insert(conv_id);
 
-            // ✅ BUFFERA FORZATAMENTE (bypass gap check)
+            //  BUFFERA FORZATAMENTE (bypass gap check)
             let buffer_entry = state
                 .message_reorder_buffer
                 .entry(conv_id)
@@ -306,7 +306,7 @@ impl UserNotificationHandler {
             let base_url = state.base.clone();
             let token = state.token.clone().unwrap_or_default();
 
-            state.rt.spawn(async move {  // ✅ USA state.rt.spawn, NON tokio::spawn!
+            state.rt.spawn(async move {  //  USA state.rt.spawn, NON tokio::spawn!
                 use crate::api::conversation::get_conversation;
 
                 match get_conversation(&base_url, &token, conv_id).await {
@@ -323,7 +323,7 @@ impl UserNotificationHandler {
             return;
         }
 
-        // ✅ Se stiamo già fetchando, buffera e basta
+        //  Se stiamo già fetchando, buffera e basta
         if already_fetching {
             let buffer_entry = state
                 .message_reorder_buffer
@@ -340,7 +340,7 @@ impl UserNotificationHandler {
             return;
         }
 
-        // ✅ Gap detection per messaggi normali
+        //  Gap detection per messaggi normali
         if let Some(msg_seq) = msg.sequence_num {
             let expected = state
                 .conversation_sequences_confirmed
@@ -372,7 +372,7 @@ impl UserNotificationHandler {
             }
         }
 
-        // ✅ Processa messaggio normalmente
+        //  Processa messaggio normalmente
         Self::process_confirmed_message(state, msg);
     }
 
@@ -452,7 +452,7 @@ impl UserNotificationHandler {
             }
         }
 
-        // ✅ CRITICO: Aggiorna ConversationDto nella lista
+        //  Aggiorna ConversationDto nella lista
         if let Some(ref mut convs) = state.conversations {
             if let Some(conv) = convs.iter_mut().find(|c| c.id == conv_id) {
                 // Aggiorna last_msg_seq
@@ -647,7 +647,7 @@ impl UserNotificationHandler {
                     info!("👁️ Switched view from stub {} to real group {}", stub_id, id);
                 }
 
-                info!("✅ Group stub {} replaced with real group {}", stub_id, id);
+                info!(" Group stub {} replaced with real group {}", stub_id, id);
             }
 
             if let Some(ref mut conversations) = state.conversations {
@@ -787,12 +787,12 @@ impl UserNotificationHandler {
                 title: title.clone(),
                 owner_id,
                 created_at,
-                last_read_sequence: last_msg_seq,  // ✅ Imposta al last_msg_seq per evitare unread
+                last_read_sequence: last_msg_seq,  //  Imposta al last_msg_seq per evitare unread
                 last_activity,
                 last_msg_seq,
             };
 
-            // ✅ NUOVO: Gestione stub per gruppi
+            //  Gestione stub per gruppi
             let stub_to_replace = if kind == "group" {
                 // Cerca stub usando client_temp_id
                 conv_obj
@@ -804,7 +804,7 @@ impl UserNotificationHandler {
                 None
             };
 
-            // ✅ Sostituisci stub se trovato
+            //  Sostituisci stub se trovato
             if let Some(stub_id) = stub_to_replace {
                 info!("🔄 Replacing group stub {} with real group {}", stub_id, id);
 
@@ -838,7 +838,7 @@ impl UserNotificationHandler {
                 state.conversation_sequences.remove(&stub_id);
                 state.conversation_sequences_confirmed.remove(&stub_id);
 
-                // ✅ Aggiorna cid se stavi visualizzando lo stub
+                //  Aggiorna cid se stavi visualizzando lo stub
                 if state.cid == Some(stub_id) {
                     state.cid = Some(id);
                     state.conv_title = title.clone();
@@ -854,7 +854,7 @@ impl UserNotificationHandler {
                     info!("👁️ Switched view from stub {} to real group {}", stub_id, id);
                 }
 
-                info!("✅ Stub {} replaced with real group {}", stub_id, id);
+                info!(" Stub {} replaced with real group {}", stub_id, id);
             }
 
             info!("📩 Aggiunta alla conversazione '{}' ({})", conversation.title, id);
@@ -872,13 +872,13 @@ impl UserNotificationHandler {
                     convs.push(conversation.clone());
                 }
 
-                // ✅ Inizializza entry - unread a 0, sequences al last_msg_seq
+                //  Inizializza entry - unread a 0, sequences al last_msg_seq
                 state.conversation_unread_counts.entry(id).or_insert(0);
                 state.conversation_sequences.entry(id).or_insert(last_msg_seq as u64);
                 state.conversation_sequences_confirmed.entry(id).or_insert(last_msg_seq as u64);
                 state.conversation_messages.entry(id).or_insert_with(Vec::new);
 
-                // 🆕 Se è un gruppo e NON è uno stub replacement, mostra "Sei stato aggiunto al gruppo" come anteprima
+                // Se è un gruppo e NON è uno stub replacement, mostra "Sei stato aggiunto al gruppo" come anteprima
                 if kind == "group" && stub_to_replace.is_none() {
                     let system_message = MessageDto {
                         id: Uuid::new_v4(),
@@ -892,13 +892,13 @@ impl UserNotificationHandler {
                         is_confirmed: Some(true),
                     };
 
-                    // ✅ Invia come anteprima
+                    //  Invia come anteprima
                     let _ = state.ui_tx.send(UiEvent::LastMessageUpdate {
                         conversation_id: id,
                         message: system_message,
                     });
 
-                    info!("✅ Set 'you joined group' as preview for {}", id);
+                    info!(" Set 'you joined group' as preview for {}", id);
                 } else if let Some(last_msg) = conv_obj.get("last_message") {
                     // Per DM o stub replacement, usa l'ultimo messaggio come anteprima
                     if let (Some(msg_id_str), Some(author_id_str), Some(content), Some(created_at), Some(seq_num)) = (
@@ -1340,7 +1340,7 @@ impl UserNotificationHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown");
 
-        // ✅ Estrai il timestamp (quando l'utente si è unito)
+        //  Estrai il timestamp (quando l'utente si è unito)
         let joined_at = event_data
             .get("timestamp")
             .and_then(|v| v.as_i64());
@@ -1368,7 +1368,7 @@ impl UserNotificationHandler {
                 user_id: added_user_id,
                 username: added_username.to_string(),
                 role: "member".to_string(),
-                joined_at,  // ✅ Aggiungi il campo
+                joined_at,  //  Aggiungi il campo
             };
 
             members.push(new_member);

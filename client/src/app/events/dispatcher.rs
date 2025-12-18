@@ -60,7 +60,7 @@ impl EventDispatcher {
                     // Check if already fetching this conversation
                     let already_fetching = state.fetching_conversations.contains(&conv_id);
 
-                    // ✅ CASO 1: Conversazione NON esiste e NON è in fetch → triggera fetch
+                    // CASO 1: Conversazione NON esiste e NON è in fetch → triggera fetch
                     if !conversation_exists && !already_fetching {
                         tracing::info!(
                             "Message received for unloaded conversation {}, fetching...",
@@ -70,7 +70,7 @@ impl EventDispatcher {
                         // Mark as fetching
                         state.fetching_conversations.insert(conv_id);
 
-                        // ✅ FORCE-BUFFER (bypass gap check)
+                        // FORCE-BUFFER (bypass gap check)
                         let buffer_entry = state
                             .message_reorder_buffer
                             .entry(conv_id)
@@ -108,17 +108,17 @@ impl EventDispatcher {
                             }
                         });
 
-                        return; // ✅ EXIT - non processare ora
+                        return; // EXIT - non processare ora
                     }
 
-                    // ✅ CASO 2: Conversazione NON esiste MA è già in fetch → buffera e aspetta
+                    // CASO 2: Conversazione NON esiste MA è già in fetch → buffera e aspetta
                     if !conversation_exists && already_fetching {
                         tracing::debug!(
                             "Message received for conversation {} being fetched, buffering",
                             conv_id
                         );
 
-                        // ✅ FORCE-BUFFER anche qui
+                        // FORCE-BUFFER anche qui
                         let buffer_entry = state
                             .message_reorder_buffer
                             .entry(conv_id)
@@ -132,10 +132,10 @@ impl EventDispatcher {
                 );
                         }
 
-                        return; // ✅ EXIT - aspetta il fetch
+                        return; // EXIT - aspetta il fetch
                     }
 
-                    // ✅ CASO 3: Conversazione ESISTE → processa normalmente
+                    // CASO 3: Conversazione ESISTE → processa normalmente
                     WebSocketHandler::handle(state, event);
                     utils::move_conversation_to_top(state, conv_id);
 
@@ -263,10 +263,10 @@ impl EventDispatcher {
                 for summary in &response.conversations {
                     let conv_id = summary.conversation.id;
 
-                    // ✅ Salva last_message se presente
+                    // Salva last_message se presente
                     if let Some(last_msg) = &summary.last_message {
                         let mut confirmed_msg = last_msg.clone();
-                        // ✅ CRITICO: Marca come confermato (viene dal server!)
+                        // Marca come confermato (viene dal server!)
                         confirmed_msg.is_confirmed = Some(true);
 
                         state
@@ -276,7 +276,7 @@ impl EventDispatcher {
                             .push(confirmed_msg);
                     }
 
-                    // ✅ Salva membri se presenti (non sovrascrive se già esistono)
+                    // Salva membri se presenti (non sovrascrive se già esistono)
                     if let Some(members) = &summary.members {
                         state
                             .members_list
@@ -284,7 +284,7 @@ impl EventDispatcher {
                             .or_insert_with(|| members.clone());
                     }
 
-                    // ✅ REGISTRA sequence della conversazione SENZA gap check
+                    // REGISTRA sequence della conversazione SENZA gap check
                     // (queste sono conversazioni storiche dalla REST API, non eventi real-time)
                     if summary.conversation.last_msg_seq > 0 {
                         state.conversation_sequences.insert(
@@ -298,7 +298,7 @@ impl EventDispatcher {
             );
                     }
 
-                    // ✅ CALCOLA e aggiorna unread count per il badge
+                    // CALCOLA e aggiorna unread count per il badge
                     let last_msg_seq = summary.conversation.last_msg_seq;
                     let last_read_seq = summary.conversation.last_read_sequence;
 
@@ -325,7 +325,7 @@ impl EventDispatcher {
                     }
                 }
 
-                // ✅ Appendi CON deduplicazione
+                // Appendi CON deduplicazione
                 if let Some(existing) = &mut state.conversations {
                     // Filtra solo conversazioni NUOVE
                     let new_conversations: Vec<_> = conversations
@@ -338,7 +338,7 @@ impl EventDispatcher {
 
                     existing.extend(new_conversations);
 
-                    // ✅ RIORDINA TUTTA LA LISTA per last_activity dopo l'append
+                    // RIORDINA TUTTA LA LISTA per last_activity dopo l'append
                     existing.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
 
                     if duplicates_count > 0 {
@@ -366,7 +366,7 @@ impl EventDispatcher {
         );
                 }
 
-                // ✅ Aggiorna stato paginazione
+                // Aggiorna stato paginazione
                 state.has_more_conversations = response.has_more;
                 state.next_cursor = response.next_cursor;
                 state.is_loading_more_conversations = false;
@@ -389,10 +389,10 @@ impl EventDispatcher {
                     state.members_list.insert(conv_id, members.clone());
                 }
 
-                // ✅ NUOVO: Salva last_message nella cache (come fa ConversationsAppended)
+                // Salva last_message nella cache (come fa ConversationsAppended)
                 if let Some(last_msg) = &summary.last_message {
                     let mut confirmed_msg = last_msg.clone();
-                    // ✅ CRITICO: Marca come confermato (viene dal server!)
+                    // Marca come confermato (viene dal server!)
                     confirmed_msg.is_confirmed = Some(true);
 
                     state
@@ -408,12 +408,12 @@ impl EventDispatcher {
         );
                 }
 
-                // ✅ CRITICO: Inizializza sequence PRIMA di deliverare buffer
+                // Inizializza sequence PRIMA di deliverare buffer
                 // Per conversazioni appena fetchate, NON fare gap detection - accetta il valore del server
                 if summary.conversation.last_msg_seq > 0 {
                     let seq = summary.conversation.last_msg_seq as u64;
 
-                    // ✅ Setta direttamente senza gap detection (conversazione appena fetchata)
+                    // Setta direttamente senza gap detection (conversazione appena fetchata)
                     state.conversation_sequences.insert(conv_id, seq);
                     state.conversation_sequences_confirmed.insert(conv_id, seq);
 
@@ -424,11 +424,11 @@ impl EventDispatcher {
         );
                 }
 
-                // ✅ Try to deliver buffered messages DOPO aver inizializzato sequence
+                // Try to deliver buffered messages DOPO aver inizializzato sequence
                 use crate::app::events::buffer_handler::BufferHandler;
                 let delivered = BufferHandler::try_deliver_buffered_messages(state, conv_id);
 
-                // ✅ Traccia la sequence massima tra i messaggi deliverizzati
+                // Traccia la sequence massima tra i messaggi deliverizzati
                 let mut max_delivered_seq: Option<u64> = if summary.conversation.last_msg_seq > 0 {
                     Some(summary.conversation.last_msg_seq as u64)
                 } else {
@@ -442,7 +442,7 @@ impl EventDispatcher {
             conv_id
         );
 
-                    // ✅ Processa ogni messaggio deliverizzato
+                    // Processa ogni messaggio deliverizzato
                     for msg in delivered {
                         // Inserisci in cache
                         let cache = state
@@ -473,7 +473,7 @@ impl EventDispatcher {
                 );
                         }
 
-                        // ✅ Aggiorna sequence E traccia la massima
+                        // Aggiorna sequence E traccia la massima
                         if let Some(seq) = msg.sequence_num {
                             use crate::app::events::sequence_handler::SequenceHandler;
                             SequenceHandler::update_conversation_sequence(state, conv_id, seq);
@@ -487,7 +487,7 @@ impl EventDispatcher {
                 );
                         }
 
-                        // ✅ Se è la conversazione corrente, aggiungi anche alla UI
+                        // Se è la conversazione corrente, aggiungi anche alla UI
                         if Some(conv_id) == state.cid {
                             if !state.messages.iter().any(|m| m.id == msg.id) {
                                 let ui_pos = state
@@ -515,7 +515,7 @@ impl EventDispatcher {
         );
                 }
 
-                // ✅ CALCOLA UNREAD COUNT CORRETTAMENTE (dopo aver processato i messaggi bufferati)
+                // CALCOLA UNREAD COUNT CORRETTAMENTE (dopo aver processato i messaggi bufferati)
                 // Solo se NON è la conversazione corrente
                 if Some(conv_id) != state.cid {
                     let last_msg_seq = max_delivered_seq.unwrap_or(0) as i64;
@@ -558,7 +558,7 @@ impl EventDispatcher {
                 } else {
                     let mut conversation_dto = summary.conversation.clone();
 
-                    // ✅ CRITICO: Aggiorna last_msg_seq con la sequence massima finale
+                    //  CRITICO: Aggiorna last_msg_seq con la sequence massima finale
                     if let Some(max_seq) = max_delivered_seq {
                         conversation_dto.last_msg_seq = max_seq as i64;
                         tracing::info!(
@@ -571,7 +571,7 @@ impl EventDispatcher {
                     if let Some(ref mut convs) = state.conversations {
                         convs.insert(0, conversation_dto);
 
-                        // ✅ ORDINA la lista dopo l'inserimento
+                        //  ORDINA la lista dopo l'inserimento
                         convs.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
 
                         tracing::debug!("Inserted new conversation and sorted. Total: {}", convs.len());

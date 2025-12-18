@@ -692,7 +692,6 @@ impl ConversationHandler {
 
         state.remove_dm_stub(conv.id);
 
-        // Rimosso move_conversation_to_top per evitare che la chat venga spostata in alto al click
         // super::utils::move_conversation_to_top(state, conv.id);
     }
 

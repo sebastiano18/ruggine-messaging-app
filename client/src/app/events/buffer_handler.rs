@@ -24,7 +24,7 @@ impl BufferHandler {
             let mut current_expected = current_confirmed + 1;
             let mut sequences_to_remove = Vec::new();
 
-            // ✅ Delivera messaggi consecutivi
+            // Delivera messaggi consecutivi
             while let Some(msg) = buffer.get(&current_expected) {
                 messages_to_deliver.push(msg.clone());
                 sequences_to_remove.push(current_expected);
@@ -36,7 +36,7 @@ impl BufferHandler {
                 buffer.remove(&seq);
             }
 
-            // ✅ CLEANUP: Rimuovi messaggi obsoleti (seq ≤ confirmed)
+            // Rimuovi messaggi obsoleti (seq ≤ confirmed)
             // Questi non verranno mai deliverizzati perché sono già confermati
             let obsolete_sequences: Vec<u64> = buffer
                 .keys()
@@ -74,7 +74,7 @@ impl BufferHandler {
         let mut current_expected = current_confirmed + 1;
         let mut sequences_to_remove = Vec::new();
 
-        // ✅ Delivera eventi consecutivi
+        //  Delivera eventi consecutivi
         while let Some(events) = state.user_event_reorder_buffer.get(&current_expected) {
             events_to_deliver.extend(events.clone());
             sequences_to_remove.push(current_expected);
@@ -86,7 +86,7 @@ impl BufferHandler {
             state.user_event_reorder_buffer.remove(&seq);
         }
 
-        // ✅ CLEANUP: Rimuovi eventi obsoleti (seq ≤ confirmed)
+        // Rimuovi eventi obsoleti (seq ≤ confirmed)
         // Questi non verranno mai deliverizzati perché sono già confermati
         let obsolete_sequences: Vec<u64> = state
             .user_event_reorder_buffer

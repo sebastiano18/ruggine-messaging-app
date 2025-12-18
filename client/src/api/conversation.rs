@@ -14,7 +14,7 @@ pub struct ConversationWithMessages {
     pub members: Vec<ParticipantInfo>,
 }
 
-// NUOVO: Response paginata
+// Response paginata
 #[derive(Deserialize, Debug, Clone)]
 pub struct PaginatedConversationsResponse {
     pub conversations: Vec<ConversationSummary>,
@@ -41,8 +41,6 @@ pub async fn get_conversation_with_messages(
     Ok(r)
 }
 
-
-// ✨ NUOVO: Ottieni conversazioni con pagination
 /// Ottieni conversazioni paginato (20 alla volta)
 ///
 /// # Arguments
@@ -50,7 +48,7 @@ pub async fn get_conversation_with_messages(
 /// * `token` - JWT token
 /// * `before` - Timestamp cursor (last_activity della conversazione più vecchia caricata)
 /// * `limit` - Numero di conversazioni da caricare (default 20)
-///
+
 /// # Example
 /// ```
 /// // Prima pagina
@@ -90,7 +88,7 @@ pub async fn get_conversations_paginated(
     Ok(r)
 }
 
-// ✨ AGGIORNATO: Ottieni singola conversazione con summary (ultimo messaggio + membri)
+//  Ottieni singola conversazione con summary (ultimo messaggio + membri)
 /// Ottieni una singola conversazione con metadata, ultimo messaggio e membri (se gruppo)
 /// Utile per caricare conversazioni on-demand quando arriva un messaggio in una chat non ancora caricata
 pub async fn get_conversation(

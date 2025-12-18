@@ -172,7 +172,7 @@ impl SequenceHandler {
             });
         }
 
-        // ✅ UN SOLO mark_read alla fine per la conversazione corrente
+        // UN SOLO mark_read alla fine per la conversazione corrente
         if let Some(current_cid) = state.cid {
             if let Some(seq) = state.conversation_sequences.get(&current_cid).copied() {
                 let outgoing = Outgoing::MarkRead {

@@ -603,20 +603,20 @@ fn send_message(s: &mut AppState, cid: Uuid) {
             client_msg_id.clone(),
         );
 
-        // IMPORTANTE: Salva nei pending per tracking conferma
+        // Salva nei pending per tracking conferma
         s.pending_confirmations.insert(client_msg_id.clone(), optimistic_msg.clone());
         info!("Added pending confirmation for client_id: {}", client_msg_id);
 
         // Aggiungi alla UI
         s.messages.push(optimistic_msg.clone());
 
-        // ✅ FIX: Aggiungi alla cache usando entry().or_insert_with()
+        //  Aggiungi alla cache usando entry().or_insert_with()
         s.conversation_messages
             .entry(cid)
             .or_insert_with(Vec::new)
             .push(optimistic_msg.clone());
 
-        // ✅ NUOVO: Aggiorna ConversationDto ottimisticamente
+        // Aggiorna ConversationDto ottimisticamente
         if let Some(ref mut convs) = s.conversations {
             if let Some(conv) = convs.iter_mut().find(|c| c.id == cid) {
                 conv.last_activity = optimistic_msg.created_at;

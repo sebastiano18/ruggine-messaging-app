@@ -130,7 +130,7 @@ impl WebSocketHandler {
                 message_conversation_id
             );
 
-            // MODIFICATO: Estrai solo lo username dalla tupla (String, Instant)
+            // Estrai solo lo username dalla tupla (String, Instant)
             let target_username = state.dm_stubs.remove(&message_conversation_id)
                 .map(|(username, _)| username)
                 .unwrap();
@@ -311,7 +311,7 @@ impl WebSocketHandler {
             warn!("Failed to auto-send mark_read: {}", e);
         } else {
             debug!(
-                "✅ Auto-sent mark_read for conversation {} (seq: {}, author: {})",
+                " Auto-sent mark_read for conversation {} (seq: {}, author: {})",
                 msg.conversation_id, seq, msg.author_username
             );
 
