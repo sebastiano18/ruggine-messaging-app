@@ -1,5 +1,4 @@
-// models.rs - COMPLETO
-use serde::{Deserialize, Serialize};
+use serde::{Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -39,7 +38,7 @@ pub struct Message {
     pub sequence_num: Option<i64>,
 }
 
-// ✅ Struct per repository
+// Struct per repository
 #[derive(Debug, Clone, Serialize)]
 pub struct ParticipantInfo {
     pub user_id: Uuid,
@@ -73,7 +72,7 @@ pub struct ConversationWithLastMessage {
     pub members: Option<Vec<ParticipantInfo>>,
 }
 
-// ✅ NUOVE STRUCT DTO (per service e controller)
+// STRUCT DTO (per service e controller)
 #[derive(Debug, Clone, Serialize)]
 pub struct ConversationOut {
     pub id: Uuid,

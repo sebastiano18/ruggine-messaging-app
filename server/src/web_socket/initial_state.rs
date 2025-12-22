@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{info};
 use uuid::Uuid;
 
 /// Struttura per lo stato iniziale di una connessione WebSocket

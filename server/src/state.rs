@@ -1,11 +1,11 @@
 use crate::error::{AppError, Result};
 use crate::web_socket::actor::OutboundMsg;
-use serde::{Deserialize, Serialize};
+use serde::{Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{RwLock, broadcast, mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 // === Gestione Connessioni Attive ===
@@ -408,26 +408,6 @@ impl AppState {
         Ok(new_seq as u64)
     }
 
-    /// Ottieni numero di sequenza corrente per una conversazione (senza incrementare)
-    pub async fn get_current_message_sequence(&self, conversation_id: Uuid) -> Result<u64> {
-        let conv_id_str = conversation_id.to_string();
-
-        let row =
-            sqlx::query("SELECT current_sequence FROM message_sequences WHERE conversation_id = ?")
-                .bind(&conv_id_str)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(AppError::from)?;
-
-        let seq = if let Some(row) = row {
-            let seq: i64 = row.try_get("current_sequence").map_err(AppError::from)?;
-            seq as u64
-        } else {
-            0
-        };
-
-        Ok(seq)
-    }
 
     // === Storage e Recovery ===
 
@@ -502,57 +482,6 @@ impl AppState {
         }
 
         Ok(sequence)
-    }
-
-    // === Recovery Methods ===
-
-    /// Recupera user events mancanti dal database
-    pub async fn get_user_events_since(
-        &self,
-        user_id: Uuid,
-        since_sequence: u64,
-        limit: i64,
-    ) -> Result<Vec<UserEvent>> {
-        let user_id_str = user_id.to_string();
-
-        let rows = sqlx::query(
-            "SELECT sequence_num, event_type, event_data, conversation_id, created_at
-             FROM user_events
-             WHERE user_id = ? AND sequence_num > ?
-             ORDER BY sequence_num ASC
-             LIMIT ?",
-        )
-            .bind(&user_id_str)
-            .bind(since_sequence as i64)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(AppError::from)?;
-
-        let mut events = Vec::new();
-        for row in rows {
-            let sequence: i64 = row.try_get("sequence_num").map_err(AppError::from)?;
-            let event_type: String = row.try_get("event_type").map_err(AppError::from)?;
-            let event_data_str: String = row.try_get("event_data").map_err(AppError::from)?;
-            let conversation_id_str: Option<String> =
-                row.try_get("conversation_id").map_err(AppError::from)?;
-            let created_at: i64 = row.try_get("created_at").map_err(AppError::from)?;
-
-            let event_data: serde_json::Value = serde_json::from_str(&event_data_str)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-
-            let conversation_id = conversation_id_str.and_then(|s| Uuid::parse_str(&s).ok());
-
-            events.push(UserEvent {
-                sequence: sequence as u64,
-                event_type,
-                event_data,
-                conversation_id,
-                created_at,
-            });
-        }
-
-        Ok(events)
     }
 
     /// Recupera messaggi mancanti per una conversazione
@@ -645,94 +574,6 @@ impl AppState {
         Ok(())
     }
 
-    // === Resume Senders ===
-
-    /// Invia resume di user events mancanti 
-    pub async fn send_user_events_resume(
-        &self,
-        user_id: Uuid,
-        events: Vec<UserEvent>,
-        out_tx: &mpsc::Sender<OutboundMsg>,
-    ) -> Result<()> {
-        // NUOVO: Prepara gli eventi con last_message aggiornato e client_temp_id
-        let mut enriched_events = Vec::new();
-
-        for e in events {
-            let mut event = e.event_data.clone();
-
-            // Se è un evento di conversazione (created_complete O confirmation), aggiorna e aggiungi client_temp_id
-            if e.event_type == "conversation_created_complete"
-                || e.event_type == "conversation_confirmation" {
-                if let Some(conv_data) = event.get("conversation").and_then(|c| c.as_object()) {
-                    if let Some(conv_id_value) = conv_data.get("id") {
-                        if let Some(conv_id_str) = conv_id_value.as_str() {
-                            if let Ok(conv_id) = Uuid::parse_str(conv_id_str) {
-                                // NUOVO: Aggiungi client_temp_id se presente nella cache
-                                if let Some(client_temp_id) =
-                                    self.conversation_confirmation_cache.get(&conv_id).await
-                                {
-                                    if let Some(conversation) = event.get_mut("conversation") {
-                                        conversation["client_temp_id"] = json!(client_temp_id);
-                                        debug!(
-                                            "Added client_temp_id {} to conversation {} in resume",
-                                            client_temp_id, conv_id
-                                        );
-                                    }
-                                }
-
-                                // Recupera l'ultimo messaggio attuale per questa conversazione
-                                if let Ok(last_msg) =
-                                    self.get_latest_message_for_conversation(conv_id).await
-                                {
-                                    if let Some(msg_data) = last_msg {
-                                        // Aggiorna il last_message nell'evento
-                                        if let Some(conversation) = event.get_mut("conversation") {
-                                            conversation["last_message"] = msg_data;
-                                            debug!(
-                                                "Updated last_message for conversation {} in resume",
-                                                conv_id
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // CRITICAL FIX: Aggiungi "type" basato su "event_type" per compatibilità client
-            event["type"] = json!(&e.event_type);
-            event["sequence"] = json!(e.sequence);
-            event["event_type"] = json!(&e.event_type);
-            event["created_at"] = json!(e.created_at);
-            if let Some(conv_id) = e.conversation_id {
-                event["conversation_id"] = json!(conv_id);
-            }
-
-            enriched_events.push(event);
-        }
-
-        let resume_msg = json!({
-            "type": "user_events_resume",
-            "events": enriched_events,
-            "count": enriched_events.len(),
-            "timestamp": chrono::Utc::now().timestamp()
-        });
-
-        if let Ok(txt) = serde_json::to_string(&resume_msg) {
-            out_tx.send(OutboundMsg::Text(txt)).await.map_err(|e| {
-                AppError::Internal(format!("Failed to send user events resume: {}", e))
-            })?;
-        }
-
-        info!(
-            "Sent {} user events in resume to user {}",
-            enriched_events.len(),
-            user_id
-        );
-        Ok(())
-    }
 
     /// Invia resume di messaggi mancanti
     pub async fn send_messages_resume(
@@ -837,60 +678,6 @@ impl AppState {
         Ok(())
     }
 
-    // Aggiungi questo metodo helper dopo gli altri metodi in AppState
-    async fn get_latest_message_for_conversation(
-        &self,
-        conversation_id: Uuid,
-    ) -> Result<Option<Value>> {
-        let conv_id_str = conversation_id.to_string();
-
-        let query = r#"
-            SELECT
-                m.id,
-                m.author_id,
-                u.username as author_username,
-                m.content,
-                m.created_at,
-                m.sequence_num
-            FROM messages m
-            INNER JOIN users u ON m.author_id = u.id
-            WHERE m.conversation_id = ?
-            ORDER BY m.created_at DESC
-            LIMIT 1
-        "#;
-
-        let row = sqlx::query(query)
-            .bind(&conv_id_str)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(AppError::from)?;
-
-        if let Some(row) = row {
-            let mut message = json!({
-                "id": row.try_get::<String, _>("id").unwrap_or_default(),
-                "author_id": row.try_get::<String, _>("author_id").unwrap_or_default(),
-                "author_username": row.try_get::<String, _>("author_username").unwrap_or_default(),
-                "content": row.try_get::<String, _>("content").unwrap_or_default(),
-                "created_at": row.try_get::<i64, _>("created_at").unwrap_or(0)
-            });
-
-            if let Ok(Some(seq)) = row.try_get::<Option<i64>, _>("sequence_num") {
-                message["sequence_num"] = json!(seq);
-            }
-
-            // Aggiungi client_msg_id se presente in cache
-            if let Ok(msg_id) = Uuid::parse_str(&row.try_get::<String, _>("id").unwrap_or_default())
-            {
-                if let Some(client_id) = self.message_confirmation_cache.get(&msg_id).await {
-                    message["client_msg_id"] = json!(client_id);
-                }
-            }
-
-            Ok(Some(message))
-        } else {
-            Ok(None)
-        }
-    }
 
     // === NUOVE FUNZIONI PER ARRICCHIMENTO EVENTI ===
 

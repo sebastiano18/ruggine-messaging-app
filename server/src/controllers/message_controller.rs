@@ -31,11 +31,6 @@ pub struct ListQuery {
     pub before_sequence: Option<i64>,
 }
 
-#[derive(Deserialize)]
-pub struct MessageQuery {
-    pub limit: Option<i64>,
-}
-
 #[cfg_attr(debug_assertions, axum::debug_handler)]
 pub async fn list(
     user: AuthUser,
@@ -107,4 +102,3 @@ pub async fn delete_message(
     MessageService::delete(&st.pool, message_id, user.id, &st).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-

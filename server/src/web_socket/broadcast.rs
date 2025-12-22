@@ -1,8 +1,7 @@
-use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::Row;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{

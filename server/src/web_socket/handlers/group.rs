@@ -201,7 +201,7 @@ pub async fn handle_invite_user(
     let conv_title: Option<String> = conv_info.try_get("title").ok();
     let conv_created_at: i64 = conv_info.try_get("created_at").map_err(AppError::from)?;
 
-    // 🆕 Ottieni l'ultimo messaggio della conversazione (se esiste)
+    // Ottieni l'ultimo messaggio della conversazione (se esiste)
     let last_message_opt = sqlx::query(
         "SELECT id, author_id, content, created_at, sequence_num
          FROM messages
@@ -262,7 +262,7 @@ pub async fn handle_invite_user(
 
         let ts = Utc::now().timestamp();
 
-        // 🆕 Costruisci il payload della conversazione con l'ultimo messaggio
+        // Costruisci il payload della conversazione con l'ultimo messaggio
         let mut conversation_data = json!({
             "id": conversation_id,
             "kind": &kind,
@@ -274,7 +274,7 @@ pub async fn handle_invite_user(
             "last_msg_seq": 0
         });
 
-        // 🆕 Aggiungi l'ultimo messaggio se esiste
+        // Aggiungi l'ultimo messaggio se esiste
         if let Some(ref msg_row) = last_message_opt {
             if let (Ok(msg_id), Ok(author_id), Ok(content), Ok(created_at), Ok(seq_num)) = (
                 msg_row.try_get::<String, _>("id").and_then(|s| Uuid::parse_str(&s).map_err(|e| sqlx::Error::Decode(Box::new(e)))),
