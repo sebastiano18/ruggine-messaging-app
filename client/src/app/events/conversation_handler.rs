@@ -15,10 +15,11 @@ impl ConversationHandler {
         members_by_conversation: Option<std::collections::HashMap<Uuid, Vec<ParticipantInfo>>>,
     ) {
         info!(
-            "Processing initial state: {} conversations, user_seq: {}",
-            conversations.len(),
-            user_sequence
-        );
+        "Processing initial state: {} conversations, user_seq: {}",
+        conversations.len(),
+        user_sequence
+    );
+        state.has_more_conversations = conversations.len() == 20;
 
         // Imposta sequenza iniziale (aggiorna anche Arc per ping task)
         SequenceHandler::set_initial_user_sequence(state, user_sequence);
@@ -50,9 +51,9 @@ impl ConversationHandler {
                     .conversation_sequences_confirmed
                     .insert(conv.id, last_seq as u64);
                 debug!(
-                    "Initialized conversation {} ({}) sequences to {} (from last_msg_seq)",
-                    conv.title, conv.id, last_seq
-                );
+                "Initialized conversation {} ({}) sequences to {} (from last_msg_seq)",
+                conv.title, conv.id, last_seq
+            );
             }
         }
 
@@ -73,18 +74,19 @@ impl ConversationHandler {
 
             if unread > 0 {
                 debug!(
-                    "Conversation '{}' (id: {}) - last_cached_seq: {:?}, last_read: {}, unread: {}",
-                    conv.title, conv.id, last_cached_seq, conv.last_read_sequence, unread
-                );
+                "Conversation '{}' (id: {}) - last_cached_seq: {:?}, last_read: {}, unread: {}",
+                conv.title, conv.id, last_cached_seq, conv.last_read_sequence, unread
+            );
             }
         }
 
         let total_unread: i64 = state.conversation_unread_counts.values().sum();
         info!(
-            "Loaded {} conversations with {} total unread messages",
-            conversations.len(),
-            total_unread
-        );
+        "Loaded {} conversations with {} total unread messages, has_more: {}",
+        conversations.len(),
+        total_unread,
+        state.has_more_conversations
+    );
 
         let mut stubs_to_remove = Vec::new();
         for (stub_id, _) in &state.dm_stubs {
@@ -97,7 +99,6 @@ impl ConversationHandler {
             state.remove_dm_stub(stub_id);
             debug!("Removed DM stub {} (now real conversation)", stub_id);
         }
-
     }
 
     pub fn handle_last_message_update(
