@@ -81,7 +81,6 @@ async fn main() -> anyhow::Result<()> {
     let api_router = Router::new()
         .merge(routers::user_route::router())
         .merge(routers::conversation_route::router())
-        .merge(routers::invite_route::router())
         .merge(routers::message_route::router());
 
     // Combina i router

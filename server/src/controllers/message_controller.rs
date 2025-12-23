@@ -74,31 +74,3 @@ pub async fn list(
 
     Ok(Json(messages))
 }
-#[cfg_attr(debug_assertions, axum::debug_handler)]
-pub async fn post(
-    user: AuthUser,
-    Path(conversation_id): Path<Uuid>,
-    State(st): State<AppState>,
-    Json(req): Json<PostMessageReq>,
-) -> Result<Json<CreatedId>> {
-    let message_id = MessageService::post(
-        &st.pool,
-        conversation_id,
-        user.id,
-        user.username,
-        &req.content,
-        &st,
-    )
-        .await?;
-    Ok(Json(CreatedId { id: message_id }))
-}
-
-#[cfg_attr(debug_assertions, axum::debug_handler)]
-pub async fn delete_message(
-    user: AuthUser,
-    Path(message_id): Path<Uuid>,
-    State(st): State<AppState>,
-) -> Result<StatusCode> {
-    MessageService::delete(&st.pool, message_id, user.id, &st).await?;
-    Ok(StatusCode::NO_CONTENT)
-}

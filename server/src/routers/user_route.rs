@@ -7,5 +7,4 @@ pub fn router() -> Router<AppState> {
         .route("/users/register", post(c::register))
         .route("/users/login", post(c::login))
         .route("/users/logout", post(c::logout))
-        .route("/users/deleteMe", delete(c::delete_self))
 }

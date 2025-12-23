@@ -7,6 +7,6 @@ use axum::{
 pub fn router() -> Router<AppState> {
     Router::new()
         // Endpoint unificato per messaggi con paginazione opzionale
-        .route("/conversations/:cid/messages", get(c::list).post(c::post))
-        .route("/messages/:message_id", delete(c::delete_message))
+        .route("/conversations/:cid/messages", get(c::list))
+
 }

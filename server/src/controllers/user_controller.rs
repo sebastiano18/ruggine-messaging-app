@@ -82,23 +82,3 @@ pub async fn login(
 pub async fn logout(Json(_req): Json<LogoutReq>) -> Result<()> {
     Ok(()) // stateless
 }
-
-// elimina l'account dell'utente autenticato
-#[axum::debug_handler]
-pub async fn delete_self(
-    user: AuthUser,
-    State(st): State<AppState>,
-) -> Result<StatusCode> {
-
-
-    // POI prova a notificare (best-effort, può fallire)
-    if let Err(e) = UserService::notify_participants_of_deleted_user(&st, user.id).await {
-        tracing::warn!("Failed to notify participants (non-critical): {}", e);
-    }
-
-    // PRIMA elimina dal DB
-    UserService::delete_user(&st.pool, user.id).await?;
-
-    tracing::info!("User {} successfully deleted", user.id);
-    Ok(StatusCode::NO_CONTENT)
-}
