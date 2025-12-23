@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use crate::error::Result;
-use crate::models::{ConversationWithLastMessage};
-use chrono::{Utc};
+use crate::models::ConversationWithLastMessage;
+use chrono::Utc;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
@@ -19,7 +19,7 @@ impl ConversationRepo {
 
         let query = if let Some(_) = before {
             r#"
-SELECT 
+SELECT
     c.id,
     c.kind,
     CASE
@@ -45,7 +45,7 @@ SELECT
     c.owner_id,
     c.created_at,
     p.last_read_sequence,
-    COALESCE(ms.last_updated, p.joined_at, c.created_at) as last_activity,
+    COALESCE(MAX(ms.last_updated, p.joined_at), c.created_at) as last_activity,
     COALESCE(ms.current_sequence, 0) as last_msg_seq,
     last_m.id as last_msg_id,
     last_m.author_id as last_msg_author_id,
@@ -56,17 +56,17 @@ SELECT
 FROM conversations c
 JOIN participants p ON c.id = p.conversation_id
 LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
-LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
+LEFT JOIN messages last_m ON c.id = last_m.conversation_id
     AND last_m.sequence_num = ms.current_sequence
 LEFT JOIN users last_u ON last_m.author_id = last_u.id
 WHERE p.user_id = ?
-  AND COALESCE(ms.last_updated, p.joined_at, c.created_at) < ?
+  AND COALESCE(MAX(ms.last_updated, p.joined_at), c.created_at) < ?
 ORDER BY last_activity DESC
 LIMIT ?
 "#
         } else {
             r#"
-SELECT 
+SELECT
     c.id,
     c.kind,
     CASE
@@ -92,7 +92,7 @@ SELECT
     c.owner_id,
     c.created_at,
     p.last_read_sequence,
-    COALESCE(ms.last_updated, p.joined_at, c.created_at) as last_activity,
+    COALESCE(MAX(ms.last_updated, p.joined_at), c.created_at) as last_activity,
     COALESCE(ms.current_sequence, 0) as last_msg_seq,
     last_m.id as last_msg_id,
     last_m.author_id as last_msg_author_id,
@@ -103,7 +103,7 @@ SELECT
 FROM conversations c
 JOIN participants p ON c.id = p.conversation_id
 LEFT JOIN message_sequences ms ON c.id = ms.conversation_id
-LEFT JOIN messages last_m ON c.id = last_m.conversation_id 
+LEFT JOIN messages last_m ON c.id = last_m.conversation_id
     AND last_m.sequence_num = ms.current_sequence
 LEFT JOIN users last_u ON last_m.author_id = last_u.id
 WHERE p.user_id = ?
@@ -188,7 +188,7 @@ INNER JOIN users u ON p.user_id = u.id
 INNER JOIN conversations c ON p.conversation_id = c.id
 WHERE p.conversation_id IN ({})
   AND c.kind = 'group'
-ORDER BY p.conversation_id, 
+ORDER BY p.conversation_id,
          CASE WHEN LOWER(p.role) = 'owner' THEN 0 ELSE 1 END,
          u.username
 "#,
@@ -202,10 +202,7 @@ ORDER BY p.conversation_id,
 
         let member_rows = query_builder.fetch_all(pool).await?;
 
-        let mut members_by_conv: std::collections::HashMap<
-            Uuid,
-            Vec<crate::models::ParticipantInfo>,
-        > = std::collections::HashMap::new();
+        let mut members_by_conv = std::collections::HashMap::new();
 
         for row in member_rows {
             let conv_id_str: String = row.get("conversation_id");

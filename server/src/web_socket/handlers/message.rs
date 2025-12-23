@@ -11,7 +11,7 @@ use crate::{
     services::message_service::MessageService,
     repositories::conversation_repo::ConversationRepo,
 };
-use crate::services::partecipant::ParticipantService;
+use crate::services::participant_service::ParticipantService;
 use crate::web_socket::actor::OutboundMsg;
 use crate::web_socket::broadcast::{broadcast_to_conversation, send_message_confirmation};
 use crate::web_socket::handlers::conversation::handle_message_with_new_conversation;

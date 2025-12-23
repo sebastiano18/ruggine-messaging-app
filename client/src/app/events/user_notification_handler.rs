@@ -103,7 +103,16 @@ impl UserNotificationHandler {
 
         match event_type.as_str() {
             "new_message" => {
-                Self::handle_new_message(state, event_data);
+                // Estrai il messaggio dal payload (potrebbe essere nested o flat)
+                let message_data = if let Some(msg) = event_data.get("message") {
+                    // Caso nested: { "message": { ... } }
+                    msg.clone()
+                } else {
+                    // Caso flat: { "author_id": ..., "content": ... }
+                    event_data.clone()
+                };
+
+                Self::handle_new_message(state, message_data);
             }
             "conversation_deleted" => {
                 if let Some(cid) = conversation_id {

@@ -203,9 +203,9 @@ impl ConversationHandler {
         client_temp_id: Option<String>,
     ) {
         info!(
-            "Processing conversation confirmation for {} (temp_id: {:?})",
-            conversation.id, client_temp_id
-        );
+        "Processing conversation confirmation for {} (temp_id: {:?})",
+        conversation.id, client_temp_id
+    );
 
         let mut was_active_stub = false;
         let mut stub_to_remove = None;
@@ -215,9 +215,9 @@ impl ConversationHandler {
                 if state.cid == Some(stub_uuid) {
                     was_active_stub = true;
                     info!(
-                        "Active stub {} will be replaced with real conversation {}",
-                        stub_uuid, conversation.id
-                    );
+                    "Active stub {} will be replaced with real conversation {}",
+                    stub_uuid, conversation.id
+                );
                 }
 
                 if state.dm_stubs.contains_key(&stub_uuid) {
@@ -229,9 +229,9 @@ impl ConversationHandler {
         if let Some(stub_id) = stub_to_remove {
             if let Some((target, _)) = state.dm_stubs.remove(&stub_id) {
                 info!(
-                    "Removed DM stub {} (target: {}) after confirmation",
-                    stub_id, target
-                );
+                "Removed DM stub {} (target: {}) after confirmation",
+                stub_id, target
+            );
             }
 
             state.conversation_sequences.remove(&stub_id);
@@ -248,13 +248,15 @@ impl ConversationHandler {
         if let Some(ref mut conversations) = state.conversations {
             // Rimuovi eventuali conversazioni con lo stesso ID reale (non dovrebbe succedere)
             conversations.retain(|c| c.id != conversation.id);
-            conversations.push(conversation.clone());
-            conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+            // Aggiungi in cima (è una conversazione appena confermata)
+            conversations.insert(0, conversation.clone());
+
             info!(
-                "Added conversation {} to list ({} total)",
-                conversation.id,
-                conversations.len()
-            );
+            "Added conversation {} to list ({} total)",
+            conversation.id,
+            conversations.len()
+        );
         } else {
             state.conversations = Some(vec![conversation.clone()]);
             info!("Initialized conversations list with {}", conversation.id);
@@ -272,9 +274,9 @@ impl ConversationHandler {
                         .conversation_sequences_confirmed
                         .insert(conversation.id, seq);
                     info!(
-                        "Set conversation {} sequence to {} from messages",
-                        conversation.id, seq
-                    );
+                    "Set conversation {} sequence to {} from messages",
+                    conversation.id, seq
+                );
                 }
             }
         }
@@ -284,14 +286,13 @@ impl ConversationHandler {
             state.conv_title = conversation.title.clone();
             state.messages = messages;
             info!(
-                "Updated active conversation from stub {} to real {}",
-                stub_to_remove.unwrap_or(Uuid::nil()),
-                conversation.id
-            );
+            "Updated active conversation from stub {} to real {}",
+            stub_to_remove.unwrap_or(Uuid::nil()),
+            conversation.id
+        );
         } else if state.cid == Some(conversation.id) {
             state.messages = messages;
         }
-
     }
 
     pub fn handle_older_messages_loaded(state: &mut AppState, new_messages: Vec<MessageDto>) {
@@ -610,41 +611,7 @@ impl ConversationHandler {
     pub fn handle_loading_progress(msg: String) {
         debug!("Loading progress: {}", msg);
     }
-
-    pub fn handle_trigger_conversation_fetch(state: &mut AppState, cid: Uuid, reason: String) {
-        debug!("Triggering conversation fetch for {}: {}", cid, reason);
-
-        if let Some(ref token) = state.token {
-            let base = state.base.clone();
-            let token = token.clone();
-            let tx = state.ui_tx.clone();
-
-            state.rt.spawn(async move {
-                match crate::api::conversation::get_conversation_with_messages(&base, &token, cid)
-                    .await
-                {
-                    Ok(conv_with_msgs) => {
-                        // Invia i membri se presenti
-                        if !conv_with_msgs.members.is_empty() {
-                            let _ = tx.send(UiEvent::MembersLoaded(cid, conv_with_msgs.members));
-                        }
-                        // Invia la conversazione e i messaggi
-                        let _ = tx.send(UiEvent::ConversationCompleteFetched(
-                            conv_with_msgs.conversation,
-                            conv_with_msgs.messages,
-                        ));
-                    }
-                    Err(e) => {
-                        error!("Failed to fetch conversation {}: {}", cid, e);
-                        let _ = tx.send(UiEvent::Error(
-                            crate::models::ErrorType::DataRecovery
-                        ));
-                    }
-                }
-            });
-        }
-    }
-
+    
     pub fn handle_conversation_complete_fetched(
         state: &mut AppState,
         conv: ConversationDto,
