@@ -341,7 +341,7 @@ fn show_register_view(ui: &mut egui::Ui, s: &mut AppState) {
 
                     // Usa un campo temporaneo per la conferma password
                     let mut password_confirm = s.password_confirm.clone();
-                    let response = ui.add(
+                    let _response = ui.add(
                         TextEdit::singleline(&mut password_confirm)
                             .password(true)
                             .desired_width(400.0)

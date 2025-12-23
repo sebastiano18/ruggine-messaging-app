@@ -150,14 +150,13 @@ impl MessageProcessor {
                     json_obj["target_username"] = serde_json::Value::String(username.clone());
 
                     // Se è uno stub, usa l'ID dello stub stesso come client_temp_id
-                    // NOTA: dm_stubs ora contiene (String, Instant), quindi usiamo contains_key
+                    // dm_stubs ora contiene (String, Instant), quindi usiamo contains_key
                     if state.dm_stubs.contains_key(cid) {
-                        // CRITICO: Usa l'UUID dello stub come client_temp_id
+                        // Usa l'UUID dello stub come client_temp_id
                         // Questo permetterà al client di identificare e rimuovere lo stub
                         // quando riceve la conferma dal server
                         json_obj["client_temp_id"] = serde_json::Value::String(cid.to_string());
 
-                        // NON includere conversation_id per gli stub
                         // Il server capirà che deve creare una nuova conversazione
                         info!("Sending message to DM stub {} with client_temp_id={} and target_username={}",
                           cid, cid, username);

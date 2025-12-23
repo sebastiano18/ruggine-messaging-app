@@ -1,11 +1,10 @@
-use std::time::Duration;
+
 use std::sync::Arc;
-use crate::app::events::sequence_handler::SequenceHandler;
 use crate::app::ws_manager::ws_manager::WebSocketManager;
-use crate::models::{Page, WsStatus};
+use crate::models::{Page};
 use crate::state::AppState;
 use eframe::egui;
-use crate::ui::{components, pages};
+use crate::ui::{pages};
 use crate::ui::layout::header::HeaderManager;
 use crate::ui::layout::sidebar::SidebarManager;
 use crate::ui::modals::account::AccountModal;

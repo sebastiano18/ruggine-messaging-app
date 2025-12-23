@@ -5,11 +5,6 @@ use uuid::Uuid;
 // Re-export API response types
 pub use crate::api::conversation::PaginatedConversationsResponse;
 
-#[derive(Serialize)]
-pub struct RegisterReq<'a> {
-    pub username: &'a str,
-    pub password: &'a str,
-}
 
 #[derive(Deserialize)]
 pub struct LoginResp {
@@ -19,43 +14,6 @@ pub struct LoginResp {
     pub last_sequence: u64,
 }
 
-#[derive(Deserialize)]
-pub struct UserInfo {
-    pub id: Uuid,
-    pub username: String,
-    pub created_at: i64,
-}
-
-#[derive(Serialize)]
-pub struct LoginReq<'a> {
-    pub username: &'a str,
-    pub password: &'a str,
-}
-
-#[derive(Serialize)]
-pub struct GroupReq<'a> {
-    pub name: &'a str,
-}
-
-#[derive(Serialize)]
-pub struct InviteReq {
-    pub group_id: Uuid,
-}
-
-#[derive(Deserialize)]
-pub struct InviteResp {
-    pub token: String,
-}
-
-#[derive(Serialize)]
-pub struct JoinByTokenReq<'a> {
-    pub token: &'a str,
-}
-
-#[derive(Serialize)]
-pub struct SendMsgReq<'a> {
-    pub content: &'a str,
-}
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct MessageDto {
@@ -97,17 +55,6 @@ pub struct ConversationSummary {
     pub members: Option<Vec<ParticipantInfo>>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ConversationWithMembers {
-    pub conversation: ConversationDto,
-    pub members: Vec<ParticipantInfo>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct User {
-    pub id: Uuid,
-    pub username: String,
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ParticipantInfo {
@@ -377,19 +324,6 @@ impl MessageDto {
             self.content.ends_with(" ha eliminato il proprio account")
     }
 
-    pub fn fetch_notification(conversation_id: Uuid, message_count: usize, reason: &str) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            author_id: Uuid::nil(),
-            conversation_id,
-            author_username: "system".to_string(),
-            content: format!("Sincronizzati {} messaggi ({})", message_count, reason),
-            created_at: chrono::Utc::now().timestamp(),
-            sequence_num: None,
-            client_msg_id: None,
-            is_confirmed: None,
-        }
-    }
 
     pub fn optimistic_message(
         author_id: Uuid,

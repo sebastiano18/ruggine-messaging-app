@@ -39,11 +39,4 @@ impl RateLimiter {
         self.messages_sent += 1;
     }
 
-    /// Restituisce statistiche del rate limiter
-    pub fn get_stats(&self) -> (u32, u32, Duration) {
-        let remaining_window = self.window_duration
-            .saturating_sub(self.window_start.elapsed());
-
-        (self.messages_sent, self.max_messages_per_window, remaining_window)
-    }
 }

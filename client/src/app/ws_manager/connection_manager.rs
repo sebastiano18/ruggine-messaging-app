@@ -5,8 +5,6 @@ use tracing::{debug, error, info};
 
 #[derive(Debug, Default)]
 pub struct ConnectionStats {
-    pub total_messages_sent: u64,
-    pub total_messages_received: u64,
     pub connection_attempts: u32,
     pub successful_connections: u32,
     pub disconnections: u32,
@@ -66,7 +64,7 @@ impl ConnectionManager {
                         ));
                         let _ = state.ui_tx.send(UiEvent::LoggedOut);
 
-                        // CRITICAL: Reset backoff COMPLETO dopo il logout per evitare loop
+                        // Reset backoff COMPLETO dopo il logout per evitare loop
                         self.consecutive_failures = 0;
                         self.next_retry_delay = Duration::from_secs(0);
                         self.last_attempt = None;
@@ -94,14 +92,14 @@ impl ConnectionManager {
             return;
         }
 
-        // FIX: Reset la flag IMMEDIATAMENTE per prevenire race condition
+        // Reset la flag IMMEDIATAMENTE per prevenire race condition
         if state.request_ws_reconnect {
             info!("Reconnection requested");
             state.request_ws_reconnect = false;
 
             // Solo se NON stiamo già connettendo, disconnetti e riconnetti
             if state.ws_status != WsStatus::Connecting {
-                // FIX: Disconnessione silenziosa per reconnect interni
+                // Disconnessione silenziosa per reconnect interni
                 // Non notifica l'UI per evitare flash "disconnected" durante login
                 self.disconnect_websocket(state, false);
             } else {
@@ -214,10 +212,10 @@ impl ConnectionManager {
                             info!("WebSocket subscribed successfully");
 
                             let _ = tx.send(UiEvent::WsConnected);
-                            waker(); // ✅ Sveglia egui per mostrare stato connesso
+                            waker(); //  Sveglia egui per mostrare stato connesso
                             let tx_reader = tx.clone();
                             let tx_disconnect = tx.clone();
-                            let waker_clone = waker.clone(); // ✅ Clone per il callback
+                            let waker_clone = waker.clone(); //  Clone per il callback
 
                             let ctrl = crate::api::ws::spawn_bidirectional_handler(
                                 ws,
@@ -225,21 +223,21 @@ impl ConnectionManager {
                                     super::message_handlers::handle_websocket_message(
                                         &tx_reader, msg,
                                     );
-                                    waker_clone(); // ✅ SVEGLIA EGUI dopo ogni messaggio!
+                                    waker_clone(); //  SVEGLIA EGUI dopo ogni messaggio!
                                 },
                                 Some(tx_disconnect),
                                 user_seq_shared,
                             );
 
                             let _ = tx.send(UiEvent::WsControlReady(ctrl));
-                            waker(); // ✅ Sveglia egui per processare WsControlReady
+                            waker(); //  Sveglia egui per processare WsControlReady
                         }
                         Err(e) => {
                             error!("WebSocket subscribe failed: {}", e);
                             let _ =
                                 tx.send(UiEvent::WsError(format!("Sottoscrizione fallita: {}", e)));
                             let _ = tx.send(UiEvent::WsDisconnected);
-                            waker(); // ✅ Sveglia egui per mostrare errore subscribe
+                            waker(); //  Sveglia egui per mostrare errore subscribe
                         }
                     }
                 }
@@ -247,7 +245,7 @@ impl ConnectionManager {
                     error!("WebSocket connection failed: {}", e);
                     let _ = tx.send(UiEvent::WsError(format!("Connessione fallita: {}", e)));
                     let _ = tx.send(UiEvent::WsDisconnected);
-                    waker(); // ✅ Sveglia egui per mostrare errore connessione
+                    waker(); //  Sveglia egui per mostrare errore connessione
                 }
             }
         });
@@ -273,7 +271,7 @@ impl ConnectionManager {
         // Invia evento solo se richiesto (non per reconnect interni)
         if notify_ui {
             let _ = state.ui_tx.send(UiEvent::WsDisconnected);
-            (state.egui_waker)(); // ✅ Sveglia egui per mostrare disconnessione
+            (state.egui_waker)(); //  Sveglia egui per mostrare disconnessione
         }
 
         if let Some(ctrl) = state.ws_ctrl.take() {
@@ -290,22 +288,6 @@ impl ConnectionManager {
 
     pub fn get_stats(&self) -> &ConnectionStats {
         &self.stats
-    }
-
-    pub fn reset_stats(&mut self) {
-        self.stats = ConnectionStats::default();
-    }
-
-    pub fn mark_message_sent(&mut self) {
-        self.stats.total_messages_sent += 1;
-    }
-
-    pub fn mark_message_received(&mut self) {
-        self.stats.total_messages_received += 1;
-    }
-
-    pub fn mark_send_error(&mut self, error: String) {
-        self.stats.last_error = Some(error);
     }
 
     /// Incrementa il backoff dopo un fallimento
@@ -355,42 +337,5 @@ impl ConnectionManager {
         self.stats.uptime_start = Some(Instant::now());
     }
 
-    /// Ottiene informazioni sul prossimo retry
-    pub fn get_retry_info(&self) -> Option<(u32, Duration)> {
-        if self.consecutive_failures > 0 {
-            let remaining = if let Some(last) = self.last_attempt {
-                self.next_retry_delay.saturating_sub(last.elapsed())
-            } else {
-                Duration::from_secs(0)
-            };
-            Some((self.consecutive_failures, remaining))
-        } else {
-            None
-        }
-    }
-
-    /// Gestisce evento di connessione riuscita
-    pub fn handle_connected(&mut self) {
-        self.reset_backoff();
-    }
-
-    /// Gestisce evento di disconnessione/errore
-    /// Ritorna true se deve eseguire il logout
-    pub fn handle_disconnected(&mut self) -> bool {
-        self.increment_backoff()
-    }
 }
 
-impl ConnectionStats {
-    pub fn connection_success_rate(&self) -> f64 {
-        if self.connection_attempts == 0 {
-            0.0
-        } else {
-            self.successful_connections as f64 / self.connection_attempts as f64
-        }
-    }
-
-    pub fn current_uptime(&self) -> Option<Duration> {
-        self.uptime_start.map(|start| start.elapsed())
-    }
-}

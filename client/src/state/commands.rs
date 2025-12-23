@@ -241,7 +241,7 @@ impl AppState {
 
         // Crea stub per il gruppo
         let stub_id = Uuid::new_v4();
-        let now = chrono::Utc::now().timestamp(); // ✅ Riusa questo timestamp
+        let now = chrono::Utc::now().timestamp(); //  Riusa questo timestamp
 
         let stub_conversation = ConversationDto {
             id: stub_id,
@@ -263,7 +263,7 @@ impl AppState {
         self.group_stubs
             .insert(stub_id, (group_name.clone(), Instant::now()));
 
-        // ✅ Aggiungi i membri selezionati alla members_list dello stub
+        //  Aggiungi i membri selezionati alla members_list dello stub
         let mut stub_members: Vec<ParticipantInfo> = Vec::new();
 
         // Aggiungi l'utente corrente come owner
@@ -272,7 +272,7 @@ impl AppState {
                 user_id,
                 username: self.username.clone(),
                 role: "owner".to_string(),
-                joined_at: Some(now), // ✅ Aggiungi joined_at per owner
+                joined_at: Some(now), //  Aggiungi joined_at per owner
             });
         }
 
@@ -282,7 +282,7 @@ impl AppState {
                 user_id: Uuid::nil(), // Placeholder - verrà aggiornato dal server
                 username: username.clone(),
                 role: "member".to_string(),
-                joined_at: Some(now), // ✅ Aggiungi joined_at per membri
+                joined_at: Some(now), //  Aggiungi joined_at per membri
             });
         }
 

@@ -73,7 +73,7 @@ impl AppState {
         &mut self,
         username: String,
         exists: bool,
-        user_id: Option<Uuid>,
+        _user_id: Option<Uuid>,
         request_id: String,
     ) {
         // Verifica che sia la risposta che aspettavamo
@@ -96,13 +96,13 @@ impl AppState {
         if let Some(pending) = &self.create_group_popup.pending_user_verification {
             if pending.to_lowercase() == username.to_lowercase() {
                 if exists {
-                    // ✅ Utente esiste! Aggiungilo alla lista partecipanti
+                    //  Utente esiste! Aggiungilo alla lista partecipanti
                     self.create_group_popup
                         .selected_participants
                         .insert(username.clone());
                     info!("User '{}' verified and added to group creation", username);
                 } else {
-                    // ❌ Utente non esiste, mostra errore
+                    //  Utente non esiste, mostra errore
                     let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
                         format!("Utente '{}' non trovato", username),
                     )));
@@ -120,11 +120,11 @@ impl AppState {
         if let Some(pending) = &self.invite_popup.pending_user_verification {
             if pending.to_lowercase() == username.to_lowercase() {
                 if exists {
-                    // ✅ Utente esiste! Aggiungilo alla lista utenti da invitare
+                    //  Utente esiste! Aggiungilo alla lista utenti da invitare
                     self.invite_popup.selected_users.insert(username.clone());
                     info!("User '{}' verified and added to invite list", username);
                 } else {
-                    // ❌ Utente non esiste, mostra errore
+                    //  Utente non esiste, mostra errore
                     let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
                         format!("Utente '{}' non trovato", username),
                     )));
@@ -188,24 +188,12 @@ impl AppState {
         debug!("Added DM stub: {} -> {}", stub_id, target_username);
     }
 
-    /// Aggiunge un gruppo stub alla tracking map
-    pub fn add_group_stub(&mut self, stub_id: Uuid, group_name: String) {
-        self.group_stubs
-            .insert(stub_id, (group_name.clone(), Instant::now()));
-        debug!("Added group stub: {} -> {}", stub_id, group_name);
-    }
+   
 
     /// Rimuove un DM stub dalla tracking map
     pub fn remove_dm_stub(&mut self, conversation_id: Uuid) {
         if let Some((target, _)) = self.dm_stubs.remove(&conversation_id) {
             debug!("Removed DM stub: {} -> {}", conversation_id, target);
-        }
-    }
-
-    /// Rimuove un gruppo stub dalla tracking map
-    pub fn remove_group_stub(&mut self, conversation_id: Uuid) {
-        if let Some((name, _)) = self.group_stubs.remove(&conversation_id) {
-            debug!("Removed group stub: {} -> {}", conversation_id, name);
         }
     }
 

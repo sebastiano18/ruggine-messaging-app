@@ -2,7 +2,6 @@ use std::time::Instant;
 // events/auth_handler.rs
 use crate::models::*;
 use crate::state::core::AppState;
-use reqwest::StatusCode;
 use tracing::info;
 
 pub struct AuthHandler;

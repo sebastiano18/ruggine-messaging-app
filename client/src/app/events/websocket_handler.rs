@@ -130,7 +130,7 @@ impl WebSocketHandler {
                 message_conversation_id
             );
 
-            // MODIFICATO: Estrai solo lo username dalla tupla (String, Instant)
+            // Estrai solo lo username dalla tupla (String, Instant)
             let target_username = state.dm_stubs.remove(&message_conversation_id)
                 .map(|(username, _)| username)
                 .unwrap();
@@ -311,7 +311,7 @@ impl WebSocketHandler {
             warn!("Failed to auto-send mark_read: {}", e);
         } else {
             debug!(
-                "✅ Auto-sent mark_read for conversation {} (seq: {}, author: {})",
+                " Auto-sent mark_read for conversation {} (seq: {}, author: {})",
                 msg.conversation_id, seq, msg.author_username
             );
 
@@ -351,7 +351,7 @@ impl WebSocketHandler {
         }
 
         // Inserimento ordinato per sequence o timestamp
-        let insert_pos = if let Some(msg_seq) = msg.sequence_num {
+        let insert_pos = if let Some(_msg_seq) = msg.sequence_num {
             conversation_cache
                 .binary_search_by(|existing| {
                     match (existing.sequence_num, msg.sequence_num) {
@@ -398,7 +398,7 @@ impl WebSocketHandler {
             return;
         }
 
-        let ui_insert_pos = if let Some(msg_seq) = msg.sequence_num {
+        let ui_insert_pos = if let Some(_msg_seq) = msg.sequence_num {
             state
                 .messages
                 .binary_search_by(|existing| {
