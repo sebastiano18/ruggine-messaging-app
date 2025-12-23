@@ -1,7 +1,7 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
-use tracing::{info};
+use tracing::info;
 use uuid::Uuid;
 
 /// Struttura per lo stato iniziale di una connessione WebSocket
@@ -27,8 +27,11 @@ pub async fn get_initial_state(
             c.created_at as conv_created_at,
             p.last_read_sequence,
             
-            -- Priorità: 1) ultimo messaggio, 2) joined_at, 3) created_at
-            COALESCE(ms.last_updated, p.joined_at, c.created_at) as last_activity,
+            -- Priorità: MAX tra ultimo messaggio e joined_at, poi created_at
+            COALESCE(
+                MAX(ms.last_updated, p.joined_at),
+                c.created_at
+            ) as last_activity,
             COALESCE(ms.current_sequence, 0) as last_msg_seq,
             
             -- Ultimo messaggio via JOIN (1 volta sola, non 6!)
@@ -125,7 +128,8 @@ pub async fn get_initial_state(
                         last_message["id"] = json!(msg_id);
                     }
 
-                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id") {
+                    if let Ok(Some(author_id)) = row.try_get::<Option<String>, _>("last_author_id")
+                    {
                         last_message["author_id"] = json!(author_id);
                     }
 
@@ -148,10 +152,10 @@ pub async fn get_initial_state(
     let user_sequence: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(sequence_num), 0) FROM user_events WHERE user_id = ?",
     )
-        .bind(&user_id_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    .bind(&user_id_str)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
 
     info!(
         "⚡ OPTIMIZED: Loaded top 20 conversations for user {} in ~10-30ms (vs 100-400ms before)",

@@ -79,9 +79,9 @@ impl AppState {
         // Verifica che sia la risposta che aspettavamo
         if self.user_check_request_id.as_ref() != Some(&request_id) {
             warn!(
-                "Received stale user check response for request_id: {}",
-                request_id
-            );
+            "Received stale user check response for request_id: {}",
+            request_id
+        );
             return;
         }
 
@@ -142,33 +142,16 @@ impl AppState {
         if exists {
             info!("User '{}' verified for DM creation", username);
 
-            // Crea lo stub e ottieni l'ID
-            if let Some(stub_id) = self.create_dm_stub(username.clone()) {
-                // Crea conversazione stub locale
-                let stub_conversation = crate::models::ConversationDto {
-                    id: stub_id,
-                    kind: "dm".to_string(),
-                    title: username.clone(),
-                    owner_id: self.user_id.unwrap_or(Uuid::nil()),
-                    created_at: chrono::Utc::now().timestamp(),
-                    last_read_sequence: 0,
-                    last_activity: chrono::Utc::now().timestamp(),
-                    last_msg_seq: 0,
-                };
+            //Genera un cid temporaneo (non salvato)
+            let temp_cid = Uuid::new_v4();
 
-                // Aggiungi alla lista conversazioni
-                if let Some(ref mut convs) = self.conversations {
-                    convs.insert(0, stub_conversation);
-                }
+            // Apri la chat con il cid temporaneo
+            self.cid = Some(temp_cid);
+            self.page = crate::models::Page::Chat;
+            self.conv_title = username.clone();
+            self.messages.clear();
 
-                // Apri la chat
-                self.cid = Some(stub_id);
-                self.page = crate::models::Page::Chat;
-                self.conv_title = username;
-                self.messages.clear();
-
-                info!("Created and opened DM stub {}", stub_id);
-            }
+            info!("Opened DM UI with temporary cid {} for user {}", temp_cid, username);
         } else {
             // Utente non trovato
             let _ = self.ui_tx.send(UiEvent::Error(ErrorType::Generic(
@@ -221,7 +204,6 @@ impl AppState {
         }
     }
 
-    /// Pulisce gli stub scaduti (sia DM che gruppi) e quelli già confermati
     pub fn cleanup_expired_stubs(&mut self) {
         let now = Instant::now();
 
@@ -291,39 +273,6 @@ impl AppState {
             }
         }
 
-        // === Cleanup stub già confermati (conversazioni reali con stesso ID) ===
-        let mut confirmed_dm_stubs = Vec::new();
-        let mut confirmed_group_stubs = Vec::new();
-
-        if let Some(ref conversations) = self.conversations {
-            for (&stub_id, _) in &self.dm_stubs {
-                if conversations
-                    .iter()
-                    .any(|c| c.id == stub_id && c.last_msg_seq > 0)
-                {
-                    confirmed_dm_stubs.push(stub_id);
-                }
-            }
-            for (&stub_id, _) in &self.group_stubs {
-                if conversations
-                    .iter()
-                    .any(|c| c.id == stub_id && c.last_msg_seq > 0)
-                {
-                    confirmed_group_stubs.push(stub_id);
-                }
-            }
-        }
-
-        for id in confirmed_dm_stubs {
-            if let Some((username, _)) = self.dm_stubs.remove(&id) {
-                debug!("Cleaned up confirmed DM stub: {} -> {}", id, username);
-            }
-        }
-        for id in confirmed_group_stubs {
-            if let Some((name, _)) = self.group_stubs.remove(&id) {
-                debug!("Cleaned up confirmed group stub: {} -> {}", id, name);
-            }
-        }
     }
 
     /// Pulisce conferme messaggi scadute

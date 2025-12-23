@@ -267,20 +267,19 @@ fn show_input_area(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid, _height: f32)
 
 
 fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
-    // Header con componenti standard che si adattano al tema
     ui.horizontal(|ui| {
         ui.add_space(8.0);
 
         // Titolo conversazione con icone remix
         if let Some(ref conversations) = s.conversations {
             if let Some(conv) = conversations.iter().find(|c| c.id == cid) {
+                // Conversazione esistente
                 let icon = match conv.kind.as_str() {
                     "group" => egui_remixicon::icons::TEAM_FILL,
                     "dm" => egui_remixicon::icons::MESSAGE_3_FILL,
                     _ => egui_remixicon::icons::CHAT_3_FILL,
                 };
 
-                // Icona con l'arancione dell'app come accento
                 ui.label(
                     RichText::new(icon)
                         .size(20.0)
@@ -288,15 +287,12 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 );
 
                 ui.add_space(8.0);
-
-                // Titolo con stile standard (si adatta al tema)
                 ui.heading(&conv.title);
 
-                // Se è un gruppo, mostra il bottone info a tutti
+                // Bottoni per gruppi
                 if conv.kind == "group" {
                     if let Some(user_id) = s.user_id {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Bottone info membri - visibile a tutti
                             let info_btn = egui::Button::new(
                                 RichText::new(egui_remixicon::icons::INFORMATION_LINE)
                                     .size(18.0)
@@ -308,10 +304,8 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 .clicked()
                             {
                                 s.show_group_info_popup = true;
-                                // I membri verranno caricati se necessario quando si apre la popup
                             }
 
-                            // Bottone aggiungi - solo per l'owner
                             if conv.owner_id == user_id {
                                 ui.add_space(4.0);
 
@@ -331,7 +325,9 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                         });
                     }
                 }
-            } else if s.is_dm_stub(cid) {
+            } else {
+                // Conversazione non trovata = DM temporanea
+                // Mostra header usando conv_title
                 ui.label(
                     RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
                         .size(20.0)
@@ -340,14 +336,17 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                 ui.add_space(8.0);
                 ui.heading(&s.conv_title);
             }
-        } else if s.cid.is_some() && !s.conv_title.is_empty() {
-            ui.label(
-                RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
-                    .size(20.0)
-                    .color(egui::Color32::from_rgb(200, 100, 40))
-            );
-            ui.add_space(8.0);
-            ui.heading(&s.conv_title);
+        } else {
+            // Caso conversations vuoto (non dovrebbe succedere dopo login)
+            if s.cid.is_some() && !s.conv_title.is_empty() {
+                ui.label(
+                    RichText::new(egui_remixicon::icons::MESSAGE_3_FILL)
+                        .size(20.0)
+                        .color(egui::Color32::from_rgb(200, 100, 40))
+                );
+                ui.add_space(8.0);
+                ui.heading(&s.conv_title);
+            }
         }
 
         ui.add_space(8.0);
@@ -355,10 +354,8 @@ fn show_conversation_header(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
 
     ui.separator();
 
-    // Popup per invitare membri (gestito centralmente)
     conversation_popups::show_invite_popup(ui.ctx(), s, cid);
 
-    // Popup per visualizzare membri
     if s.show_group_info_popup {
         show_group_info_popup(ui, s, cid);
     }
@@ -589,6 +586,44 @@ fn send_message(s: &mut AppState, cid: Uuid) {
     }
     s.input.clear();
 
+    //Controlla se è un cid temporaneo (non in dm_stubs né in conversations)
+    let is_temp_dm = !s.dm_stubs.contains_key(&cid)
+        && s.conversations.as_ref().map(|convs| !convs.iter().any(|c| c.id == cid)).unwrap_or(true)
+        && !s.conv_title.is_empty();
+
+    // Se è temporaneo, crea lo stub ORA
+    if is_temp_dm {
+        let target_username = s.conv_title.clone();
+
+        info!("Converting temporary DM {} to stub for first message to {}", cid, target_username);
+
+        // Ora salva lo stub
+        s.add_dm_stub(cid, target_username.clone());
+
+        // Crea ConversationDto stub
+        let stub_conversation = crate::models::ConversationDto {
+            id: cid,
+            kind: "dm".to_string(),
+            title: target_username.clone(),
+            owner_id: s.user_id.unwrap_or(Uuid::nil()),
+            created_at: chrono::Utc::now().timestamp(),
+            last_read_sequence: 0,
+            last_activity: chrono::Utc::now().timestamp(),
+            last_msg_seq: 0,
+        };
+
+        // Aggiungi a conversations
+        if let Some(ref mut convs) = s.conversations {
+            convs.insert(0, stub_conversation);
+        } else {
+            s.conversations = Some(vec![stub_conversation]);
+        }
+
+        s.conversation_messages.insert(cid, Vec::new());
+
+        info!("DM stub {} created and added on first message", cid);
+    }
+
     // Genera client_msg_id per tracking
     let client_msg_id = Uuid::new_v4().to_string();
     info!("Sending message with client_msg_id: {}", client_msg_id);
@@ -603,41 +638,29 @@ fn send_message(s: &mut AppState, cid: Uuid) {
             client_msg_id.clone(),
         );
 
-        // Salva nei pending per tracking conferma
         s.pending_confirmations.insert(client_msg_id.clone(), optimistic_msg.clone());
         info!("Added pending confirmation for client_id: {}", client_msg_id);
 
-        // Aggiungi alla UI
         s.messages.push(optimistic_msg.clone());
 
-        //  Aggiungi alla cache usando entry().or_insert_with()
         s.conversation_messages
             .entry(cid)
             .or_insert_with(Vec::new)
             .push(optimistic_msg.clone());
 
-        // Aggiorna ConversationDto ottimisticamente
         if let Some(ref mut convs) = s.conversations {
             if let Some(conv) = convs.iter_mut().find(|c| c.id == cid) {
                 conv.last_activity = optimistic_msg.created_at;
-                debug!(
-                    "Optimistically updated conversation {} last_activity",
-                    cid
-                );
+                debug!("Optimistically updated conversation {} last_activity", cid);
             }
         }
     }
 
-    // Controlla se è un DM stub PRIMA di inviare
-    let is_dm_stub = s.dm_stubs.contains_key(&cid);
-
-    // Usa WebSocket con client_msg_id
     s.send_chat_message_ws(content, Some(client_msg_id));
 
-    // NON rimuovere lo stub qui - aspetta la conferma dal server
+    let is_dm_stub = s.dm_stubs.contains_key(&cid);
     if is_dm_stub {
         info!("Message sent to DM stub {}, waiting for server confirmation", cid);
-        // Lo stub verrà rimosso quando riceveremo conversation_confirmation dal server
     }
 
     move_conversation_to_top(s, cid);

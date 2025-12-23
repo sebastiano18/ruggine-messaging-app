@@ -203,9 +203,9 @@ impl ConversationHandler {
         client_temp_id: Option<String>,
     ) {
         info!(
-            "Processing conversation confirmation for {} (temp_id: {:?})",
-            conversation.id, client_temp_id
-        );
+        "Processing conversation confirmation for {} (temp_id: {:?})",
+        conversation.id, client_temp_id
+    );
 
         let mut was_active_stub = false;
         let mut stub_to_remove = None;
@@ -215,9 +215,9 @@ impl ConversationHandler {
                 if state.cid == Some(stub_uuid) {
                     was_active_stub = true;
                     info!(
-                        "Active stub {} will be replaced with real conversation {}",
-                        stub_uuid, conversation.id
-                    );
+                    "Active stub {} will be replaced with real conversation {}",
+                    stub_uuid, conversation.id
+                );
                 }
 
                 if state.dm_stubs.contains_key(&stub_uuid) {
@@ -229,9 +229,9 @@ impl ConversationHandler {
         if let Some(stub_id) = stub_to_remove {
             if let Some((target, _)) = state.dm_stubs.remove(&stub_id) {
                 info!(
-                    "Removed DM stub {} (target: {}) after confirmation",
-                    stub_id, target
-                );
+                "Removed DM stub {} (target: {}) after confirmation",
+                stub_id, target
+            );
             }
 
             state.conversation_sequences.remove(&stub_id);
@@ -248,13 +248,15 @@ impl ConversationHandler {
         if let Some(ref mut conversations) = state.conversations {
             // Rimuovi eventuali conversazioni con lo stesso ID reale (non dovrebbe succedere)
             conversations.retain(|c| c.id != conversation.id);
-            conversations.push(conversation.clone());
-            conversations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+            // Aggiungi in cima (è una conversazione appena confermata)
+            conversations.insert(0, conversation.clone());
+
             info!(
-                "Added conversation {} to list ({} total)",
-                conversation.id,
-                conversations.len()
-            );
+            "Added conversation {} to list ({} total)",
+            conversation.id,
+            conversations.len()
+        );
         } else {
             state.conversations = Some(vec![conversation.clone()]);
             info!("Initialized conversations list with {}", conversation.id);
@@ -272,9 +274,9 @@ impl ConversationHandler {
                         .conversation_sequences_confirmed
                         .insert(conversation.id, seq);
                     info!(
-                        "Set conversation {} sequence to {} from messages",
-                        conversation.id, seq
-                    );
+                    "Set conversation {} sequence to {} from messages",
+                    conversation.id, seq
+                );
                 }
             }
         }
@@ -284,14 +286,13 @@ impl ConversationHandler {
             state.conv_title = conversation.title.clone();
             state.messages = messages;
             info!(
-                "Updated active conversation from stub {} to real {}",
-                stub_to_remove.unwrap_or(Uuid::nil()),
-                conversation.id
-            );
+            "Updated active conversation from stub {} to real {}",
+            stub_to_remove.unwrap_or(Uuid::nil()),
+            conversation.id
+        );
         } else if state.cid == Some(conversation.id) {
             state.messages = messages;
         }
-
     }
 
     pub fn handle_older_messages_loaded(state: &mut AppState, new_messages: Vec<MessageDto>) {
