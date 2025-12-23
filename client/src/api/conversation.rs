@@ -22,24 +22,6 @@ pub struct PaginatedConversationsResponse {
     pub has_more: bool,
 }
 
-// === API client ===
-
-// Get conversation with its messages in a single API call
-pub async fn get_conversation_with_messages(
-    base: &str,
-    token: &str,
-    conversation_id: Uuid
-) -> Result<ConversationWithMessages> {
-    let r = Client::new()
-        .get(format!("{base}/api/conversations/{conversation_id}/with-messages"))
-        .bearer_auth(token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ConversationWithMessages>()
-        .await?;
-    Ok(r)
-}
 
 /// Ottieni conversazioni paginato (20 alla volta)
 ///

@@ -730,10 +730,7 @@ impl EventDispatcher {
             UiEvent::MembersLoaded(conversation_id, members) => {
                 ConversationHandler::handle_members_loaded(state, conversation_id, members);
             }
-
-            UiEvent::TriggerConversationFetch(cid, reason) => {
-                ConversationHandler::handle_trigger_conversation_fetch(state, cid, reason);
-            }
+            
 
             UiEvent::ConversationCompleteFetched(conv, messages) => {
                 ConversationHandler::handle_conversation_complete_fetched(state, conv, messages);

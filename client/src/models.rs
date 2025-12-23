@@ -217,8 +217,7 @@ pub enum UiEvent {
 
     InviteCreated(String),
     MembersLoaded(Uuid, Vec<ParticipantInfo>),
-
-    TriggerConversationFetch(Uuid, String),
+    
     ConversationCompleteFetched(ConversationDto, Vec<MessageDto>),
 
     SendPing,

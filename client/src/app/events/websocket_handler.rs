@@ -50,12 +50,12 @@ impl WebSocketHandler {
         }
 
         debug!(
-            "Processing incoming message: {} from {} in conversation {} (seq: {:?})",
-            msg.content.chars().take(50).collect::<String>(),
-            msg.author_username,
-            message_conversation_id,
-            msg.sequence_num
-        );
+        "Processing incoming message: {} from {} in conversation {} (seq: {:?})",
+        msg.content.chars().take(50).collect::<String>(),
+        msg.author_username,
+        message_conversation_id,
+        msg.sequence_num
+    );
 
         // GESTIONE BUFFER DI RIORDINO
         if let Some(seq) = msg.sequence_num {
@@ -68,9 +68,9 @@ impl WebSocketHandler {
 
             if seq > expected {
                 warn!(
-                    "Message seq {} out of order (expected {}), buffering",
-                    seq, expected
-                );
+                "Message seq {} out of order (expected {}), buffering",
+                seq, expected
+            );
 
                 // Update per gap detection (senza conferma esplicita)
                 SequenceHandler::update_conversation_sequence(state, message_conversation_id, seq);
@@ -99,9 +99,9 @@ impl WebSocketHandler {
                 .count();
             if count > 1 {
                 error!(
-                    "DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
-                    message_conversation_id, count
-                );
+                "DUPLICATE CONVERSATIONS DETECTED for ID {}: {} instances",
+                message_conversation_id, count
+            );
 
                 let mut deduped_conversations = Vec::new();
                 let mut seen_ids = std::collections::HashSet::new();
@@ -111,9 +111,9 @@ impl WebSocketHandler {
                         deduped_conversations.push(conv.clone());
                     } else {
                         warn!(
-                            "Removing duplicate conversation: {} ({})",
-                            conv.id, conv.title
-                        );
+                        "Removing duplicate conversation: {} ({})",
+                        conv.id, conv.title
+                    );
                     }
                 }
 
@@ -126,9 +126,9 @@ impl WebSocketHandler {
 
         if is_stub_conversion {
             info!(
-                "Converting DM stub {} to real conversation",
-                message_conversation_id
-            );
+            "Converting DM stub {} to real conversation",
+            message_conversation_id
+        );
 
             // Estrai solo lo username dalla tupla (String, Instant)
             let target_username = state.dm_stubs.remove(&message_conversation_id)
@@ -159,16 +159,16 @@ impl WebSocketHandler {
 
                 if removed > 0 {
                     info!(
-                        "Removed {} stub instances for conversation {}",
-                        removed, message_conversation_id
-                    );
+                    "Removed {} stub instances for conversation {}",
+                    removed, message_conversation_id
+                );
                 }
 
                 conversations.push(real_conversation);
                 info!(
-                    "Converted DM stub to real conversation: {}",
-                    message_conversation_id
-                );
+                "Converted DM stub to real conversation: {}",
+                message_conversation_id
+            );
             } else {
                 state.conversations = Some(vec![real_conversation]);
             }
@@ -177,28 +177,6 @@ impl WebSocketHandler {
                 state,
                 format!("Chat con {} ora attiva!", target_username),
             );
-        }
-
-        // GESTIONE CONVERSAZIONE SCONOSCIUTA
-        let conversation_exists = state
-            .conversations
-            .as_ref()
-            .map(|convs| convs.iter().any(|c| c.id == message_conversation_id))
-            .unwrap_or(false);
-
-        if !is_stub_conversion && !conversation_exists {
-            info!(
-                "Message for unknown conversation {} - triggering unified fetch",
-                message_conversation_id
-            );
-
-
-            let _ = state.ui_tx.send(UiEvent::TriggerConversationFetch(
-                message_conversation_id,
-                "messaggio_conversazione_sconosciuta".to_string(),
-            ));
-
-            state.conversation_unread_counts.entry(message_conversation_id).or_insert(0);
         }
 
         // AGGIORNA CACHE MESSAGGI
@@ -212,9 +190,9 @@ impl WebSocketHandler {
             Self::update_ui_messages(state, msg.clone());
         } else {
             debug!(
-                "Message cached but not for current conversation: {}",
-                msg.id
-            );
+            "Message cached but not for current conversation: {}",
+            msg.id
+        );
 
             // Incrementa unread per messaggi in altre chat
             if Some(msg.author_id) != state.user_id {
@@ -225,11 +203,11 @@ impl WebSocketHandler {
                 *current_unread += 1;
 
                 debug!(
-                    "Incremented unread count for conversation {} to {} (from {})",
-                    message_conversation_id,
-                    *current_unread,
-                    msg.author_username
-                );
+                "Incremented unread count for conversation {} to {} (from {})",
+                message_conversation_id,
+                *current_unread,
+                msg.author_username
+            );
             }
         }
 
@@ -242,16 +220,16 @@ impl WebSocketHandler {
                 SequenceHandler::update_conversation_sequence(state, message_conversation_id, buffered_seq);
 
                 debug!(
-                    "Processing buffered message seq {} for conversation {}",
-                    buffered_seq, message_conversation_id
-                );
+                "Processing buffered message seq {} for conversation {}",
+                buffered_seq, message_conversation_id
+            );
 
                 // Aggiungi alla cache
                 if !Self::update_message_cache(state, &buffered_msg) {
                     debug!(
-                        "Buffered message already exists in cache: {}",
-                        buffered_msg.id
-                    );
+                    "Buffered message already exists in cache: {}",
+                    buffered_msg.id
+                );
                     continue;
                 }
 
@@ -260,9 +238,9 @@ impl WebSocketHandler {
                     Self::update_ui_messages(state, buffered_msg.clone());
                 } else {
                     debug!(
-                        "Buffered message cached but not for current conversation: {}",
-                        buffered_msg.id
-                    );
+                    "Buffered message cached but not for current conversation: {}",
+                    buffered_msg.id
+                );
 
                     // Incrementa unread per messaggi bufferizzati in altre chat
                     if Some(buffered_msg.author_id) != state.user_id {
@@ -273,11 +251,11 @@ impl WebSocketHandler {
                         *current_unread += 1;
 
                         debug!(
-                            "Incremented unread count for conversation {} to {} (buffered message from {})",
-                            message_conversation_id,
-                            *current_unread,
-                            buffered_msg.author_username
-                        );
+                        "Incremented unread count for conversation {} to {} (buffered message from {})",
+                        message_conversation_id,
+                        *current_unread,
+                        buffered_msg.author_username
+                    );
                     }
                 }
             }

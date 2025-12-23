@@ -48,7 +48,6 @@ pub fn handle_websocket_message(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>
         "pong" => handle_pong(tx, &parsed_value),
         "server_heartbeat" => handle_server_heartbeat(tx, &parsed_value),
         "user_channel_ready" => handle_user_channel_ready(tx, &parsed_value),
-        "fetch_conversation_messages" => handle_fetch_conversation_messages(tx, &parsed_value),
         "user_events_resume" => handle_user_events_resume(tx, &parsed_value),
         "messages_resume" => handle_messages_resume(tx, &parsed_value),
         "message_confirmation" => handle_message_confirmation(tx, &parsed_value),
@@ -570,43 +569,6 @@ fn handle_user_channel_ready(_tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, 
     );
 }
 
-fn handle_fetch_conversation_messages(
-    tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>,
-    value: &Value,
-) {
-    let conversation_id = match parse_conversation_id(value) {
-        Some(id) => id,
-        None => {
-            warn!("Invalid conversation_id in fetch_conversation_messages event");
-            return;
-        }
-    };
-
-    let message_count = value
-        .get("message_count")
-        .and_then(|c| c.as_i64())
-        .unwrap_or(0);
-
-    let current_sequence = value
-        .get("current_sequence")
-        .and_then(|s| s.as_i64())
-        .unwrap_or(0);
-
-    let reason = value
-        .get("reason")
-        .and_then(|r| r.as_str())
-        .unwrap_or("unknown");
-
-    info!(
-        "Fetch event for conversation {} ({} messages, seq: {}, reason: {})",
-        conversation_id, message_count, current_sequence, reason
-    );
-
-    let _ = tx.send(UiEvent::TriggerConversationFetch(
-        conversation_id,
-        format!("fetch_event_{}", reason),
-    ));
-}
 
 fn handle_user_events_resume(tx: &tokio::sync::mpsc::UnboundedSender<UiEvent>, value: &Value) {
     let events = value

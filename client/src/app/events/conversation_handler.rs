@@ -610,41 +610,7 @@ impl ConversationHandler {
     pub fn handle_loading_progress(msg: String) {
         debug!("Loading progress: {}", msg);
     }
-
-    pub fn handle_trigger_conversation_fetch(state: &mut AppState, cid: Uuid, reason: String) {
-        debug!("Triggering conversation fetch for {}: {}", cid, reason);
-
-        if let Some(ref token) = state.token {
-            let base = state.base.clone();
-            let token = token.clone();
-            let tx = state.ui_tx.clone();
-
-            state.rt.spawn(async move {
-                match crate::api::conversation::get_conversation_with_messages(&base, &token, cid)
-                    .await
-                {
-                    Ok(conv_with_msgs) => {
-                        // Invia i membri se presenti
-                        if !conv_with_msgs.members.is_empty() {
-                            let _ = tx.send(UiEvent::MembersLoaded(cid, conv_with_msgs.members));
-                        }
-                        // Invia la conversazione e i messaggi
-                        let _ = tx.send(UiEvent::ConversationCompleteFetched(
-                            conv_with_msgs.conversation,
-                            conv_with_msgs.messages,
-                        ));
-                    }
-                    Err(e) => {
-                        error!("Failed to fetch conversation {}: {}", cid, e);
-                        let _ = tx.send(UiEvent::Error(
-                            crate::models::ErrorType::DataRecovery
-                        ));
-                    }
-                }
-            });
-        }
-    }
-
+    
     pub fn handle_conversation_complete_fetched(
         state: &mut AppState,
         conv: ConversationDto,
