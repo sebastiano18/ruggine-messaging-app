@@ -73,7 +73,7 @@
 
    Clonare il repository o scaricare il codice sorgente:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/PdS2425-C2/G39
    cd G39
    ```
 
@@ -98,21 +98,16 @@
 
    > **Nota**: Se non si crea il file `.env`, il server userà valori di default.
 
+   > **Nota**: I valori sono **configurabili a scelta** (es. IP/porta del server tramite `BIND`, percorso DB tramite `DATABASE_URL`, livello log con `RUST_LOG`, ecc.).
+
 3. **Compilare il server**:
    ```bash
-   cargo build --release
+   cargo build
    ```
-
-   Il binario sarà disponibile in `target/release/server` (o `server.exe` su Windows).
 
 4. **Avviare il server**:
    ```bash
-   cargo run --release
-   ```
-
-   Oppure eseguire direttamente il binario:
-   ```bash
-   ./target/release/server
+   cargo run
    ```
 
    Output atteso:
@@ -132,19 +127,12 @@
 
 2. **Compilare il client**:
    ```bash
-   cargo build --release
+   cargo build
    ```
-
-   Il binario sarà disponibile in `target/release/client` (o `client.exe` su Windows).
 
 3. **Avviare il client**:
    ```bash
-   cargo run --release
-   ```
-
-   Oppure eseguire il binario:
-   ```bash
-   ./target/release/client
+   cargo run
    ```
 
    Si aprirà l'interfaccia grafica dell'applicazione.
@@ -159,13 +147,16 @@ Al primo avvio, verrà mostrata la schermata di autenticazione.
 
 ![Schermata Login](assets/login_screen.png)
 
-1. Cliccare sul pulsante **"Register"** nella parte superiore della finestra
+1. Cliccare sul pulsante **"Registertati"** nella parte inferiore della finestra che porterà alla schermata di registrazione.
+
+![Schermata Registrazione](assets/registration_screen.png)
+
 2. Inserire un **username** (unico)
 3. Inserire una **password** (minimo 4 caratteri)
 4. Confermare la password
-5. Cliccare su **"Register"**
+5. Cliccare su **"Crea Account"**
 
-Se la registrazione ha successo, si viene automaticamente reindirizzati alla schermata di login.
+Se la registrazione ha successo, si viene automaticamente reindirizzati alla schermata principale dell'applicazione.
 
 ### 2. Login
 
@@ -174,7 +165,7 @@ Se la registrazione ha successo, si viene automaticamente reindirizzati alla sch
 3. Cliccare su **"Login"**
 
 Dopo il login, l'applicazione:
-- Si connette al server tramite WebSocket
+- Si connette al server
 - Carica le conversazioni esistenti (se presenti)
 - Mostra l'interfaccia principale
 
@@ -201,6 +192,8 @@ L'interfaccia è divisa in tre sezioni:
 └──────────────┴──────────────────────────────────┘
 ```
 
+![Schermata Home](assets/home_screen.png)
+
 1. **Header** (in alto):
    - Mostra l'username corrente
    - Pulsante **[Account]** per gestire l'account
@@ -209,7 +202,10 @@ L'interfaccia è divisa in tre sezioni:
 2. **Sidebar** (a sinistra):
    - Elenco di tutte le conversazioni (DM e Gruppi)
    - Badge di notifica per messaggi non letti
-   - Pulsante **[+ New Conversation]** per creare nuove chat
+   - Pulsante <img src="assets/chat-new-line.svg" width="24" height="24" /> per creare nuove chat
+
+![Schermata Nuova Conversazione](assets/new_chat_screen.png)
+
 
 3. **Chat Area** (al centro):
    - Messaggi della conversazione selezionata
@@ -221,10 +217,12 @@ L'interfaccia è divisa in tre sezioni:
 
 #### Creare una DM
 
-1. Cliccare sul pulsante **[+ New Conversation]** nella sidebar
-2. Selezionare **"Create DM"**
+1. Cliccare sul pulsante <img src="assets/chat-new-line.svg" width="24" height="24" /> nella sidebar
+2. Selezionare **"Messaggio Privato"**
 3. Inserire l'**username** dell'utente con cui chattare
-4. Cliccare su **"Create"**
+4. Cliccare su **"Crea"**
+
+![Schermata Nuova Conversazione privata](assets/new_private_chat_screen.png)
 
 Se la DM esiste già, verrà aperta automaticamente. Altrimenti, verrà creata una nuova conversazione.
 
@@ -240,17 +238,20 @@ Se la DM esiste già, verrà aperta automaticamente. Altrimenti, verrà creata u
 
 #### Creare un Gruppo
 
-1. Cliccare su **[+ New Conversation]**
-2. Selezionare **"Create Group"**
+1. Cliccare su <img src="assets/chat-new-line.svg" width="24" height="24" />
+2. Selezionare **"Crea gruppo"**
 3. Inserire un **nome** per il gruppo
-4. Cliccare su **"Create"**
+4. Inserire i partecipanti tramite **"Cerca o aggiungi utenti"** oppure **"I tuoi contatti"**
+4. Cliccare su **"Crea gruppo"**
+
+![Schermata Nuovo Gruppo](assets/new_group_screen.png)
 
 Il creatore diventa automaticamente **owner** (proprietario) del gruppo.
 
 #### Aggiungere Membri (solo Owner)
 
 1. Aprire il gruppo nella chat area
-2. Cliccare sull'**icona "Aggiungi Utenti"** (in alto a destra, prima dell'elenco partecipanti)
+2. Cliccare su <img src="assets/user-add-line.svg" width="24" height="24" />
 3. Si aprirà una finestra con:
    - Una **barra di ricerca** per cercare tra i contatti o digitare username
    - **Elenco dei contatti disponibili** (utenti con cui hai già una DM)
@@ -262,12 +263,14 @@ Il creatore diventa automaticamente **owner** (proprietario) del gruppo.
 5. Selezionare uno o più utenti tramite **checkbox**
 6. Cliccare su **"Invita Utenti"**
 
+![Schermata Invita Utenti](assets/add_user_screen.png)
+
 Gli utenti selezionati verranno **aggiunti immediatamente** al gruppo come **membri** (senza necessità di conferma da parte loro).
 
 #### Rimuovere Membri (solo Owner)
 
-1. Aprire la lista membri
-2. Cliccare su **[X]** accanto al nome dell'utente da rimuovere
+1. Aprire la lista membri <img src="assets/information-line.svg" width="24" height="24" />
+2. Cliccare su **"Espelli"** accanto al nome dell'utente da rimuovere
 3. Confermare l'operazione
 
 L'utente riceverà una notifica di espulsione.
@@ -275,18 +278,20 @@ L'utente riceverà una notifica di espulsione.
 #### Uscire da un Gruppo (solo Member)
 
 1. Aprire il gruppo
-2. Cliccare su **[Leave Group]**
-3. Confermare l'uscita
+2. Cliccare su <img src="assets/information-line.svg" width="24" height="24" />
+3. Cliccare su **"Esci dal Gruppo"**
 
 > **Nota**: L'owner **non può** uscire dal gruppo. Può solo eliminarlo.
 
 #### Eliminare un Gruppo (solo Owner)
 
 1. Aprire il gruppo
-2. Cliccare su **[Delete Conversation]**
-3. Confermare l'eliminazione
+2. Cliccare su <img src="assets/information-line.svg" width="24" height="24" />
+3. Cliccare su **"Elimina Gruppo"**
 
 Il gruppo verrà eliminato per tutti i membri.
+
+![Schermata Info Gruppo](assets/user_list_screen.png)
 
 ---
 
@@ -296,7 +301,7 @@ Il gruppo verrà eliminato per tutti i membri.
 
 1. Selezionare una conversazione dalla sidebar
 2. Digitare il messaggio nel campo di input in basso
-3. Premere **[Invio]** o cliccare su **[Invia]**
+3. Premere **[Invio]** o cliccare su <img src="assets/send-plane-fill.svg" width="24" height="24" />
 
 Il messaggio verrà inviato in tempo reale a tutti i partecipanti della conversazione.
 
@@ -317,7 +322,7 @@ Per caricare messaggi più vecchi:
 #### Eliminare un Messaggio
 
 1. Cliccare con il tasto destro sul messaggio (se sei l'autore)
-2. Selezionare **"Delete Message"**
+2. Selezionare **"Elimina"**
 3. Confermare l'eliminazione
 
 Il messaggio verrà eliminato per tutti i partecipanti.
@@ -328,19 +333,16 @@ Il messaggio verrà eliminato per tutti i partecipanti.
 
 #### Visualizzare Info Account
 
-1. Cliccare sul pulsante **[Account]** nell'header
-2. Verrà mostrato un modal con:
-   - **Username**
-   - **User ID**
-   - **Data di creazione**
+1. Cliccare sul pulsante <img src="assets/user-fill.svg" width="24" height="24" /> nell'header
+2. Verrà mostrato questo pop-up:
+![Schermata account](assets/account_screen.png)
 
 #### Eliminare l'Account
 
 > **ATTENZIONE**: Questa operazione è **irreversibile**.
 
-1. Cliccare su **[Account]** → **[Delete Account]**
-2. Inserire la password per confermare
-3. Cliccare su **"Confirm Delete"**
+1. Cliccare su <img src="assets/user-fill.svg" width="24" height="24" /> → **[Elimina Account]**
+2. Cliccare  nuovamente per confermare **"Elimina Account"**
 
 Quando si elimina l'account:
 - **Tutte le DM** in cui si è partecipanti vengono eliminate
@@ -366,7 +368,7 @@ Quando si elimina l'account:
 1. Verificare che il server sia avviato:
    ```bash
    cd server
-   cargo run --release
+   cargo run
    ```
 2. Verificare che il server ascolti su `127.0.0.1:8080`
 3. Controllare il firewall (se applicabile)
@@ -459,20 +461,8 @@ Se il problema persiste:
 
 Per segnalare bug o richiedere funzionalità:
 - Aprire una issue nel repository del progetto
-- Consultare la documentazione tecnica nel `MANUALE_PROGETTISTA.md`
+- Consultare la documentazione tecnica
 
 ---
 
-## Appendice: Scorciatoie da Tastiera
 
-| Scorciatoia | Azione |
-|-------------|--------|
-| `Invio` | Invia messaggio |
-| `Esc` | Chiude modal aperti |
-| `Ctrl+Q` | Logout (quando supportato) |
-
----
-
-**Versione**: 1.0
-**Data**: Dicembre 2025
-**Licenza**: Consultare il file LICENSE nel repository
