@@ -40,18 +40,20 @@
 ### Server
 - **Sistema Operativo**: Windows, Linux
 - **RAM**: Minimo 2 GB
-- **Spazio Disco**: 50 MB per l'applicazione + database SQLite
+- **Spazio Disco**: 8,4 MB per l'applicazione + database SQLite
 - **Network**: Porta 8080 disponibile (configurabile)
 
 ### Client
 - **Sistema Operativo**: Windows, Linux
 - **RAM**: Minimo 2 GB
+- **Spazio Disco**: 11,7 MB
 - **GPU**: Supporto OpenGL per rendering GUI
 - **Network**: Connessione al server (default: localhost:8080)
 
 ### Software Necessario
 - **Rust** (versione 1.70 o superiore)
 - **Cargo** (incluso con Rust)
+
 
 ---
 
