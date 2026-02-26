@@ -83,7 +83,7 @@ CREATE TABLE message_sequences
 );
 
 -- ============================================================================
--- SEED DATA
+-- SEED DATA - Solo dati core (users, conversations, participants, messages)
 -- ============================================================================
 
 -- Utenti con password "password"
@@ -154,53 +154,14 @@ INSERT INTO messages (id, conversation_id, author_id, content, created_at, seque
                                                                                              ('970f4021-7ef3-4cc3-89c1-7e2cb9e03515', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 'cb2b5063-aec6-46f2-a289-fa654ec1b049', 'Agreed! The type system is incredible.', 1704067770, 5),
                                                                                              ('28d8d23b-80f7-4753-af90-f83db4d135e8', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 'ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 'And the compiler messages are so helpful!', 1704067800, 6);
 
--- Inizializza message_sequences
+-- ============================================================================
+-- INIZIALIZZAZIONE message_sequences
+-- ============================================================================
+
+-- Inizializza message_sequences con l'ultimo sequence_num di ogni conversazione
 INSERT INTO message_sequences (conversation_id, current_sequence, last_updated) VALUES
-                                                                                    ('957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 3, 1704067420),
-                                                                                    ('74bbf474-69b9-48af-a88f-b2758022f908', 2, 1704067480),
-                                                                                    ('7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 5, 1704067670),
-                                                                                    ('152ee9f8-db96-48bc-9c26-9abc6f63cab6', 6, 1704067800);
+                                                                                    ('957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 3, 1704067420),  -- DM Alice <-> Bob: ultimo msg ha seq=3
+                                                                                    ('74bbf474-69b9-48af-a88f-b2758022f908', 2, 1704067480),  -- DM Charlie <-> Diana: ultimo msg ha seq=2
+                                                                                    ('7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 5, 1704067670),  -- Team Alpha: ultimo msg ha seq=5
+                                                                                    ('152ee9f8-db96-48bc-9c26-9abc6f63cab6', 6, 1704067800);  -- Random Chat: ultimo msg ha seq=6
 
--- Inizializza user_sequences con valori realistici basati sui messaggi
-INSERT INTO user_sequences (user_id, current_sequence, last_ping_sequence, last_ping_at) VALUES
-                                                                                             ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 8, 8, 1704067770),
-                                                                                             ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 8, 8, 1704067800),
-                                                                                             ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 5, 5, 1704067710),
-                                                                                             ('b6fbd855-de10-4074-b3d0-04d714140780', 3, 3, 1704067650);
-
--- User events per tutti i messaggi inviati (tutti delivered=TRUE perché sono già stati processati)
--- Eventi per Alice
-INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at, delivered) VALUES
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 1, 'message_sent', '{"message_id":"4ac0883f-7166-4628-ba46-ad34df612271","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":1}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067350, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 2, 'message_received', '{"message_id":"dee55638-2172-4509-a12c-2e0834e75c9b","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":2}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067380, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 3, 'message_sent', '{"message_id":"fb3d8f15-4f2c-43d2-87b1-07ae178ac6fc","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":3}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067420, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 4, 'message_sent', '{"message_id":"d7eb300b-0f30-460d-a7e5-1cffb51e9d50","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":1}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067550, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 5, 'message_sent', '{"message_id":"e25e7d32-477d-4a83-a1a7-3097d7b915c7","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":4}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067640, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 6, 'message_received', '{"message_id":"e124aaad-4681-48a6-907f-81dc1273f173","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":1}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067650, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 7, 'message_sent', '{"message_id":"b01d7181-34ac-4beb-b135-0216f6daeeba","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":2}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067680, 1),
-                                                                                                                    ('cb2b5063-aec6-46f2-a289-fa654ec1b049', 8, 'message_sent', '{"message_id":"970f4021-7ef3-4cc3-89c1-7e2cb9e03515","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":5}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067770, 1);
-
--- Eventi per Bob
-INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at, delivered) VALUES
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 1, 'message_received', '{"message_id":"4ac0883f-7166-4628-ba46-ad34df612271","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":1}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067350, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 2, 'message_sent', '{"message_id":"dee55638-2172-4509-a12c-2e0834e75c9b","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":2}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067380, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 3, 'message_received', '{"message_id":"fb3d8f15-4f2c-43d2-87b1-07ae178ac6fc","conversation_id":"957b8b8f-6052-41d5-ad27-ca43f4cda3f8","sequence_num":3}', '957b8b8f-6052-41d5-ad27-ca43f4cda3f8', 1704067420, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 4, 'message_received', '{"message_id":"d7eb300b-0f30-460d-a7e5-1cffb51e9d50","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":1}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067550, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 5, 'message_sent', '{"message_id":"d67002db-3e8e-4976-86d8-c9461aa2e112","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":2}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067580, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 6, 'message_sent', '{"message_id":"e8928f8a-4fbc-4c01-b17f-7fa7c5b902f3","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":5}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067670, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 7, 'message_sent', '{"message_id":"e8b9c71d-735c-40cc-a783-edf90bab843e","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":4}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067740, 1),
-                                                                                                                    ('ae6d82c6-a7c3-47c8-b16b-11f27b82232c', 8, 'message_sent', '{"message_id":"28d8d23b-80f7-4753-af90-f83db4d135e8","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":6}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067800, 1);
-
--- Eventi per Charlie
-INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at, delivered) VALUES
-                                                                                                                    ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 1, 'message_sent', '{"message_id":"edd1dcb4-b9c4-4c96-a439-2e6edc4a1530","conversation_id":"74bbf474-69b9-48af-a88f-b2758022f908","sequence_num":1}', '74bbf474-69b9-48af-a88f-b2758022f908', 1704067450, 1),
-                                                                                                                    ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 2, 'message_received', '{"message_id":"aae786fa-8d25-4055-9cf5-dd8c10b578bf","conversation_id":"74bbf474-69b9-48af-a88f-b2758022f908","sequence_num":2}', '74bbf474-69b9-48af-a88f-b2758022f908', 1704067480, 1),
-                                                                                                                    ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 3, 'message_received', '{"message_id":"d7eb300b-0f30-460d-a7e5-1cffb51e9d50","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":1}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067550, 1),
-                                                                                                                    ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 4, 'message_sent', '{"message_id":"f7e4579b-610d-4b7e-88fd-8d73bb6a9470","conversation_id":"7fd142a0-61ed-4096-a8cb-50c1c5b532d9","sequence_num":3}', '7fd142a0-61ed-4096-a8cb-50c1c5b532d9', 1704067610, 1),
-                                                                                                                    ('9b60b6f7-3d43-43de-b477-b9683f3f3c6e', 5, 'message_sent', '{"message_id":"78d0250e-9551-429d-a5d3-aa21bf8521ae","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":3}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067710, 1);
-
--- Eventi per Diana
-INSERT INTO user_events (user_id, sequence_num, event_type, event_data, conversation_id, created_at, delivered) VALUES
-                                                                                                                    ('b6fbd855-de10-4074-b3d0-04d714140780', 1, 'message_received', '{"message_id":"edd1dcb4-b9c4-4c96-a439-2e6edc4a1530","conversation_id":"74bbf474-69b9-48af-a88f-b2758022f908","sequence_num":1}', '74bbf474-69b9-48af-a88f-b2758022f908', 1704067450, 1),
-                                                                                                                    ('b6fbd855-de10-4074-b3d0-04d714140780', 2, 'message_sent', '{"message_id":"aae786fa-8d25-4055-9cf5-dd8c10b578bf","conversation_id":"74bbf474-69b9-48af-a88f-b2758022f908","sequence_num":2}', '74bbf474-69b9-48af-a88f-b2758022f908', 1704067480, 1),
-                                                                                                                    ('b6fbd855-de10-4074-b3d0-04d714140780', 3, 'message_sent', '{"message_id":"e124aaad-4681-48a6-907f-81dc1273f173","conversation_id":"152ee9f8-db96-48bc-9c26-9abc6f63cab6","sequence_num":1}', '152ee9f8-db96-48bc-9c26-9abc6f63cab6', 1704067650, 1);
