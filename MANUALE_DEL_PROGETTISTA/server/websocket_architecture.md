@@ -122,12 +122,26 @@ WebSocket
 - **Rate limiting**: 60 msg/min per client (window scorrevole 60s)
 - **Client heartbeat timeout**: 120s con grace period 5s
 
-**Receiver Task:**
-- Merge due stream:
-  - `user_notification_channel` (eventi personali)
-  - `conversation_broadcast_channels` (messaggi real-time)
-- `StreamManager`: HashMap di broadcast::Receiver per conversazione
-- Forward a `out_tx`
+**Receiver Task - Pattern Ibrido:**
+
+Il Receiver gestisce N conversazioni dinamiche con un pattern a due livelli:
+
+1. **Task Dinamici per Conversazione (recv_merge.rs linee 52-104)**
+    - Spawna 1 task Tokio per ogni conversazione attiva dell'utente
+    - Ogni task fa subscribe al broadcast channel della conversazione
+    - Tutti i task inviano a un canale MPSC interno condiviso
+
+2. **Main Loop con select! (recv_merge.rs linee 237-428)**
+    - user_channel_stream.next() - Notifiche personali utente
+    - stream_manager.message_rx.recv() - Messaggi aggregati da N task
+    - refresh_interval.tick() - Refresh conversazioni ogni 5 min
+    - sleep() - Backoff quando nessuna conversazione attiva
+
+**Rationale:** select! richiede branch statici a compile-time, ma il numero
+di conversazioni è variabile. La soluzione spawna task dinamici che inviano
+a un MPSC aggregato, permettendo al select! di rimanere fisso (5 branch).
+
+**File:** server/src/web_socket/recv_merge.rs
 
 ### Implementation Details
 
