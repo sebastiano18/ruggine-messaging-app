@@ -1083,6 +1083,7 @@ fn show_group_info_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 .cloned()
                             {
                                 s.request_delete_confirmation(&conv);
+                                close_popup = true;
                             }
                         }
                     } else if is_participant {
@@ -1104,6 +1105,7 @@ fn show_group_info_popup(ui: &mut egui::Ui, s: &mut AppState, cid: Uuid) {
                                 .cloned()
                             {
                                 s.request_delete_confirmation(&conv);
+                                close_popup = true;
                             }
                         }
                     }
